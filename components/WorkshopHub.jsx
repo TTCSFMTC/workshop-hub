@@ -1,0 +1,1149 @@
+"use client";
+
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
+import {
+  Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
+  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown,
+  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Unlock, Video,
+  Camera, User, Building2, LayoutGrid, LogOut,
+} from "lucide-react";
+import {
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings,
+  insertPart, updatePart, insertJobType, renameJobType, addBomLine, updateBomLine, removeBomLine,
+  saveSettings, insertBooking, updateBookingRow, deleteBookingRow, upsertJobCardRow, updateJobCardRow,
+  subscribeTable,
+} from "@/lib/data";
+
+// ============================================================
+// Shared constants & helpers
+// ============================================================
+const BUSINESSES = ["Warrington 4x4", "Timing Chain Specialists"];
+const REORDER_WEEKS = 1;
+const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const fmtDate = (iso) => {
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+};
+
+function extractPhone(text) {
+  const m = text.match(/(\+44\s?7\d{3}|\b07\d{3})[\s-]?\d{3}[\s-]?\d{3}\b/);
+  return m ? m[0].replace(/\s+/g, " ").trim() : "";
+}
+function extractReg(text) {
+  const m = text.match(/\b[A-Z]{2}[0-9]{2}\s?[A-Z]{3}\b/i);
+  return m ? m[0].toUpperCase().replace(/\s+/g, " ") : "";
+}
+function guessName(text, phone) {
+  const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";
+  const cleaned = firstLine.replace(phone, "").trim();
+  if (cleaned.length > 0 && cleaned.length < 40 && !/\d{4,}/.test(cleaned)) return cleaned;
+  return "";
+}
+
+const POSTCODE_AREA_COORDS = {
+  WA: [53.39, -2.60], WN: [53.55, -2.63], PR: [53.76, -2.70], L: [53.41, -2.98], M: [53.48, -2.24],
+  SK: [53.33, -2.10], OL: [53.58, -2.12], BL: [53.58, -2.43], BB: [53.75, -2.48], LA: [54.05, -2.80],
+  CH: [53.19, -2.89], CW: [53.16, -2.44], ST: [53.00, -2.19], SY: [52.71, -2.75], TF: [52.68, -2.45],
+  WV: [52.59, -2.13], DY: [52.49, -2.13], B: [52.48, -1.90], CV: [52.41, -1.51], WS: [52.59, -1.98],
+  NG: [52.95, -1.15], DE: [52.92, -1.48], LE: [52.63, -1.13], NN: [52.24, -0.90], PE: [52.57, -0.24],
+  CB: [52.20, 0.12], IP: [52.06, 1.16], NR: [52.63, 1.30], CO: [51.89, 0.90], SS: [51.54, 0.71],
+  RM: [51.58, 0.18], E: [51.53, -0.04], EC: [51.52, -0.09], WC: [51.52, -0.12], N: [51.57, -0.11],
+  NW: [51.55, -0.20], W: [51.51, -0.20], SW: [51.48, -0.16], SE: [51.47, -0.06], EN: [51.65, -0.08],
+  HA: [51.58, -0.34], UB: [51.53, -0.44], TW: [51.45, -0.36], KT: [51.35, -0.28], CR: [51.37, -0.10],
+  BR: [51.40, 0.05], DA: [51.45, 0.19], SM: [51.36, -0.20], WD: [51.66, -0.42], AL: [51.75, -0.34],
+  LU: [51.88, -0.42], MK: [52.04, -0.76], OX: [51.75, -1.26], RG: [51.46, -0.97], SL: [51.51, -0.60],
+  GU: [51.24, -0.58], SN: [51.56, -1.78], BA: [51.38, -2.36], BS: [51.45, -2.59], GL: [51.86, -2.24],
+  HR: [52.06, -2.72], WR: [52.19, -2.22], TA: [51.02, -3.10], EX: [50.72, -3.53], PL: [50.37, -4.14],
+  TR: [50.26, -5.05], DT: [50.71, -2.44], BH: [50.72, -1.88], SP: [51.07, -1.79], SO: [50.91, -1.40],
+  PO: [50.80, -1.09], BN: [50.83, -0.14], RH: [51.11, -0.20], TN: [51.13, 0.26], ME: [51.39, 0.55],
+  CT: [51.28, 1.08], HP: [51.63, -0.75], CM: [51.74, 0.47], SG: [51.90, -0.20],
+  CF: [51.48, -3.18], NP: [51.59, -2.99], SA: [51.62, -3.94], LD: [52.24, -3.38], LL: [53.05, -3.70],
+  HG: [54.00, -1.54], LS: [53.80, -1.55], BD: [53.79, -1.75], HX: [53.72, -1.87],
+  HD: [53.65, -1.78], WF: [53.68, -1.50], YO: [53.96, -1.08], DN: [53.52, -1.13], S: [53.38, -1.47],
+  DL: [54.52, -1.55], TS: [54.57, -1.23], SR: [54.91, -1.38], DH: [54.78, -1.58], NE: [54.98, -1.61],
+  CA: [54.89, -2.93], DG: [55.07, -3.60], KA: [55.61, -4.50], G: [55.86, -4.25], PA: [55.85, -4.42],
+  EH: [55.95, -3.19], FK: [56.00, -3.78], KY: [56.20, -3.16], DD: [56.46, -2.97], AB: [57.15, -2.10],
+  IV: [57.48, -4.22], PH: [56.70, -3.90], TD: [55.60, -2.78], ML: [55.78, -3.99], BT: [54.60, -5.93],
+};
+function postcodeArea(pc) {
+  if (!pc) return null;
+  const m = pc.toUpperCase().replace(/\s+/g, "").match(/^([A-Z]{1,2})[0-9]/);
+  return m ? m[1] : null;
+}
+function estimateDistanceMiles(fromPostcode, toPostcode) {
+  const a = postcodeArea(fromPostcode), b = postcodeArea(toPostcode);
+  const fromCoord = a && POSTCODE_AREA_COORDS[a], toCoord = b && POSTCODE_AREA_COORDS[b];
+  if (!fromCoord || !toCoord) return null;
+  const [lat1, lon1] = fromCoord, [lat2, lon2] = toCoord;
+  const R = 3958.8, toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)) * 1.15);
+}
+
+const DEFAULT_SETTINGS = {
+  workshopPostcode: "WA1",
+  vatRegistered: false,
+  collectionInfoUrl: "",
+  transportCompanies: [{ name: "Transport company 1", email: "" }, { name: "Transport company 2", email: "" }],
+};
+
+const BLANK_CARD = (booking) => ({
+  id: uid("jc"),
+  bookingId: booking?.id || null,
+  business: booking?.business || BUSINESSES[0],
+  createdAt: Date.now(),
+  dateIn: booking?.date || todayISO(),
+  dateOut: "",
+  technician: "",
+  make: "", model: "", reg: booking?.reg || "", vin: "", transmission: "", drive: "",
+  mileageIn: "", mileageOut: "",
+  customerName: booking?.customerName || "", contact: booking?.phone || "", email: "",
+  jobStatus: { estimateSent: false, customerAuthReceived: false, partsAwaiting: false, vehicleOffRoad: false },
+  authRefNotes: "",
+  symptoms: booking?.symptoms || "",
+  technicianInterpretation: "",
+  preDiagnostic: { preScanCompleted: false, preScanAttached: false, faultCodesRecorded: false, liveDataRecorded: false },
+  diagnosisFindings: "",
+  postDiagnostic: { postScanCompleted: false, postScanAttached: false, noCodesPresent: false },
+  postChecks: { roadTestCompleted: false, warningLightsOff: false, concernResolved: false },
+  videoLog: [],
+  signature: null,
+  signatureName: "",
+  signatureDate: "",
+  locked: false,
+});
+
+// ============================================================
+// Root component
+// ============================================================
+export default function WorkshopHub() {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [parts, setParts] = useState([]);
+  const [jobTypes, setJobTypes] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [jobCards, setJobCards] = useState([]);
+  const [mode, setMode] = useState("workshop");
+  const [saveState, setSaveState] = useState("idle");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = await fetchAll();
+        setParts(d.parts);
+        setJobTypes(d.jobTypes);
+        setBookings(d.bookings);
+        if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
+        setJobCards(d.jobCards);
+      } catch (e) {
+        console.error("Failed to load Workshop Hub data", e);
+      }
+      setReady(true);
+    })();
+  }, []);
+
+  // Realtime — a change made in Office mode on one device shows up in
+  // Workshop mode on another, without a manual refresh.
+  useEffect(() => {
+    if (!ready) return;
+    const unsubs = [
+      subscribeTable("parts", async () => setParts(await fetchParts())),
+      subscribeTable("job_types", async () => setJobTypes(await fetchJobTypes())),
+      subscribeTable("job_type_parts", async () => setJobTypes(await fetchJobTypes())),
+      subscribeTable("bookings", async () => setBookings(await fetchBookings())),
+      subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
+      subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, [ready]);
+
+  const withSaveState = useCallback(async (fn) => {
+    setSaveState("saving");
+    try {
+      await fn();
+      setSaveState("saved");
+      setTimeout(() => setSaveState("idle"), 1000);
+    } catch (e) {
+      console.error(e);
+      setSaveState("idle");
+    }
+  }, []);
+
+  const partUsageWeekly = useMemo(() => {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 28);
+    const usage = {}; parts.forEach((p) => (usage[p.id] = 0));
+    bookings.forEach((b) => {
+      const bd = new Date(b.date + "T00:00:00");
+      if (bd < cutoff) return;
+      const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+      if (!jt) return;
+      jt.bom.forEach((l) => { usage[l.partId] = (usage[l.partId] || 0) + l.qty; });
+    });
+    const weekly = {}; Object.keys(usage).forEach((k) => (weekly[k] = usage[k] / 4));
+    return weekly;
+  }, [bookings, jobTypes, parts]);
+
+  const stockRows = useMemo(() => parts.map((p) => {
+    const weekly = partUsageWeekly[p.id] || 0;
+    const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
+    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS };
+  }), [parts, partUsageWeekly]);
+  const lowStockItems = stockRows.filter((r) => r.needsOrder);
+
+  const addBooking = (booking) => withSaveState(async () => {
+    const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+    const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
+
+    const updatedParts = parts.map((p) => {
+      const line = jt?.bom.find((l) => l.partId === p.id);
+      if (!line) return p;
+      return { ...p, stock: Math.max(0, +(p.stock - line.qty).toFixed(2)) };
+    });
+    setParts(updatedParts);
+    setBookings((prev) => [...prev, newBooking]);
+
+    await Promise.all([
+      insertBooking(newBooking),
+      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+    ]);
+  });
+
+  const removeBooking = (id) => withSaveState(async () => {
+    const b = bookings.find((x) => x.id === id);
+    let updatedParts = parts;
+    if (b) {
+      const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+      updatedParts = parts.map((p) => {
+        const line = jt?.bom.find((l) => l.partId === p.id);
+        if (!line) return p;
+        return { ...p, stock: +(p.stock + line.qty).toFixed(2) };
+      });
+      setParts(updatedParts);
+    }
+    setBookings((prev) => prev.filter((x) => x.id !== id));
+
+    await Promise.all([
+      deleteBookingRow(id),
+      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+    ]);
+  });
+
+  const updateBooking = (id, patch) => withSaveState(async () => {
+    setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+    await updateBookingRow(id, patch);
+  });
+
+  const receiveStock = (partId, qty) => withSaveState(async () => {
+    const part = parts.find((p) => p.id === partId);
+    const stock = +((part?.stock || 0) + qty).toFixed(2);
+    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, stock } : p)));
+    await updatePart(partId, { stock });
+  });
+
+  const updatePartField = (partId, patch) => withSaveState(async () => {
+    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, ...patch } : p)));
+    await updatePart(partId, patch);
+  });
+
+  const addPart = (name, unit) => withSaveState(async () => {
+    const part = { id: uid("p"), name, unit, stock: 0, costPrice: 0 };
+    setParts((prev) => [...prev, part]);
+    await insertPart(part);
+  });
+
+  const addJobTypeFn = (name) => withSaveState(async () => {
+    const jobType = { id: uid("jt"), name, bom: [] };
+    setJobTypes((prev) => [...prev, jobType]);
+    await insertJobType(jobType);
+  });
+
+  const renameJobTypeFn = (jtId, name) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, name } : j)));
+    await renameJobType(jtId, name);
+  });
+
+  const addBomLineFn = (jtId, partId) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((jt) => {
+      if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
+      return { ...jt, bom: [...jt.bom, { partId, qty: 1 }] };
+    }));
+    await addBomLine(jtId, partId, 1);
+  });
+
+  const updateBomQtyFn = (jtId, partId, qty) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((jt) => (jt.id !== jtId ? jt : { ...jt, bom: jt.bom.map((l) => (l.partId === partId ? { ...l, qty } : l)) })));
+    await updateBomLine(jtId, partId, qty);
+  });
+
+  const removeBomLineFn = (jtId, partId) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((jt) => (jt.id !== jtId ? jt : { ...jt, bom: jt.bom.filter((l) => l.partId !== partId) })));
+    await removeBomLine(jtId, partId);
+  });
+
+  const updateSettingsField = (patch) => withSaveState(async () => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    await saveSettings(next);
+  });
+
+  const upsertJobCard = (card) => withSaveState(async () => {
+    setJobCards((prev) => {
+      const exists = prev.some((c) => c.id === card.id);
+      return exists ? prev.map((c) => (c.id === card.id ? card : c)) : [card, ...prev];
+    });
+    await upsertJobCardRow(card);
+  });
+
+  const updateJobCard = (id, patch) => withSaveState(async () => {
+    setJobCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    await updateJobCardRow(id, patch);
+  });
+
+  const logout = async () => {
+    await fetch("/api/logout", { method: "POST" });
+    router.replace("/login");
+    router.refresh();
+  };
+
+  if (!ready) {
+    return <div style={{ background: "#16181a", color: "#d8d4cc", minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "ui-monospace, monospace" }}>loading…</div>;
+  }
+
+  return (
+    <div style={{ "--bg": "#16181a", "--panel": "#1e2124", "--panel2": "#25292c", "--line": "#33383c", "--text": "#e7e3da", "--muted": "#9aa0a6", "--amber": "#f5a623", "--amber2": "#ffcf6b", "--red": "#e2574c", "--green": "#5fb87a" }} className="wh-root">
+      <style>{`
+        .wh-root { background: var(--bg); color: var(--text); font-family: var(--font-inter), 'Inter', ui-sans-serif, system-ui, sans-serif; min-height: 100vh; -webkit-tap-highlight-color: transparent; }
+        .wh-mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+        .wh-topbar { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--line); position:sticky; top:0; background:#16181a; z-index:20; }
+        .wh-title { font-weight:800; font-size:17px; display:flex; align-items:center; gap:8px; }
+        .wh-modeswitch { display:flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+        .wh-modebtn { padding:10px 16px; font-size:13px; font-weight:700; background:var(--panel); color:var(--muted); cursor:pointer; display:flex; align-items:center; gap:6px; border:none; }
+        .wh-modebtn.active { background: var(--amber); color:#1a1508; }
+        .wb-tabs { display:flex; gap:4px; padding:10px 18px 0; border-bottom:1px solid var(--line); overflow-x:auto; }
+        .wb-tab { padding:10px 14px; font-size:13px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; }
+        .wb-tab.active { color:var(--amber2); border-bottom-color: var(--amber); }
+        .wb-body { padding:20px; }
+        .wb-panel, .jc-card { background: var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+        .wb-btn, .jc-btn { background: var(--amber); color:#1a1508; font-weight:700; border:none; border-radius:8px; padding:12px 16px; font-size:14px; display:inline-flex; align-items:center; gap:7px; cursor:pointer; min-height:44px; }
+        .wb-btn:hover { background: var(--amber2); }
+        .wb-btn-ghost, .jc-btn-ghost { background:transparent; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:12px 16px; font-size:14px; display:inline-flex; align-items:center; gap:7px; cursor:pointer; min-height:44px; }
+        .jc-btn-sm { background: var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 12px; font-size:13px; display:inline-flex; align-items:center; gap:6px; cursor:pointer; min-height:36px; }
+        .wb-input, .wb-select, .wb-textarea, .jc-input, .jc-textarea, .jc-select { width:100%; background: var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:12px 12px; font-size:16px; font-family:inherit; }
+        .wb-input:focus, .wb-select:focus, .wb-textarea:focus, .jc-input:focus, .jc-textarea:focus { outline:none; border-color: var(--amber); }
+        .wb-label, .jc-label { font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:5px; display:block; font-weight:600; }
+        .wb-day { min-height:78px; border:1px solid var(--line); padding:6px; cursor:pointer; }
+        .wb-day:hover { background: var(--panel2); }
+        .wb-day.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+        .wb-day.today .wb-daynum { color: var(--amber2); }
+        .wb-daynum { font-size:11px; color:var(--muted); font-weight:600; }
+        .wb-chip, .jc-chip { font-size:10px; background:#2b2410; color:var(--amber2); border-radius:3px; padding:1px 5px; margin-top:3px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .wb-chip.tcs, .jc-chip.tcs { background:#0f2a24; color:#6fd6b8; }
+        .wb-badge-low { background:#3a1210; color:var(--red); border:1px solid #5a2320; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
+        .wb-badge-ok { background:#10281a; color:var(--green); border:1px solid #1f4530; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
+        .wb-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:flex-start; justify-content:center; padding:30px 14px; z-index:50; overflow-y:auto; }
+        .wb-modal { background: var(--panel); border:1px solid var(--line); border-radius:10px; width:100%; max-width:640px; }
+        table.wb-table { width:100%; border-collapse:collapse; font-size:13px; }
+        table.wb-table th { text-align:left; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:0.08em; padding:8px 10px; border-bottom:1px solid var(--line); }
+        table.wb-table td { padding:9px 10px; border-bottom:1px solid #2a2d30; }
+        .jc-section-title { font-size:14px; font-weight:800; color:var(--amber2); display:flex; align-items:center; gap:8px; margin-bottom:12px; text-transform:uppercase; letter-spacing:0.04em; }
+        .jc-toggle { display:flex; align-items:center; gap:10px; padding:13px 14px; border-radius:8px; border:1px solid var(--line); background: var(--panel2); cursor:pointer; font-size:14px; min-height:48px; }
+        .jc-toggle.on { background:#1c2f22; border-color: var(--green); color: var(--green); font-weight:700; }
+        .jc-list-item { background: var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; cursor:pointer; }
+        .jc-list-item:active { border-color: var(--amber); }
+        .jc-chip.locked { background:#241512; color:var(--red); }
+        .jc-chip.w4 { background:#241d10; color:var(--amber2); }
+        .req-banner { background:#241512; border:1px solid #4a2420; color: var(--red); border-radius:8px; padding:10px 12px; font-size:12px; display:flex; align-items:center; gap:8px; }
+        .req-banner.ok { background:#10281a; border-color:#1f4530; color: var(--green); }
+      `}</style>
+
+      <div className="wh-topbar">
+        <div className="wh-title"><Wrench size={20} color="var(--amber)" /> Workshop Hub</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 11, color: "var(--muted)" }} className="wh-mono">{saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : " "}</div>
+          <div className="wh-modeswitch">
+            <button className={`wh-modebtn ${mode === "office" ? "active" : ""}`} onClick={() => setMode("office")}><Building2 size={14} /> Office</button>
+            <button className={`wh-modebtn ${mode === "workshop" ? "active" : ""}`} onClick={() => setMode("workshop")}><LayoutGrid size={14} /> Workshop</button>
+          </div>
+          <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: "auto" }} onClick={logout} title="Log out"><LogOut size={14} /></button>
+        </div>
+      </div>
+
+      {mode === "office" ? (
+        <OfficeMode
+          parts={parts} jobTypes={jobTypes}
+          addPart={addPart} updatePartField={updatePartField}
+          addJobType={addJobTypeFn} renameJobType={renameJobTypeFn}
+          addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
+          bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
+          settings={settings} updateSettingsField={updateSettingsField}
+          stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
+        />
+      ) : (
+        <WorkshopMode
+          bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
+          jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// OFFICE MODE (reception / desktop)
+// ============================================================
+function OfficeMode({
+  parts, jobTypes, addPart, updatePartField, addJobType, renameJobType, addBomLine, updateBomQty, removeBomLine,
+  bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
+}) {
+  const [tab, setTab] = useState("calendar");
+  const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [selectedDay, setSelectedDay] = useState(todayISO());
+  const [showNewBooking, setShowNewBooking] = useState(false);
+
+  return (
+    <div>
+      <div className="wb-tabs">
+        {[["calendar", "Calendar", Calendar], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+          <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
+            <Icon size={14} /> {label}
+            {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="wb-body">
+        {tab === "calendar" && (
+          <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
+            onNewBooking={() => setShowNewBooking(true)} jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking} />
+        )}
+        {tab === "stock" && <StockTab stockRows={stockRows} receiveStock={receiveStock} updatePartField={updatePartField} />}
+        {tab === "jobtypes" && (
+          <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
+            addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine} />
+        )}
+        {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
+      </div>
+      {showNewBooking && <NewBookingModal jobTypes={jobTypes} parts={parts} settings={settings} defaultDate={selectedDay} onClose={() => setShowNewBooking(false)} onSave={(b) => { addBooking(b); setShowNewBooking(false); setSelectedDay(b.date); }} />}
+    </div>
+  );
+}
+
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, jobTypes, parts, settings, removeBooking, updateBooking }) {
+  const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
+  const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = []; for (let i = 0; i < startOffset; i++) cells.push(null); for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  const bookingsByDay = useMemo(() => { const map = {}; bookings.forEach((b) => { map[b.date] = map[b.date] || []; map[b.date].push(b); }); return map; }, [bookings]);
+  const dayBookings = bookingsByDay[selectedDay] || [];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18 }}>
+      <div className="wb-panel">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={14} /></button>
+            <div style={{ fontWeight: 700, fontSize: 15, minWidth: 150, textAlign: "center" }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+            <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month + 1, 1))}><ChevronRight size={14} /></button>
+          </div>
+          <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>{d}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
+          {cells.map((d, i) => {
+            if (!d) return <div key={i} className="wb-day" style={{ visibility: "hidden" }} />;
+            const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+            const dayBk = bookingsByDay[iso] || [];
+            const isToday = iso === todayISO();
+            return (
+              <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => setSelectedDay(iso)}>
+                <div className="wb-daynum">{d}</div>
+                {dayBk.slice(0, 3).map((b) => <span key={b.id} className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}>{b.customerName || "Booking"}</span>)}
+                {dayBk.length > 3 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 3} more</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{fmtDate(selectedDay)}</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>{dayBookings.length} booking{dayBookings.length !== 1 ? "s" : ""}</div>
+        {dayBookings.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>No bookings this day yet.</div>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {dayBookings.map((b) => {
+            const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+            return (
+              <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{b.customerName || "Unnamed"}</div>
+                  <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>{jt?.name || "—"}</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {b.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{b.phone}</span>}
+                  {b.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{b.reg}</span>}
+                  {b.symptoms && <span><FileText size={10} style={{ display: "inline", marginRight: 4 }} />{b.symptoms}</span>}
+                  {b.business === "Timing Chain Specialists" && b.postcode && (
+                    <span><Truck size={10} style={{ display: "inline", marginRight: 4 }} />Collection — {b.postcode} {typeof b.distanceMiles === "number" ? `(~${b.distanceMiles} mi)` : ""}
+                      {typeof b.distanceMiles === "number" && (b.distanceMiles <= 150 ? <span style={{ color: "var(--green)" }}> · free</span> : <span style={{ color: "var(--red)" }}> · quote needed</span>)}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 10 }}>{b.business}</span>
+                </div>
+                {jt && (
+                  <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                    <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>Parts used</div>
+                    <div className="wh-mono" style={{ fontSize: 11, display: "flex", flexDirection: "column", gap: 1 }}>
+                      {jt.bom.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                    </div>
+                  </div>
+                )}
+                <JobCostBlock booking={b} jt={jt} parts={parts} settings={settings} updateBooking={updateBooking} />
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                  Find this vehicle by reg (<strong className="wh-mono">{b.reg || "no reg"}</strong>) under Workshop mode to open its job card.
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JobCostBlock({ booking, jt, parts, settings, updateBooking }) {
+  const [open, setOpen] = useState(false);
+  const partsCost = useMemo(() => {
+    if (!jt) return 0;
+    return jt.bom.reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
+  }, [jt, parts]);
+  const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
+  const vat = settings.vatRegistered ? jobValue - jobValue / 1.2 : 0;
+  const profit = jobValue - vat - partsCost - labourCost - transportCost;
+  const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
+  const draftQuoteEmail = () => {
+    const recipients = (settings.transportCompanies || []).map((c) => c.email).filter(Boolean).join(",");
+    const subject = encodeURIComponent(`Collection quote — ${booking.customerName || "customer"} — ${booking.reg || ""}`);
+    const body = encodeURIComponent(`Hi,\n\nCould you quote to collect and return a customer vehicle for us?\n\nCustomer: ${booking.customerName || ""}\nVehicle registration: ${booking.reg || ""}\nPickup postcode: ${booking.postcode || ""}\nApprox distance: ${booking.distanceMiles || "?"} miles\nJob date: ${booking.date}\nJob type: ${jt?.name || ""}\n\nPlease treat this vehicle with care — it's the customer's own car.\n\nThanks,\nThe Timing Chain Specialists`);
+    window.open(`mailto:${recipients}?subject=${subject}&body=${body}`, "_blank");
+  };
+  return (
+    <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
+        <div style={{ fontSize: 10, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}><PoundSterling size={10} /> Job value & profit</div>
+        <div className="wh-mono" style={{ fontSize: 11, color: profit >= 0 ? "var(--green)" : "var(--red)" }}>{jobValue ? `£${profit.toFixed(2)} profit` : "not set"}</div>
+      </div>
+      {open && (
+        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+            <div><label className="wb-label">Job value £</label><input type="number" className="wb-input" value={booking.jobValue || ""} onChange={(e) => updateBooking(booking.id, { jobValue: parseFloat(e.target.value) || 0 })} /></div>
+            <div><label className="wb-label">Labour £</label><input type="number" className="wb-input" value={booking.labourCost || ""} onChange={(e) => updateBooking(booking.id, { labourCost: parseFloat(e.target.value) || 0 })} /></div>
+            <div><label className="wb-label">Transport £</label><input type="number" className="wb-input" value={booking.transportCost || ""} onChange={(e) => updateBooking(booking.id, { transportCost: parseFloat(e.target.value) || 0 })} /></div>
+          </div>
+          <div className="wh-mono" style={{ fontSize: 11, color: "var(--muted)" }}>Parts cost: £{partsCost.toFixed(2)}{settings.vatRegistered ? ` · VAT: £${vat.toFixed(2)}` : ""}</div>
+          {needsQuote && <button className="wb-btn-ghost" onClick={draftQuoteEmail}><Mail size={12} /> Draft transport quote request</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StockTab({ stockRows, receiveStock, updatePartField }) {
+  const [receiveAmounts, setReceiveAmounts] = useState({});
+  return (
+    <div className="wb-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Stock levels</div>
+        <div style={{ fontSize: 11, color: "var(--muted)" }}>Usage from last 28 days · flags when cover &lt; {REORDER_WEEKS} week</div>
+      </div>
+      <table className="wb-table">
+        <thead><tr><th>Part</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th></tr></thead>
+        <tbody>
+          {stockRows.map((r) => (
+            <tr key={r.id}>
+              <td style={{ fontWeight: 600 }}>{r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span></td>
+              <td className="wh-mono">{r.stock}</td>
+              <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
+              <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
+              <td><input type="number" className="wb-input" style={{ width: 70 }} value={r.costPrice ?? 0} onChange={(e) => updatePartField(r.id, { costPrice: parseFloat(e.target.value) || 0 })} /></td>
+              <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
+              <td>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="number" className="wb-input" style={{ width: 70 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
+                  <button className="wb-btn-ghost" onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, addBomLine, updateBomQty, removeBomLine }) {
+  const addJobTypeClick = () => { const name = prompt("New job type name:"); if (!name) return; addJobType(name); };
+  const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
+  const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <button className="wb-btn-ghost" onClick={addPartClick}><Plus size={13} /> New part</button>
+        <button className="wb-btn" onClick={addJobTypeClick}><Plus size={13} /> New job type</button>
+      </div>
+      {jobTypes.map((jt) => (
+        <div key={jt.id} className="wb-panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{jt.name}</div>
+            <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+          </div>
+          <table className="wb-table">
+            <thead><tr><th>Part</th><th style={{ width: 120 }}>Qty per job</th><th style={{ width: 40 }}></th></tr></thead>
+            <tbody>
+              {jt.bom.map((l) => {
+                const part = parts.find((p) => p.id === l.partId);
+                return (
+                  <tr key={l.partId}>
+                    <td>{part?.name || l.partId} <span style={{ color: "var(--muted)" }}>({part?.unit})</span></td>
+                    <td><input type="number" step="0.1" className="wb-input" value={l.qty} onChange={(e) => updateBomQty(jt.id, l.partId, parseFloat(e.target.value) || 0)} /></td>
+                    <td><button onClick={() => removeBomLine(jt.id, l.partId)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 10 }}>
+            <select className="wb-select" style={{ maxWidth: 280 }} onChange={(e) => { addBomLine(jt.id, e.target.value); e.target.value = ""; }} defaultValue="">
+              <option value="" disabled>+ add part to this job…</option>
+              {parts.filter((p) => !jt.bom.some((l) => l.partId === p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SettingsTab({ settings, updateSettingsField }) {
+  const updateCompany = (idx, field, val) => { const list = [...settings.transportCompanies]; list[idx] = { ...list[idx], [field]: val }; updateSettingsField({ transportCompanies: list }); };
+  const addCompany = () => updateSettingsField({ transportCompanies: [...settings.transportCompanies, { name: "New transport company", email: "" }] });
+  const removeCompany = (idx) => updateSettingsField({ transportCompanies: settings.transportCompanies.filter((_, i) => i !== idx) });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 560 }}>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Workshop & collection</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div><label className="wb-label">Workshop postcode</label><input className="wb-input" value={settings.workshopPostcode} onChange={(e) => updateSettingsField({ workshopPostcode: e.target.value.toUpperCase() })} /></div>
+          <div><label className="wb-label">"How collection works" page URL</label><input className="wb-input" placeholder="https://..." value={settings.collectionInfoUrl} onChange={(e) => updateSettingsField({ collectionInfoUrl: e.target.value })} /></div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+            <input type="checkbox" checked={settings.vatRegistered} onChange={(e) => updateSettingsField({ vatRegistered: e.target.checked })} /> VAT registered
+          </label>
+        </div>
+      </div>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Transport companies</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Used for the transport quote request email.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {settings.transportCompanies.map((c, idx) => (
+            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 32px", gap: 8 }}>
+              <input className="wb-input" value={c.name} onChange={(e) => updateCompany(idx, "name", e.target.value)} placeholder="Company name" />
+              <input className="wb-input" value={c.email} onChange={(e) => updateCompany(idx, "email", e.target.value)} placeholder="quotes@company.co.uk" />
+              <button onClick={() => removeCompany(idx)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <button className="wb-btn-ghost" style={{ marginTop: 10 }} onClick={addCompany}><Plus size={13} /> Add transport company</button>
+      </div>
+    </div>
+  );
+}
+
+function NewBookingModal({ jobTypes, parts, settings, defaultDate, onClose, onSave }) {
+  const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
+  const [pasteText, setPasteText] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [reg, setReg] = useState("");
+  const [symptoms, setSymptoms] = useState("");
+  const [business, setBusiness] = useState(BUSINESSES[0]);
+  const [jobTypeId, setJobTypeId] = useState(jobTypes[0]?.id || "");
+  const [date, setDate] = useState(defaultDate);
+  const [pickupRequired, setPickupRequired] = useState(false);
+  const [pickupAddress, setPickupAddress] = useState("");
+  const [postcode, setPostcode] = useState("");
+  const [distanceMiles, setDistanceMiles] = useState(null);
+  const isTCS = business === "Timing Chain Specialists";
+  const handlePostcodeChange = (val) => { setPostcode(val); setDistanceMiles(estimateDistanceMiles(settings.workshopPostcode, val)); };
+  const withinFreeRadius = typeof distanceMiles === "number" ? distanceMiles <= 150 : null;
+  const runParse = () => {
+    const phoneFound = extractPhone(pasteText), regFound = extractReg(pasteText), nameGuess = guessName(pasteText, phoneFound);
+    if (phoneFound) setPhone(phoneFound); if (regFound) setReg(regFound); if (nameGuess) setCustomerName(nameGuess);
+    setSymptoms(pasteText.trim());
+  };
+  const canSave = customerName.trim() && date && jobTypeId;
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>New booking</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label className="wb-label"><ClipboardPaste size={11} style={{ display: "inline", marginRight: 4 }} />Paste WhatsApp message</label>
+            <textarea className="wb-textarea" rows={4} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder="Paste the customer's WhatsApp message here…" />
+            <button className="wb-btn-ghost" style={{ marginTop: 6 }} onClick={runParse}>Extract details</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label className="wb-label">Customer name</label><input className="wb-input" value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>
+            <div><label className="wb-label">Phone</label><input className="wb-input" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+            <div><label className="wb-label">Vehicle registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} /></div>
+            <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+          </div>
+          <div><label className="wb-label">Symptoms / notes</label><textarea className="wb-textarea" rows={3} value={symptoms} onChange={(e) => setSymptoms(e.target.value)} /></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => setJobTypeId(e.target.value)}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
+            <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+          </div>
+          <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+            {isTCS ? (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, marginBottom: 4 }}><Truck size={13} /> Collection & return included, free of charge</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+                  Included within 150 miles.{" "}
+                  {settings.collectionInfoUrl ? <a href={settings.collectionInfoUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber2)" }}>See how it works →</a> : <span>(add explainer URL in Settings)</span>}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div><label className="wb-label">Customer postcode</label><input className="wb-input" value={postcode} onChange={(e) => handlePostcodeChange(e.target.value.toUpperCase())} placeholder="e.g. WA4 6NL" /></div>
+                  <div><label className="wb-label">Est. distance (miles)</label><input type="number" className="wb-input" value={distanceMiles ?? ""} onChange={(e) => setDistanceMiles(e.target.value ? parseFloat(e.target.value) : null)} /></div>
+                </div>
+                <div style={{ marginTop: 10 }}><label className="wb-label">Full pickup address</label><input className="wb-input" value={pickupAddress} onChange={(e) => setPickupAddress(e.target.value)} /></div>
+                {withinFreeRadius === false && <div style={{ marginTop: 10, padding: 10, background: "#241512", border: "1px solid #4a2420", borderRadius: 6, fontSize: 11, color: "var(--red)" }}>~{distanceMiles} miles is outside the free radius — a paid collection quote will be needed.</div>}
+              </div>
+            ) : (
+              <div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}><input type="checkbox" checked={pickupRequired} onChange={(e) => setPickupRequired(e.target.checked)} /><MapPin size={13} /> Local drop-off / collection needed</label>
+                {pickupRequired && <div style={{ marginTop: 10 }}><label className="wb-label">Address</label><input className="wb-input" value={pickupAddress} onChange={(e) => setPickupAddress(e.target.value)} /></div>}
+              </div>
+            )}
+          </div>
+          {jobTypeId && (
+            <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, padding: 10 }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>This will use:</div>
+              <div className="wh-mono" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 2 }}>
+                {jobTypes.find((j) => j.id === jobTypeId)?.bom.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
+            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, date,
+            pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
+            distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null, jobValue: 0, labourCost: 0, transportCost: 0,
+          })}>Save booking</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// WORKSHOP MODE (iPad / technician)
+// ============================================================
+function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard }) {
+  const [openCardId, setOpenCardId] = useState(null);
+  const openCard = jobCards.find((c) => c.id === openCardId);
+
+  if (openCard) {
+    const booking = bookings.find((b) => b.id === openCard.bookingId);
+    return <JobCardDetail card={openCard} booking={booking} jobTypes={jobTypes} parts={parts} onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} />;
+  }
+
+  return <WorkshopHome bookings={bookings} jobTypes={jobTypes} parts={parts} jobCards={jobCards} onOpenCard={setOpenCardId} onCreateCard={(card) => { upsertJobCard(card); setOpenCardId(card.id); }} />;
+}
+
+function WorkshopHome({ bookings, jobTypes, parts, jobCards, onOpenCard, onCreateCard }) {
+  const [query, setQuery] = useState("");
+  const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase().replace(/\s+/g, "");
+    if (!q) return [];
+    return bookings.filter((b) => (b.reg || "").toLowerCase().replace(/\s+/g, "").includes(q)).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [bookings, query]);
+
+  const recentCards = jobCards.slice(0, 6);
+
+  const pickUpJob = (booking) => {
+    const existing = jobCards.find((c) => c.bookingId === booking.id);
+    if (existing) { onOpenCard(existing.id); return; }
+    onCreateCard(BLANK_CARD(booking));
+  };
+
+  return (
+    <div style={{ padding: 20, maxWidth: 640, margin: "0 auto" }}>
+      <div style={{ marginBottom: 18 }}>
+        <label className="jc-label">Find a vehicle by registration</label>
+        <div style={{ position: "relative" }}>
+          <Search size={18} style={{ position: "absolute", left: 14, top: 17, color: "var(--muted)" }} />
+          <input className="jc-input" style={{ paddingLeft: 42, fontSize: 18 }} placeholder="e.g. YH19 KLM" value={query} onChange={(e) => setQuery(e.target.value.toUpperCase())} autoFocus />
+        </div>
+      </div>
+
+      {query && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+          {matches.length === 0 && <div style={{ color: "var(--muted)", fontSize: 14, textAlign: "center", padding: "20px 0" }}>No booking found for that registration.</div>}
+          {matches.map((b) => {
+            const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+            const existingCard = jobCards.find((c) => c.bookingId === b.id);
+            return (
+              <div key={b.id} className="jc-list-item" onClick={() => pickUpJob(b)}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 18 }} className="wh-mono">{b.reg}</div>
+                    <div style={{ fontSize: 14, marginTop: 2 }}>{b.customerName}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {existingCard?.locked && <span className="jc-chip locked"><Lock size={10} style={{ display: "inline", marginRight: 3 }} />signed</span>}
+                    <span className={`jc-chip ${b.business === "Timing Chain Specialists" ? "tcs" : "w4"}`}>{b.business === "Timing Chain Specialists" ? "TCS" : "W4x4"}</span>
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, color: "var(--amber2)", marginTop: 6, fontWeight: 700 }}>{jt?.name || "No job type set"}</div>
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>Booked for {fmtDate(b.date)}</div>
+                {jt && (
+                  <div className="wh-mono" style={{ fontSize: 12, marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                    {jt.bom.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                  </div>
+                )}
+                {b.symptoms && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, fontStyle: "italic" }}>"{b.symptoms}"</div>}
+                <button className="jc-btn" style={{ width: "100%", justifyContent: "center", marginTop: 12 }}>{existingCard ? "Open job card" : "Start job card"}</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!query && recentCards.length > 0 && (
+        <div>
+          <div className="jc-label" style={{ marginBottom: 10 }}>Recent job cards</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {recentCards.map((c) => (
+              <div key={c.id} className="jc-list-item" onClick={() => onOpenCard(c.id)}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }} className="wh-mono">{c.reg || "No reg"}</div>
+                    <div style={{ fontSize: 13, color: "var(--muted)" }}>{c.customerName}</div>
+                  </div>
+                  {c.locked && <span className="jc-chip locked"><Lock size={10} style={{ display: "inline", marginRight: 3 }} />signed</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, value, onChange, disabled, placeholder }) {
+  return <div><label className="jc-label">{label}</label><input className="jc-input" value={value || ""} disabled={disabled} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>;
+}
+
+function Toggle({ label, on, onClick, disabled }) {
+  return (
+    <div className={`jc-toggle ${on ? "on" : ""}`} onClick={disabled ? undefined : onClick} style={disabled ? { opacity: 0.6 } : {}}>
+      <div style={{ width: 22, height: 22, borderRadius: 6, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on && <Check size={14} />}</div>
+      {label}
+    </div>
+  );
+}
+
+function DictateField({ label, value, onChange, rows = 4, disabled }) {
+  const [listening, setListening] = useState(false);
+  const recogRef = useRef(null);
+  const baseValueRef = useRef(value);
+  const supported = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  const toggleDictate = () => {
+    if (disabled) return;
+    if (listening) { recogRef.current?.stop(); setListening(false); return; }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    const recog = new SR();
+    recog.lang = "en-GB"; recog.continuous = true; recog.interimResults = true;
+    baseValueRef.current = value ? value + " " : "";
+    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; onChange(baseValueRef.current + t); };
+    recog.onerror = () => setListening(false);
+    recog.onend = () => setListening(false);
+    try { recog.start(); recogRef.current = recog; setListening(true); } catch (e) { setListening(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        {label && <label className="jc-label" style={{ marginBottom: 0 }}>{label}</label>}
+        {supported && !disabled && (
+          <button className="jc-btn-sm" style={listening ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}} onClick={toggleDictate} type="button">
+            {listening ? <MicOff size={14} /> : <Mic size={14} />} {listening ? "Stop" : "Dictate"}
+          </button>
+        )}
+      </div>
+      <textarea className="jc-textarea" rows={rows} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder="Tap here, then use your keyboard's dictation button to speak this in…" style={disabled ? { opacity: 0.6 } : {}} />
+    </div>
+  );
+}
+
+// ---- Job breakdown (read-only, pulled live from the linked booking) ----
+function JobBreakdown({ booking, jobTypes, parts }) {
+  if (!booking) return null;
+  const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+  const partsIndex = Object.fromEntries(parts.map((p) => [p.id, p]));
+  return (
+    <div className="jc-card" style={{ background: "#1c1710", border: "1px solid #3a2d10" }}>
+      <div className="jc-section-title" style={{ color: "var(--amber2)" }}><ListChecks size={16} /> What's needed — from the booking</div>
+      <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{jt?.name || "No job type set"}</div>
+      {booking.symptoms && <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 10, fontStyle: "italic" }}>"{booking.symptoms}"</div>}
+      {jt && (
+        <div className="wh-mono" style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 3 }}>
+          {jt.bom.map((l) => {
+            const p = partsIndex[l.partId];
+            return <span key={l.partId}>{l.qty} {p?.unit} × {p?.name || l.partId}</span>;
+          })}
+        </div>
+      )}
+      {booking.business === "Timing Chain Specialists" && booking.postcode && (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, borderTop: "1px solid #3a2d10", paddingTop: 8 }}>
+          <Truck size={12} style={{ display: "inline", marginRight: 4 }} />Collection: {booking.postcode} (~{booking.distanceMiles ?? "?"} mi)
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Video evidence log ----
+const VIDEO_TYPES = [
+  { key: "intake", label: "Intake (on arrival)" },
+  { key: "issue", label: "Issue highlighted" },
+  { key: "completion", label: "Completion" },
+];
+function VideoLogSection({ card, onUpdate }) {
+  const [type, setType] = useState("intake");
+  const [ref, setRef] = useState("");
+  const [note, setNote] = useState("");
+  const log = card.videoLog || [];
+  const hasIntake = log.some((v) => v.type === "intake");
+  const hasCompletion = log.some((v) => v.type === "completion");
+
+  const addEntry = () => {
+    if (!ref.trim()) { alert("Paste the link to the video (Google Drive, Photos, etc.) first."); return; }
+    const entry = { id: uid("vid"), type, ref: ref.trim(), note: note.trim(), at: new Date().toISOString() };
+    onUpdate({ videoLog: [...log, entry] });
+    setRef(""); setNote("");
+  };
+
+  return (
+    <div className="jc-card">
+      <div className="jc-section-title"><Video size={16} /> Video evidence log</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+        <div className={`req-banner ${hasIntake ? "ok" : ""}`}>
+          {hasIntake ? <Check size={14} /> : <AlertTriangle size={14} />} Intake video {hasIntake ? "logged" : "required — record on arrival, before any work"}
+        </div>
+        <div className={`req-banner ${hasCompletion ? "ok" : ""}`}>
+          {hasCompletion ? <Check size={14} /> : <AlertTriangle size={14} />} Completion video {hasCompletion ? "logged" : "required before customer sign-off"}
+        </div>
+      </div>
+
+      {log.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+          {log.map((v) => (
+            <div key={v.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, background: "var(--panel2)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                <span style={{ fontWeight: 700, textTransform: "capitalize" }}>{v.type}</span>
+                <span style={{ color: "var(--muted)" }}>{new Date(v.at).toLocaleString("en-GB")}</span>
+              </div>
+              <a href={v.ref} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--amber2)", wordBreak: "break-all" }}>{v.ref}</a>
+              {v.note && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{v.note}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!card.locked && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <select className="jc-select" value={type} onChange={(e) => setType(e.target.value)}>
+            {VIDEO_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+          </select>
+          <input className="jc-input" placeholder="Paste video link (Drive, Photos, etc.)" value={ref} onChange={(e) => setRef(e.target.value)} />
+          <input className="jc-input" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+          <button className="jc-btn-ghost" onClick={addEntry}><Camera size={14} /> Log video</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Signature ----
+function SignatureSection({ card, onUpdate }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const [hasDrawn, setHasDrawn] = useState(!!card.signature);
+  const [name, setName] = useState(card.signatureName || card.customerName || "");
+  const hasIntake = (card.videoLog || []).some((v) => v.type === "intake");
+  const hasCompletion = (card.videoLog || []).some((v) => v.type === "completion");
+  const videosReady = hasIntake && hasCompletion;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * ratio; canvas.height = 160 * ratio; ctx.scale(ratio, ratio);
+    ctx.strokeStyle = "#e7e3da"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+    if (card.signature) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, canvas.clientWidth, 160); img.src = card.signature; }
+  }, []);
+
+  const getPos = (e) => { const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - rect.left, y: p.clientY - rect.top }; };
+  const start = (e) => { if (card.locked || !videosReady) return; e.preventDefault(); drawingRef.current = true; const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+  const move = (e) => { if (!drawingRef.current || card.locked) return; e.preventDefault(); const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); setHasDrawn(true); };
+  const end = () => { drawingRef.current = false; };
+  const clearSig = () => { const canvas = canvasRef.current; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); setHasDrawn(false); onUpdate({ signature: null }); };
+
+  const confirmAndLock = () => {
+    if (!videosReady) { alert("Log both an intake video and a completion video before taking the signature."); return; }
+    if (!hasDrawn) { alert("Please have the customer sign before confirming."); return; }
+    if (!name.trim()) { alert("Please add the customer's printed name."); return; }
+    const dataUrl = canvasRef.current.toDataURL("image/png");
+    onUpdate({ signature: dataUrl, signatureName: name.trim(), signatureDate: new Date().toISOString(), locked: true });
+  };
+  const unlock = () => { if (confirm("Unlock this job card for editing? The signature will be cleared and will need to be re-taken.")) { onUpdate({ locked: false, signature: null, signatureDate: "" }); setHasDrawn(false); } };
+
+  return (
+    <div className="jc-card" style={{ border: "2px solid var(--amber)" }}>
+      <div className="jc-section-title"><PenLine size={16} /> Customer confirmation</div>
+      <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 14 }}>I confirm the findings and condition of my vehicle described above are accurate, and I authorise the work as discussed.</div>
+      {card.locked ? (
+        <div>
+          <div style={{ background: "#fff", borderRadius: 10, padding: 8, marginBottom: 10 }}><img src={card.signature} alt="Customer signature" style={{ width: "100%", height: 160, objectFit: "contain" }} /></div>
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>Signed by <strong style={{ color: "var(--text)" }}>{card.signatureName}</strong> on {new Date(card.signatureDate).toLocaleString("en-GB")}</div>
+          <button className="jc-btn-ghost" style={{ marginTop: 12 }} onClick={unlock}><Unlock size={14} /> Unlock to edit</button>
+        </div>
+      ) : (
+        <div>
+          {!videosReady && <div className="req-banner" style={{ marginBottom: 12 }}><AlertTriangle size={14} /> Log the intake and completion videos above before taking a signature.</div>}
+          <div style={{ marginBottom: 12 }}><label className="jc-label">Customer printed name</label><input className="jc-input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <label className="jc-label">Sign here</label>
+          <canvas ref={canvasRef} style={{ width: "100%", height: 160, background: videosReady ? "var(--panel2)" : "#1a1a1a", border: "1px dashed var(--line)", borderRadius: 10, touchAction: "none", opacity: videosReady ? 1 : 0.5 }}
+            onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerLeave={end} />
+          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            <button className="jc-btn-ghost" onClick={clearSig}><RotateCcw size={14} /> Clear</button>
+            <button className="jc-btn" style={{ flex: 1, justifyContent: "center" }} onClick={confirmAndLock}><Check size={16} /> Confirm & lock job card</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Full job card detail ----
+function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack }) {
+  const locked = card.locked;
+  const setField = (field, val) => onUpdate({ [field]: val });
+  const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
+
+  return (
+    <div>
+      <div className="wh-topbar" style={{ position: "static" }}>
+        <button className="jc-btn-ghost" onClick={onBack}><ArrowLeft size={16} /> Back to search</button>
+      </div>
+      <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto" }}>
+        <JobBreakdown booking={booking} jobTypes={jobTypes} parts={parts} />
+
+        <div className="jc-card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 20 }} className="wh-mono">{card.reg || "No reg"}</div>
+            {locked && <span className="jc-chip locked"><Lock size={11} style={{ display: "inline", marginRight: 4 }} />Signed & locked</span>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div><label className="jc-label">Date in</label><input type="date" className="jc-input" value={card.dateIn} disabled={locked} onChange={(e) => setField("dateIn", e.target.value)} /></div>
+            <div><label className="jc-label">Date out</label><input type="date" className="jc-input" value={card.dateOut} disabled={locked} onChange={(e) => setField("dateOut", e.target.value)} /></div>
+            <div><label className="jc-label">Technician</label><input className="jc-input" value={card.technician} disabled={locked} onChange={(e) => setField("technician", e.target.value)} /></div>
+          </div>
+        </div>
+
+        <div className="jc-card">
+          <div className="jc-section-title"><Car size={16} /> Vehicle details</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Make" value={card.make} disabled={locked} onChange={(v) => setField("make", v)} />
+            <Field label="Model" value={card.model} disabled={locked} onChange={(v) => setField("model", v)} />
+            <Field label="Registration" value={card.reg} disabled={locked} onChange={(v) => setField("reg", v.toUpperCase())} />
+            <Field label="VIN" value={card.vin} disabled={locked} onChange={(v) => setField("vin", v)} />
+            <Field label="Transmission" value={card.transmission} disabled={locked} onChange={(v) => setField("transmission", v)} />
+            <Field label="Drive" value={card.drive} disabled={locked} onChange={(v) => setField("drive", v)} placeholder="2WD / 4WD" />
+            <Field label="Mileage in" value={card.mileageIn} disabled={locked} onChange={(v) => setField("mileageIn", v)} />
+            <Field label="Mileage out" value={card.mileageOut} disabled={locked} onChange={(v) => setField("mileageOut", v)} />
+          </div>
+        </div>
+
+        <div className="jc-card">
+          <div className="jc-section-title"><User size={16} /> Customer details</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Field label="Name" value={card.customerName} disabled={locked} onChange={(v) => setField("customerName", v)} />
+            <Field label="Contact" value={card.contact} disabled={locked} onChange={(v) => setField("contact", v)} />
+            <Field label="Email" value={card.email} disabled={locked} onChange={(v) => setField("email", v)} />
+          </div>
+        </div>
+
+        <div className="jc-card">
+          <div className="jc-section-title">Job status</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Toggle label="Estimate sent" on={card.jobStatus.estimateSent} disabled={locked} onClick={() => setNested("jobStatus", "estimateSent", !card.jobStatus.estimateSent)} />
+            <Toggle label="Customer auth received" on={card.jobStatus.customerAuthReceived} disabled={locked} onClick={() => setNested("jobStatus", "customerAuthReceived", !card.jobStatus.customerAuthReceived)} />
+            <Toggle label="Parts awaiting" on={card.jobStatus.partsAwaiting} disabled={locked} onClick={() => setNested("jobStatus", "partsAwaiting", !card.jobStatus.partsAwaiting)} />
+            <Toggle label="Vehicle off road" on={card.jobStatus.vehicleOffRoad} disabled={locked} onClick={() => setNested("jobStatus", "vehicleOffRoad", !card.jobStatus.vehicleOffRoad)} />
+          </div>
+          <div style={{ marginTop: 12 }}><DictateField label="Auth ref / notes" value={card.authRefNotes} disabled={locked} onChange={(v) => setField("authRefNotes", v)} rows={2} /></div>
+        </div>
+
+        <div className="jc-card"><div className="jc-section-title">Customer symptoms</div><DictateField value={card.symptoms} disabled={locked} onChange={(v) => setField("symptoms", v)} rows={5} /></div>
+        <div className="jc-card"><div className="jc-section-title">Technician interpretation</div><DictateField value={card.technicianInterpretation} disabled={locked} onChange={(v) => setField("technicianInterpretation", v)} rows={5} /></div>
+
+        <div className="jc-card">
+          <div className="jc-section-title">Pre-diagnostic checks</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Toggle label="Pre scan completed" on={card.preDiagnostic.preScanCompleted} disabled={locked} onClick={() => setNested("preDiagnostic", "preScanCompleted", !card.preDiagnostic.preScanCompleted)} />
+            <Toggle label="Pre scan attached" on={card.preDiagnostic.preScanAttached} disabled={locked} onClick={() => setNested("preDiagnostic", "preScanAttached", !card.preDiagnostic.preScanAttached)} />
+            <Toggle label="Fault codes recorded" on={card.preDiagnostic.faultCodesRecorded} disabled={locked} onClick={() => setNested("preDiagnostic", "faultCodesRecorded", !card.preDiagnostic.faultCodesRecorded)} />
+            <Toggle label="Live data recorded" on={card.preDiagnostic.liveDataRecorded} disabled={locked} onClick={() => setNested("preDiagnostic", "liveDataRecorded", !card.preDiagnostic.liveDataRecorded)} />
+          </div>
+        </div>
+
+        <div className="jc-card"><div className="jc-section-title">Diagnosis & findings</div><DictateField value={card.diagnosisFindings} disabled={locked} onChange={(v) => setField("diagnosisFindings", v)} rows={6} /></div>
+
+        <div className="jc-card">
+          <div className="jc-section-title">Post-repair checks</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+            <Toggle label="Post scan completed" on={card.postDiagnostic.postScanCompleted} disabled={locked} onClick={() => setNested("postDiagnostic", "postScanCompleted", !card.postDiagnostic.postScanCompleted)} />
+            <Toggle label="No codes present" on={card.postDiagnostic.noCodesPresent} disabled={locked} onClick={() => setNested("postDiagnostic", "noCodesPresent", !card.postDiagnostic.noCodesPresent)} />
+            <Toggle label="Road test completed" on={card.postChecks.roadTestCompleted} disabled={locked} onClick={() => setNested("postChecks", "roadTestCompleted", !card.postChecks.roadTestCompleted)} />
+            <Toggle label="Warning lights off" on={card.postChecks.warningLightsOff} disabled={locked} onClick={() => setNested("postChecks", "warningLightsOff", !card.postChecks.warningLightsOff)} />
+            <Toggle label="Concern resolved" on={card.postChecks.concernResolved} disabled={locked} onClick={() => setNested("postChecks", "concernResolved", !card.postChecks.concernResolved)} />
+          </div>
+        </div>
+
+        <VideoLogSection card={card} onUpdate={onUpdate} />
+        <SignatureSection card={card} onUpdate={onUpdate} />
+      </div>
+    </div>
+  );
+}
