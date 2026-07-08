@@ -6,14 +6,16 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Unlock, Video,
-  Camera, User, Building2, LayoutGrid, LogOut,
+  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings,
-  insertPart, updatePart, insertJobType, renameJobType, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, upsertJobCardRow, updateJobCardRow,
   subscribeTable,
 } from "@/lib/data";
+import { CALENDAR_COLORS } from "@/lib/calendarColors";
+import * as XLSX from "xlsx";
 
 // ============================================================
 // Shared constants & helpers
@@ -26,6 +28,47 @@ const fmtDate = (iso) => {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 };
+// Pure calendar-day arithmetic, done entirely in UTC so it can't be thrown off
+// by the browser's local timezone/DST (e.g. BST parsing "T00:00:00" as local
+// midnight, which is the previous day in UTC — shifting every date by one).
+const addDaysISO = (iso, days) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+};
+// Every calendar day a multi-day booking spans, e.g. days=3 from 2026-07-08 -> [07-08, 07-09, 07-10].
+const bookingDates = (b) => Array.from({ length: b.days || 1 }, (_, i) => addDaysISO(b.date, i));
+
+// Pushes just a date + job-type colour to the public Google Calendar — never
+// the customer/vehicle detail this app holds. Failures are logged but never
+// block the booking itself; Google being briefly unreachable shouldn't stop
+// reception taking a booking.
+async function syncBookingToGoogle({ googleEventId, date, days, jobTypeName, colorId }) {
+  try {
+    const endDate = addDaysISO(date, days || 1);
+    const res = await fetch("/api/calendar-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "upsert", googleEventId, date, endDate, summary: jobTypeName, colorId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return (await res.json()).googleEventId;
+  } catch (e) {
+    console.error("Google Calendar sync failed", e);
+    return googleEventId || null;
+  }
+}
+async function deleteBookingFromGoogle(googleEventId) {
+  if (!googleEventId) return;
+  try {
+    await fetch("/api/calendar-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", googleEventId }),
+    });
+  } catch (e) {
+    console.error("Google Calendar delete failed", e);
+  }
+}
 
 function extractPhone(text) {
   const m = text.match(/(\+44\s?7\d{3}|\b07\d{3})[\s-]?\d{3}[\s-]?\d{3}\b/);
@@ -35,6 +78,20 @@ function extractReg(text) {
   const m = text.match(/\b[A-Z]{2}[0-9]{2}\s?[A-Z]{3}\b/i);
   return m ? m[0].toUpperCase().replace(/\s+/g, " ") : "";
 }
+// UK-only: turns "07911 123456" or "+44 7911 123456" into the digits-only,
+// country-code-prefixed form wa.me needs ("447911123456").
+function whatsappNumber(phone) {
+  let digits = phone.replace(/[^\d+]/g, "").replace(/^\+/, "");
+  if (digits.startsWith("0")) digits = "44" + digits.slice(1);
+  else if (!digits.startsWith("44")) digits = "44" + digits;
+  return digits;
+}
+function bookingConfirmLink(b, jt) {
+  if (!b.phone) return null;
+  const message = `Hi ${b.customerName || "there"}, this confirms your booking with ${b.business} on ${fmtDate(b.date)} for ${jt?.name || "your service"}${b.reg ? ` (${b.reg})` : ""}. Thanks!`;
+  return `https://wa.me/${whatsappNumber(b.phone)}?text=${encodeURIComponent(message)}`;
+}
+
 function guessName(text, phone) {
   const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";
   const cleaned = firstLine.replace(phone, "").trim();
@@ -210,6 +267,12 @@ export default function WorkshopHub() {
       insertBooking(newBooking),
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
     ]);
+
+    const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
+    if (googleEventId) {
+      setBookings((prev) => prev.map((b) => (b.id === newBooking.id ? { ...b, googleEventId } : b)));
+      await updateBookingRow(newBooking.id, { googleEventId });
+    }
   });
 
   const removeBooking = (id) => withSaveState(async () => {
@@ -229,17 +292,48 @@ export default function WorkshopHub() {
     await Promise.all([
       deleteBookingRow(id),
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+      deleteBookingFromGoogle(b?.googleEventId),
     ]);
   });
 
   const updateBooking = (id, patch) => withSaveState(async () => {
+    const before = bookings.find((b) => b.id === id);
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
-    await updateBookingRow(id, patch);
+
+    // Editing the job type on an existing booking means the parts it reserved
+    // need correcting too — restock the old recipe, deduct the new one.
+    let updatedParts = parts;
+    if (before && "jobTypeId" in patch && patch.jobTypeId !== before.jobTypeId) {
+      const oldJt = jobTypes.find((j) => j.id === before.jobTypeId);
+      const newJt = jobTypes.find((j) => j.id === patch.jobTypeId);
+      updatedParts = parts.map((p) => {
+        const oldQty = oldJt?.bom.find((l) => l.partId === p.id)?.qty || 0;
+        const newQty = newJt?.bom.find((l) => l.partId === p.id)?.qty || 0;
+        const delta = oldQty - newQty;
+        return delta === 0 ? p : { ...p, stock: Math.max(0, +(p.stock + delta).toFixed(2)) };
+      });
+      setParts(updatedParts);
+    }
+
+    await Promise.all([
+      updateBookingRow(id, patch),
+      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+    ]);
+
+    if ("date" in patch || "jobTypeId" in patch || "days" in patch) {
+      const current = { ...before, ...patch };
+      const jt = jobTypes.find((j) => j.id === current.jobTypeId);
+      const googleEventId = await syncBookingToGoogle({ googleEventId: current.googleEventId, date: current.date, days: current.days, jobTypeName: jt?.name, colorId: jt?.color });
+      if (googleEventId && googleEventId !== current.googleEventId) {
+        setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, googleEventId } : b)));
+        await updateBookingRow(id, { googleEventId });
+      }
+    }
   });
 
   const receiveStock = (partId, qty) => withSaveState(async () => {
     const part = parts.find((p) => p.id === partId);
-    const stock = +((part?.stock || 0) + qty).toFixed(2);
+    const stock = Math.max(0, +((part?.stock || 0) + qty).toFixed(2));
     setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, stock } : p)));
     await updatePart(partId, { stock });
   });
@@ -255,6 +349,12 @@ export default function WorkshopHub() {
     await insertPart(part);
   });
 
+  const removePart = (partId) => withSaveState(async () => {
+    setParts((prev) => prev.filter((p) => p.id !== partId));
+    setJobTypes((prev) => prev.map((jt) => ({ ...jt, bom: jt.bom.filter((l) => l.partId !== partId) })));
+    await deletePart(partId);
+  });
+
   const addJobTypeFn = (name) => withSaveState(async () => {
     const jobType = { id: uid("jt"), name, bom: [] };
     setJobTypes((prev) => [...prev, jobType]);
@@ -264,6 +364,11 @@ export default function WorkshopHub() {
   const renameJobTypeFn = (jtId, name) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, name } : j)));
     await renameJobType(jtId, name);
+  });
+
+  const updateJobTypeColorFn = (jtId, color) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, color } : j)));
+    await updateJobTypeColor(jtId, color);
   });
 
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
@@ -375,8 +480,8 @@ export default function WorkshopHub() {
       {mode === "office" ? (
         <OfficeMode
           parts={parts} jobTypes={jobTypes}
-          addPart={addPart} updatePartField={updatePartField}
-          addJobType={addJobTypeFn} renameJobType={renameJobTypeFn}
+          addPart={addPart} removePart={removePart} updatePartField={updatePartField}
+          addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
@@ -396,18 +501,19 @@ export default function WorkshopHub() {
 // OFFICE MODE (reception / desktop)
 // ============================================================
 function OfficeMode({
-  parts, jobTypes, addPart, updatePartField, addJobType, renameJobType, addBomLine, updateBomQty, removeBomLine,
+  parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [selectedDay, setSelectedDay] = useState(todayISO());
   const [showNewBooking, setShowNewBooking] = useState(false);
+  const [editingBooking, setEditingBooking] = useState(null);
 
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -417,28 +523,48 @@ function OfficeMode({
       <div className="wb-body">
         {tab === "calendar" && (
           <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
-            onNewBooking={() => setShowNewBooking(true)} jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking} />
+            onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)}
+            jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking} />
         )}
-        {tab === "stock" && <StockTab stockRows={stockRows} receiveStock={receiveStock} updatePartField={updatePartField} />}
+        {tab === "stock" && <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart} />}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
-            addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine} />
+            updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine} />
+        )}
+        {tab === "profitability" && (
+          <ProfitabilityGate>
+            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} />
+          </ProfitabilityGate>
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
       </div>
-      {showNewBooking && <NewBookingModal jobTypes={jobTypes} parts={parts} settings={settings} defaultDate={selectedDay} onClose={() => setShowNewBooking(false)} onSave={(b) => { addBooking(b); setShowNewBooking(false); setSelectedDay(b.date); }} />}
+      {(showNewBooking || editingBooking) && (
+        <NewBookingModal
+          jobTypes={jobTypes} parts={parts} settings={settings} defaultDate={selectedDay} booking={editingBooking}
+          onClose={() => { setShowNewBooking(false); setEditingBooking(null); }}
+          onSave={(b) => {
+            if (editingBooking) updateBooking(editingBooking.id, b);
+            else addBooking(b);
+            setShowNewBooking(false); setEditingBooking(null); setSelectedDay(b.date);
+          }}
+        />
+      )}
     </div>
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, jobTypes, parts, settings, removeBooking, updateBooking }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
   const startOffset = (firstDay.getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const cells = []; for (let i = 0; i < startOffset; i++) cells.push(null); for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  const bookingsByDay = useMemo(() => { const map = {}; bookings.forEach((b) => { map[b.date] = map[b.date] || []; map[b.date].push(b); }); return map; }, [bookings]);
+  const bookingsByDay = useMemo(() => {
+    const map = {};
+    bookings.forEach((b) => bookingDates(b).forEach((iso) => { map[iso] = map[iso] || []; map[iso].push(b); }));
+    return map;
+  }, [bookings]);
   const dayBookings = bookingsByDay[selectedDay] || [];
 
   return (
@@ -482,9 +608,22 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{b.customerName || "Unnamed"}</div>
-                  <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {bookingConfirmLink(b, jt) && (
+                      <a href={bookingConfirmLink(b, jt)} target="_blank" rel="noopener noreferrer" title="Send booking confirmation on WhatsApp" style={{ color: "#25D366", display: "flex" }}>
+                        <MessageCircle size={15} />
+                      </a>
+                    )}
+                    <button onClick={() => onEditBooking(b)} title="Edit booking" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
+                    <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>{jt?.name || "—"}</div>
+                {b.days > 1 && (
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                    {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(addDaysISO(b.date, b.days - 1))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                   {b.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{b.phone}</span>}
                   {b.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{b.reg}</span>}
@@ -517,15 +656,21 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
   );
 }
 
+// Parts cost for a job type's recipe, priced from the Stock tab's cost prices.
+function partsCostForJobType(jt, parts) {
+  return jt ? jt.bom.reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0) : 0;
+}
+// Shared by the per-booking cost block and the Profitability tab's rollup.
+function computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered }) {
+  const vat = vatRegistered ? jobValue - jobValue / 1.2 : 0;
+  return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost };
+}
+
 function JobCostBlock({ booking, jt, parts, settings, updateBooking }) {
   const [open, setOpen] = useState(false);
-  const partsCost = useMemo(() => {
-    if (!jt) return 0;
-    return jt.bom.reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
-  }, [jt, parts]);
+  const partsCost = useMemo(() => partsCostForJobType(jt, parts), [jt, parts]);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
-  const vat = settings.vatRegistered ? jobValue - jobValue / 1.2 : 0;
-  const profit = jobValue - vat - partsCost - labourCost - transportCost;
+  const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
   const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
   const draftQuoteEmail = () => {
     const recipients = (settings.transportCompanies || []).map((c) => c.email).filter(Boolean).join(",");
@@ -554,20 +699,209 @@ function JobCostBlock({ booking, jt, parts, settings, updateBooking }) {
   );
 }
 
-function StockTab({ stockRows, receiveStock, updatePartField }) {
+// Same cost/profit maths as JobCostBlock, applied across every priced
+// booking and rolled up by month. Unpriced bookings (no quote entered yet)
+// are left out of the totals — they're not revenue yet — but counted
+// separately so the numbers aren't silently missing jobs.
+function bookingProfit(booking, jobTypes, parts, settings) {
+  const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+  const partsCost = partsCostForJobType(jt, parts);
+  const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
+  const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
+  return { jt, partsCost, jobValue, labourCost, transportCost, vat, profit };
+}
+
+// Second password gate, independent of the main site login — so profit
+// figures stay hidden from anyone who only has the shared Office password.
+// The session lives in its own httpOnly cookie, checked server-side.
+function ProfitabilityGate({ children }) {
+  const [status, setStatus] = useState("checking"); // checking | locked | unlocked
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/profit-check").then((r) => r.json()).then((d) => setStatus(d.authenticated ? "unlocked" : "locked"));
+  }, []);
+
+  const submit = async () => {
+    setError("");
+    const res = await fetch("/api/profit-login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+    });
+    if (res.ok) { setStatus("unlocked"); setPassword(""); }
+    else setError("Wrong password");
+  };
+
+  const lock = async () => {
+    await fetch("/api/profit-logout", { method: "POST" });
+    setPassword("");
+    setStatus("locked");
+  };
+
+  if (status === "checking") return null;
+
+  if (status === "locked") {
+    return (
+      <div className="wb-panel" style={{ maxWidth: 340, margin: "60px auto", textAlign: "center" }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          <Lock size={16} /> Profitability is locked
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>Enter the password to view job pricing and profit.</div>
+        <input
+          type="password" className="wb-input" value={password} placeholder="Password"
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        {error && <div style={{ color: "var(--red)", fontSize: 12, marginTop: 8 }}>{error}</div>}
+        <button className="wb-btn" style={{ marginTop: 12, width: "100%", justifyContent: "center" }} onClick={submit}>Unlock</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button className="wb-btn-ghost" onClick={lock}><Lock size={13} /> Lock</button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
+  const months = useMemo(() => {
+    const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
+    const unpricedCount = bookings.length - priced.length;
+    const byMonth = {};
+    priced.forEach((b) => {
+      const key = b.date.slice(0, 7);
+      byMonth[key] = byMonth[key] || [];
+      byMonth[key].push({ booking: b, ...bookingProfit(b, jobTypes, parts, settings) });
+    });
+    const monthList = Object.keys(byMonth).sort().reverse().map((key) => {
+      const rows = byMonth[key].sort((a, b) => (a.booking.date < b.booking.date ? 1 : -1));
+      const totals = rows.reduce((acc, r) => ({
+        jobValue: acc.jobValue + r.jobValue, partsCost: acc.partsCost + r.partsCost,
+        labourCost: acc.labourCost + r.labourCost, transportCost: acc.transportCost + r.transportCost,
+        vat: acc.vat + r.vat, profit: acc.profit + r.profit,
+      }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, vat: 0, profit: 0 });
+      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+      return { key, label, rows, totals };
+    });
+    return { monthList, unpricedCount };
+  }, [bookings, jobTypes, parts, settings]);
+
+  const grandTotal = months.monthList.reduce((acc, m) => ({
+    jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
+    labourCost: acc.labourCost + m.totals.labourCost, transportCost: acc.transportCost + m.totals.transportCost,
+    profit: acc.profit + m.totals.profit,
+  }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, profit: 0 });
+
+  const exportExcel = () => {
+    const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Profit"]];
+    months.monthList.forEach((m) => {
+      m.rows.forEach((r) => rows.push([m.label, r.booking.date, r.booking.customerName || "Unnamed", r.booking.reg || "", r.jt?.name || "", r.jobValue, r.partsCost, r.labourCost, r.transportCost, r.profit]));
+      rows.push([m.label + " total", "", "", "", "", m.totals.jobValue, m.totals.partsCost, m.totals.labourCost, m.totals.transportCost, m.totals.profit]);
+      rows.push([]);
+    });
+    rows.push(["Grand total", "", "", "", "", grandTotal.jobValue, grandTotal.partsCost, grandTotal.labourCost, grandTotal.transportCost, grandTotal.profit]);
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Profitability");
+    XLSX.writeFile(workbook, `profitability-${todayISO()}.xlsx`);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="wb-panel">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><PoundSterling size={16} color="var(--amber)" /> Profitability</div>
+          <div className="wh-mono" style={{ fontSize: 13, color: grandTotal.profit >= 0 ? "var(--green)" : "var(--red)" }}>
+            £{grandTotal.profit.toFixed(2)} total profit across £{grandTotal.jobValue.toFixed(2)} quoted
+          </div>
+          <button className="wb-btn-ghost" onClick={exportExcel} disabled={months.monthList.length === 0}><FileText size={13} /> Export to Excel</button>
+        </div>
+        {months.unpricedCount > 0 && (
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+            {months.unpricedCount} booking{months.unpricedCount !== 1 ? "s" : ""} without a price entered yet aren't counted here — add a job value on the Calendar tab to include them.
+          </div>
+        )}
+      </div>
+
+      {months.monthList.length === 0 && (
+        <div className="wb-panel" style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "30px 0" }}>
+          No priced jobs yet. Add a job value to a booking on the Calendar tab to see it here.
+        </div>
+      )}
+
+      {months.monthList.map((m) => (
+        <div key={m.key} className="wb-panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>{m.label}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>{m.rows.length} job{m.rows.length !== 1 ? "s" : ""}</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="wb-table">
+              <thead><tr><th>Date</th><th>Customer</th><th>Job type</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th></tr></thead>
+              <tbody>
+                {m.rows.map((r) => (
+                  <tr key={r.booking.id}>
+                    <td className="wh-mono">{r.booking.date}</td>
+                    <td>{r.booking.customerName || "Unnamed"} <span style={{ color: "var(--muted)" }}>{r.booking.reg}</span></td>
+                    <td>{r.jt?.name || "—"}</td>
+                    <td className="wh-mono">£{r.jobValue.toFixed(2)}</td>
+                    <td className="wh-mono">£{r.partsCost.toFixed(2)}</td>
+                    <td className="wh-mono">£{r.labourCost.toFixed(2)}</td>
+                    <td className="wh-mono">£{r.transportCost.toFixed(2)}</td>
+                    <td className="wh-mono" style={{ color: r.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{r.profit.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ fontWeight: 700 }}>
+                  <td colSpan={3}>Total</td>
+                  <td className="wh-mono">£{m.totals.jobValue.toFixed(2)}</td>
+                  <td className="wh-mono">£{m.totals.partsCost.toFixed(2)}</td>
+                  <td className="wh-mono">£{m.totals.labourCost.toFixed(2)}</td>
+                  <td className="wh-mono">£{m.totals.transportCost.toFixed(2)}</td>
+                  <td className="wh-mono" style={{ color: m.totals.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{m.totals.profit.toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
+  const renamePart = (r) => { const name = prompt("Rename part:", r.name); if (!name || !name.trim()) return; updatePartField(r.id, { name: name.trim() }); };
+  const deletePartClick = (r) => {
+    const usedIn = jobTypes.filter((jt) => jt.bom.some((l) => l.partId === r.id)).map((jt) => jt.name);
+    const warning = usedIn.length
+      ? `"${r.name}" is used in ${usedIn.length} job type${usedIn.length !== 1 ? "s" : ""} (${usedIn.join(", ")}) — deleting it will remove it from those recipes too. `
+      : "";
+    if (!confirm(`${warning}Delete "${r.name}"?`)) return;
+    removePart(r.id);
+  };
   return (
     <div className="wb-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Stock levels</div>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>Usage from last 28 days · flags when cover &lt; {REORDER_WEEKS} week</div>
       </div>
+      <div style={{ overflowX: "auto" }}>
       <table className="wb-table">
-        <thead><tr><th>Part</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th></tr></thead>
+        <thead><tr><th>Part</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th><th></th></tr></thead>
         <tbody>
           {stockRows.map((r) => (
             <tr key={r.id}>
-              <td style={{ fontWeight: 600 }}>{r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span></td>
+              <td style={{ fontWeight: 600 }}>
+                {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
+                <button onClick={() => renamePart(r)} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
+              </td>
               <td className="wh-mono">{r.stock}</td>
               <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
               <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
@@ -575,19 +909,24 @@ function StockTab({ stockRows, receiveStock, updatePartField }) {
               <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
               <td>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <input type="number" className="wb-input" style={{ width: 70 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
-                  <button className="wb-btn-ghost" onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
+                  <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
+                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
+                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
                 </div>
+              </td>
+              <td>
+                <button onClick={() => deletePartClick(r)} title="Delete part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
 
-function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, addBomLine, updateBomQty, removeBomLine }) {
+function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine }) {
   const addJobTypeClick = () => { const name = prompt("New job type name:"); if (!name) return; addJobType(name); };
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
   const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
@@ -602,7 +941,23 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, addB
         <div key={jt.id} className="wb-panel">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>{jt.name}</div>
-            <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>Google Calendar colour</span>
+              <div style={{ display: "flex", gap: 5 }}>
+                {CALENDAR_COLORS.map((c) => (
+                  <button
+                    key={c.id}
+                    title={c.name}
+                    onClick={() => updateJobTypeColor(jt.id, c.id)}
+                    style={{
+                      width: 18, height: 18, borderRadius: "50%", background: c.hex, cursor: "pointer",
+                      border: jt.color === c.id ? "2px solid var(--text)" : "1px solid var(--line)", padding: 0,
+                    }}
+                  />
+                ))}
+              </div>
+              <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+            </div>
           </div>
           <table className="wb-table">
             <thead><tr><th>Part</th><th style={{ width: 120 }}>Qty per job</th><th style={{ width: 40 }}></th></tr></thead>
@@ -666,20 +1021,21 @@ function SettingsTab({ settings, updateSettingsField }) {
   );
 }
 
-function NewBookingModal({ jobTypes, parts, settings, defaultDate, onClose, onSave }) {
+function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onClose, onSave }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const [pasteText, setPasteText] = useState("");
-  const [customerName, setCustomerName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [reg, setReg] = useState("");
-  const [symptoms, setSymptoms] = useState("");
-  const [business, setBusiness] = useState(BUSINESSES[0]);
-  const [jobTypeId, setJobTypeId] = useState(jobTypes[0]?.id || "");
-  const [date, setDate] = useState(defaultDate);
-  const [pickupRequired, setPickupRequired] = useState(false);
-  const [pickupAddress, setPickupAddress] = useState("");
-  const [postcode, setPostcode] = useState("");
-  const [distanceMiles, setDistanceMiles] = useState(null);
+  const [customerName, setCustomerName] = useState(booking?.customerName || "");
+  const [phone, setPhone] = useState(booking?.phone || "");
+  const [reg, setReg] = useState(booking?.reg || "");
+  const [symptoms, setSymptoms] = useState(booking?.symptoms || "");
+  const [business, setBusiness] = useState(booking?.business || BUSINESSES[0]);
+  const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || jobTypes[0]?.id || "");
+  const [date, setDate] = useState(booking?.date || defaultDate);
+  const [days, setDays] = useState(booking?.days || 1);
+  const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
+  const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || "");
+  const [postcode, setPostcode] = useState(booking?.postcode || "");
+  const [distanceMiles, setDistanceMiles] = useState(booking?.distanceMiles ?? null);
   const isTCS = business === "Timing Chain Specialists";
   const handlePostcodeChange = (val) => { setPostcode(val); setDistanceMiles(estimateDistanceMiles(settings.workshopPostcode, val)); };
   const withinFreeRadius = typeof distanceMiles === "number" ? distanceMiles <= 150 : null;
@@ -694,7 +1050,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, onClose, onSa
     <div className="wb-modal-backdrop" onClick={onClose}>
       <div className="wb-modal" onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontWeight: 700, fontSize: 15 }}>New booking</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{booking ? "Edit booking" : "New booking"}</div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
         </div>
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -710,9 +1066,10 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, onClose, onSa
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
           </div>
           <div><label className="wb-label">Symptoms / notes</label><textarea className="wb-textarea" rows={3} value={symptoms} onChange={(e) => setSymptoms(e.target.value)} /></div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => setJobTypeId(e.target.value)}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
             <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+            <div><label className="wb-label">Days in for</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))} /></div>
           </div>
           <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
             {isTCS ? (
@@ -748,10 +1105,12 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, onClose, onSa
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, date,
+            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, date, days,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
-            distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null, jobValue: 0, labourCost: 0, transportCost: 0,
-          })}>Save booking</button>
+            distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
+            // Only zero these out for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
+            ...(booking ? {} : { jobValue: 0, labourCost: 0, transportCost: 0 }),
+          })}>{booking ? "Save changes" : "Save booking"}</button>
         </div>
       </div>
     </div>
