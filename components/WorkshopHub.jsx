@@ -11,7 +11,7 @@ import {
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
-  saveSettings, insertBooking, updateBookingRow, deleteBookingRow, upsertJobCardRow, updateJobCardRow,
+  saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType, upsertJobCardRow, updateJobCardRow,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -212,6 +212,7 @@ export default function WorkshopHub() {
       subscribeTable("job_types", async () => setJobTypes(await fetchJobTypes())),
       subscribeTable("job_type_parts", async () => setJobTypes(await fetchJobTypes())),
       subscribeTable("bookings", async () => setBookings(await fetchBookings())),
+      subscribeTable("booking_job_types", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
@@ -254,17 +255,22 @@ export default function WorkshopHub() {
   const addBooking = (booking) => withSaveState(async () => {
     const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
     const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
+    const extraIds = newBooking.extraJobTypeIds || [];
 
+    const bom = combinedBom(bookingJobTypeIds(newBooking), jobTypes);
     const updatedParts = parts.map((p) => {
-      const line = jt?.bom.find((l) => l.partId === p.id);
+      const line = bom.find((l) => l.partId === p.id);
       if (!line) return p;
       return { ...p, stock: Math.max(0, +(p.stock - line.qty).toFixed(2)) };
     });
     setParts(updatedParts);
     setBookings((prev) => [...prev, newBooking]);
 
+    // booking_job_types has a foreign key on bookings, so the insert must
+    // land first — firing it in parallel races the FK check and 409s.
+    await insertBooking(newBooking);
     await Promise.all([
-      insertBooking(newBooking),
+      ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
     ]);
 
@@ -279,9 +285,9 @@ export default function WorkshopHub() {
     const b = bookings.find((x) => x.id === id);
     let updatedParts = parts;
     if (b) {
-      const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+      const bom = combinedBom(bookingJobTypeIds(b), jobTypes);
       updatedParts = parts.map((p) => {
-        const line = jt?.bom.find((l) => l.partId === p.id);
+        const line = bom.find((l) => l.partId === p.id);
         if (!line) return p;
         return { ...p, stock: +(p.stock + line.qty).toFixed(2) };
       });
@@ -290,7 +296,7 @@ export default function WorkshopHub() {
     setBookings((prev) => prev.filter((x) => x.id !== id));
 
     await Promise.all([
-      deleteBookingRow(id),
+      deleteBookingRow(id), // cascades booking_job_types rows too
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
       deleteBookingFromGoogle(b?.googleEventId),
     ]);
@@ -300,25 +306,37 @@ export default function WorkshopHub() {
     const before = bookings.find((b) => b.id === id);
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
-    // Editing the job type on an existing booking means the parts it reserved
-    // need correcting too — restock the old recipe, deduct the new one.
+    // bookings-table patch never includes extraJobTypeIds — that lives in
+    // the booking_job_types junction table, reconciled separately below.
+    const { extraJobTypeIds, ...rowPatch } = patch;
+
+    // Editing the job type or extras on an existing booking means the parts
+    // it reserved need correcting too — restock the old combined recipe,
+    // deduct the new one.
     let updatedParts = parts;
-    if (before && "jobTypeId" in patch && patch.jobTypeId !== before.jobTypeId) {
-      const oldJt = jobTypes.find((j) => j.id === before.jobTypeId);
-      const newJt = jobTypes.find((j) => j.id === patch.jobTypeId);
+    if (before && ("jobTypeId" in patch || "extraJobTypeIds" in patch)) {
+      const beforeBom = combinedBom(bookingJobTypeIds(before), jobTypes);
+      const afterBom = combinedBom(bookingJobTypeIds({ ...before, ...patch }), jobTypes);
       updatedParts = parts.map((p) => {
-        const oldQty = oldJt?.bom.find((l) => l.partId === p.id)?.qty || 0;
-        const newQty = newJt?.bom.find((l) => l.partId === p.id)?.qty || 0;
+        const oldQty = beforeBom.find((l) => l.partId === p.id)?.qty || 0;
+        const newQty = afterBom.find((l) => l.partId === p.id)?.qty || 0;
         const delta = oldQty - newQty;
         return delta === 0 ? p : { ...p, stock: Math.max(0, +(p.stock + delta).toFixed(2)) };
       });
       setParts(updatedParts);
     }
 
-    await Promise.all([
-      updateBookingRow(id, patch),
+    const jobs = [
+      Object.keys(rowPatch).length > 0 ? updateBookingRow(id, rowPatch) : null,
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
-    ]);
+    ];
+    if (extraJobTypeIds) {
+      const beforeExtras = before?.extraJobTypeIds || [];
+      const added = extraJobTypeIds.filter((jtId) => !beforeExtras.includes(jtId));
+      const removed = beforeExtras.filter((jtId) => !extraJobTypeIds.includes(jtId));
+      jobs.push(...added.map((jtId) => addBookingJobType(id, jtId)), ...removed.map((jtId) => removeBookingJobType(id, jtId)));
+    }
+    await Promise.all(jobs.filter(Boolean));
 
     if ("date" in patch || "jobTypeId" in patch || "days" in patch) {
       const current = { ...before, ...patch };
@@ -604,6 +622,8 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {dayBookings.map((b) => {
             const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+            const extraJts = (b.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
+            const combinedParts = combinedBom(bookingJobTypeIds(b), jobTypes);
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -618,7 +638,9 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
                 </div>
-                <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>{jt?.name || "—"}</div>
+                <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>
+                  {jt?.name || "—"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
+                </div>
                 {b.days > 1 && (
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
                     {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(addDaysISO(b.date, b.days - 1))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
@@ -635,15 +657,15 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   )}
                   <span style={{ fontSize: 10 }}>{b.business}</span>
                 </div>
-                {jt && (
+                {combinedParts.length > 0 && (
                   <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                     <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>Parts used</div>
                     <div className="wh-mono" style={{ fontSize: 11, display: "flex", flexDirection: "column", gap: 1 }}>
-                      {jt.bom.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                      {combinedParts.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
                     </div>
                   </div>
                 )}
-                <JobCostBlock booking={b} jt={jt} parts={parts} settings={settings} updateBooking={updateBooking} />
+                <JobCostBlock booking={b} jt={jt} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking} />
                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                   Find this vehicle by reg (<strong className="wh-mono">{b.reg || "no reg"}</strong>) under Workshop mode to open its job card.
                 </div>
@@ -660,15 +682,33 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
 function partsCostForJobType(jt, parts) {
   return jt ? jt.bom.reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0) : 0;
 }
+// A booking's main job type plus any extras added on top (e.g. Timing Chain
+// Replacement + Single Turbo (Recon) on the same vehicle).
+function bookingJobTypeIds(booking) {
+  return [booking.jobTypeId, ...(booking.extraJobTypeIds || [])].filter(Boolean);
+}
+// Combined recipe across every job type on a booking, parts aggregated by id
+// so 1x oil filter from two different recipes shows as one 2x line.
+function combinedBom(jobTypeIds, jobTypes) {
+  const qtyByPart = {};
+  jobTypeIds.forEach((id) => {
+    const jt = jobTypes.find((j) => j.id === id);
+    jt?.bom.forEach((l) => { qtyByPart[l.partId] = (qtyByPart[l.partId] || 0) + l.qty; });
+  });
+  return Object.entries(qtyByPart).map(([partId, qty]) => ({ partId, qty }));
+}
+function partsCostForBooking(booking, jobTypes, parts) {
+  return combinedBom(bookingJobTypeIds(booking), jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
+}
 // Shared by the per-booking cost block and the Profitability tab's rollup.
 function computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered }) {
   const vat = vatRegistered ? jobValue - jobValue / 1.2 : 0;
   return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost };
 }
 
-function JobCostBlock({ booking, jt, parts, settings, updateBooking }) {
+function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking }) {
   const [open, setOpen] = useState(false);
-  const partsCost = useMemo(() => partsCostForJobType(jt, parts), [jt, parts]);
+  const partsCost = useMemo(() => partsCostForBooking(booking, jobTypes, parts), [booking, jobTypes, parts]);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
   const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
   const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
@@ -705,7 +745,7 @@ function JobCostBlock({ booking, jt, parts, settings, updateBooking }) {
 // separately so the numbers aren't silently missing jobs.
 function bookingProfit(booking, jobTypes, parts, settings) {
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
-  const partsCost = partsCostForJobType(jt, parts);
+  const partsCost = partsCostForBooking(booking, jobTypes, parts);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
   const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
   return { jt, partsCost, jobValue, labourCost, transportCost, vat, profit };
@@ -1030,6 +1070,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [symptoms, setSymptoms] = useState(booking?.symptoms || "");
   const [business, setBusiness] = useState(booking?.business || BUSINESSES[0]);
   const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || jobTypes[0]?.id || "");
+  const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [date, setDate] = useState(booking?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
   const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
@@ -1067,9 +1108,32 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
           </div>
           <div><label className="wb-label">Symptoms / notes</label><textarea className="wb-textarea" rows={3} value={symptoms} onChange={(e) => setSymptoms(e.target.value)} /></div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => setJobTypeId(e.target.value)}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
+            <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => { setJobTypeId(e.target.value); setExtraJobTypeIds((prev) => prev.filter((x) => x !== e.target.value)); }}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
             <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
             <div><label className="wb-label">Days in for</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))} /></div>
+          </div>
+          <div>
+            <label className="wb-label">Extras (e.g. Turbo, Piston Cooling Jet — anything on top of the main job)</label>
+            {extraJobTypeIds.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {extraJobTypeIds.map((id) => {
+                  const jt = jobTypes.find((j) => j.id === id);
+                  return (
+                    <span key={id} className="wb-chip" style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 0 }}>
+                      {jt?.name || id}
+                      <X size={11} style={{ cursor: "pointer" }} onClick={() => setExtraJobTypeIds((prev) => prev.filter((x) => x !== id))} />
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            <select
+              className="wb-select" value=""
+              onChange={(e) => { if (e.target.value) setExtraJobTypeIds((prev) => [...prev, e.target.value]); }}
+            >
+              <option value="">+ add an extra job…</option>
+              {jobTypes.filter((jt) => jt.id !== jobTypeId && !extraJobTypeIds.includes(jt.id)).map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
+            </select>
           </div>
           <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
             {isTCS ? (
@@ -1097,7 +1161,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, padding: 10 }}>
               <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>This will use:</div>
               <div className="wh-mono" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 2 }}>
-                {jobTypes.find((j) => j.id === jobTypeId)?.bom.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                {combinedBom(bookingJobTypeIds({ jobTypeId, extraJobTypeIds }), jobTypes).map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
               </div>
             </div>
           )}
@@ -1105,7 +1169,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, date, days,
+            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, date, days,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
             // Only zero these out for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
@@ -1267,15 +1331,19 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
 function JobBreakdown({ booking, jobTypes, parts }) {
   if (!booking) return null;
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+  const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
   const partsIndex = Object.fromEntries(parts.map((p) => [p.id, p]));
+  const bom = combinedBom(bookingJobTypeIds(booking), jobTypes);
   return (
     <div className="jc-card" style={{ background: "#1c1710", border: "1px solid #3a2d10" }}>
       <div className="jc-section-title" style={{ color: "var(--amber2)" }}><ListChecks size={16} /> What's needed — from the booking</div>
-      <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{jt?.name || "No job type set"}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>
+        {jt?.name || "No job type set"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
+      </div>
       {booking.symptoms && <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 10, fontStyle: "italic" }}>"{booking.symptoms}"</div>}
-      {jt && (
+      {bom.length > 0 && (
         <div className="wh-mono" style={{ fontSize: 13, display: "flex", flexDirection: "column", gap: 3 }}>
-          {jt.bom.map((l) => {
+          {bom.map((l) => {
             const p = partsIndex[l.partId];
             return <span key={l.partId}>{l.qty} {p?.unit} × {p?.name || l.partId}</span>;
           })}
