@@ -1300,15 +1300,32 @@ function VideoLogSection({ card, onUpdate }) {
   const [type, setType] = useState("intake");
   const [ref, setRef] = useState("");
   const [note, setNote] = useState("");
+  const [showOverride, setShowOverride] = useState(false);
+  const [overridePassword, setOverridePassword] = useState("");
+  const [overrideError, setOverrideError] = useState("");
   const log = card.videoLog || [];
   const hasIntake = log.some((v) => v.type === "intake");
-  const hasCompletion = log.some((v) => v.type === "completion");
+  const hasLoggedCompletion = log.some((v) => v.type === "completion");
+  const hasCompletion = hasLoggedCompletion || card.completionVideoOverridden;
 
   const addEntry = () => {
     if (!ref.trim()) { alert("Paste the link to the video (Google Drive, Photos, etc.) first."); return; }
     const entry = { id: uid("vid"), type, ref: ref.trim(), note: note.trim(), at: new Date().toISOString() };
     onUpdate({ videoLog: [...log, entry] });
     setRef(""); setNote("");
+  };
+
+  const submitOverride = async () => {
+    setOverrideError("");
+    const res = await fetch("/api/profit-login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: overridePassword }),
+    });
+    if (res.ok) {
+      onUpdate({ completionVideoOverridden: true });
+      setShowOverride(false); setOverridePassword("");
+    } else {
+      setOverrideError("Wrong password");
+    }
   };
 
   return (
@@ -1319,8 +1336,24 @@ function VideoLogSection({ card, onUpdate }) {
           {hasIntake ? <Check size={14} /> : <AlertTriangle size={14} />} Intake video {hasIntake ? "logged" : "required — record on arrival, before any work"}
         </div>
         <div className={`req-banner ${hasCompletion ? "ok" : ""}`}>
-          {hasCompletion ? <Check size={14} /> : <AlertTriangle size={14} />} Completion video {hasCompletion ? "logged" : "required before customer sign-off"}
+          {hasCompletion ? <Check size={14} /> : <AlertTriangle size={14} />}
+          {" "}Completion video {hasLoggedCompletion ? "logged" : card.completionVideoOverridden ? "overridden by owner" : "required before customer sign-off"}
         </div>
+        {!hasLoggedCompletion && !card.completionVideoOverridden && !showOverride && (
+          <button className="jc-btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => setShowOverride(true)}><Lock size={12} /> Override (owner only)</button>
+        )}
+        {showOverride && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="password" className="jc-input" placeholder="Owner password" value={overridePassword}
+              onChange={(e) => setOverridePassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitOverride()}
+            />
+            <button className="jc-btn-ghost" onClick={submitOverride}>Confirm</button>
+            <button className="jc-btn-ghost" onClick={() => { setShowOverride(false); setOverridePassword(""); setOverrideError(""); }}>Cancel</button>
+          </div>
+        )}
+        {overrideError && <div style={{ color: "var(--red)", fontSize: 12 }}>{overrideError}</div>}
       </div>
 
       {log.length > 0 && (
@@ -1359,7 +1392,7 @@ function SignatureSection({ card, onUpdate }) {
   const [hasDrawn, setHasDrawn] = useState(!!card.signature);
   const [name, setName] = useState(card.signatureName || card.customerName || "");
   const hasIntake = (card.videoLog || []).some((v) => v.type === "intake");
-  const hasCompletion = (card.videoLog || []).some((v) => v.type === "completion");
+  const hasCompletion = (card.videoLog || []).some((v) => v.type === "completion") || card.completionVideoOverridden;
   const videosReady = hasIntake && hasCompletion;
 
   useEffect(() => {
