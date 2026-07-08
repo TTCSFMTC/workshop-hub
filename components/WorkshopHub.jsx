@@ -4,15 +4,16 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
-  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown,
+  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Unlock, Video,
-  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle,
+  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings, fetchPriceHistory,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, upsertJobCardRow, updateJobCardRow,
+  insertPriceHistory, deletePriceHistory,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -185,6 +186,7 @@ export default function WorkshopHub() {
   const [bookings, setBookings] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [jobCards, setJobCards] = useState([]);
+  const [priceHistory, setPriceHistory] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -197,6 +199,7 @@ export default function WorkshopHub() {
         setBookings(d.bookings);
         if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setJobCards(d.jobCards);
+        setPriceHistory(d.priceHistory);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -216,6 +219,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_job_types", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_extra_parts", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
+      subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -370,6 +374,16 @@ export default function WorkshopHub() {
     await updatePart(partId, patch);
   });
 
+  // Recording a new price both logs it to history (for trend analysis) and
+  // becomes the part's current cost price — the old price isn't lost, it's
+  // just no longer "current".
+  const recordPrice = (partId, price, qty, supplier) => withSaveState(async () => {
+    const entry = { id: uid("ph"), partId, price, qty: qty || null, supplier: supplier || null, recordedAt: new Date().toISOString() };
+    setPriceHistory((prev) => [...prev, entry]);
+    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, costPrice: price } : p)));
+    await Promise.all([insertPriceHistory(entry), updatePart(partId, { costPrice: price })]);
+  });
+
   const addPart = (name, unit) => withSaveState(async () => {
     const part = { id: uid("p"), name, unit, stock: 0, costPrice: 0 };
     setParts((prev) => [...prev, part]);
@@ -513,6 +527,7 @@ export default function WorkshopHub() {
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
+          priceHistory={priceHistory} recordPrice={recordPrice}
         />
       ) : (
         <WorkshopMode
@@ -530,6 +545,7 @@ export default function WorkshopHub() {
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
+  priceHistory, recordPrice,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -553,7 +569,10 @@ function OfficeMode({
             onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)}
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking} />
         )}
-        {tab === "stock" && <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart} />}
+        {tab === "stock" && (
+          <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
+            priceHistory={priceHistory} recordPrice={recordPrice} />
+        )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine} />
@@ -931,8 +950,9 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, priceHistory, recordPrice }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
+  const [historyPart, setHistoryPart] = useState(null);
   const renamePart = (r) => { const name = prompt("Rename part:", r.name); if (!name || !name.trim()) return; updatePartField(r.id, { name: name.trim() }); };
   const deletePartClick = (r) => {
     const usedIn = jobTypes.filter((jt) => jt.bom.some((l) => l.partId === r.id)).map((jt) => jt.name);
@@ -942,15 +962,32 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
     if (!confirm(`${warning}Delete "${r.name}"?`)) return;
     removePart(r.id);
   };
+
+  const exportPriceHistory = () => {
+    const rows = [["Part", "Part number", "Date", "Price", "Qty ordered", "Supplier", "Change vs previous"]];
+    stockRows.forEach((r) => {
+      const forPart = priceHistory.filter((h) => h.partId === r.id).sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : 1));
+      forPart.forEach((h, i) => {
+        const delta = i > 0 ? h.price - forPart[i - 1].price : "";
+        rows.push([r.name, r.partNumber || "", new Date(h.recordedAt).toLocaleDateString("en-GB"), h.price, h.qty ?? "", h.supplier || "", delta]);
+      });
+    });
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Price history");
+    XLSX.writeFile(workbook, `price-history-${todayISO()}.xlsx`);
+  };
+
   return (
     <div className="wb-panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Stock levels</div>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>Usage from last 28 days · flags when cover &lt; {REORDER_WEEKS} week</div>
+        <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
       </div>
       <div style={{ overflowX: "auto" }}>
       <table className="wb-table">
-        <thead><tr><th>Part</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th><th></th></tr></thead>
+        <thead><tr><th>Part</th><th>Part no.</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th><th></th></tr></thead>
         <tbody>
           {stockRows.map((r) => (
             <tr key={r.id}>
@@ -958,10 +995,21 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                 {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
                 <button onClick={() => renamePart(r)} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
               </td>
+              <td>
+                <input
+                  type="text" className="wb-input" style={{ width: 110 }} placeholder="e.g. LR073816" value={r.partNumber || ""}
+                  onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
+                />
+              </td>
               <td className="wh-mono">{r.stock}</td>
               <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
               <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
-              <td><input type="number" className="wb-input" style={{ width: 70 }} value={r.costPrice ?? 0} onChange={(e) => updatePartField(r.id, { costPrice: parseFloat(e.target.value) || 0 })} /></td>
+              <td>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input type="number" step="0.01" className="wb-input" style={{ width: 100 }} value={r.costPrice ?? 0} onChange={(e) => updatePartField(r.id, { costPrice: parseFloat(e.target.value) || 0 })} />
+                  <button onClick={() => setHistoryPart(r)} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
+                </div>
+              </td>
               <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
               <td>
                 <div style={{ display: "flex", gap: 6 }}>
@@ -977,6 +1025,85 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
           ))}
         </tbody>
       </table>
+      </div>
+      {historyPart && (
+        <PriceHistoryModal
+          part={historyPart}
+          history={priceHistory.filter((h) => h.partId === historyPart.id)}
+          recordPrice={recordPrice}
+          onClose={() => setHistoryPart(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Append-only price ledger for one part: recording a new price both logs a
+// row here and becomes the part's current cost price, so nothing overwrites
+// — the old price just becomes history for trend analysis.
+function PriceHistoryModal({ part, history, recordPrice, onClose }) {
+  const [price, setPrice] = useState("");
+  const [qty, setQty] = useState("");
+  const [supplier, setSupplier] = useState("");
+
+  const chronological = useMemo(() => [...history].sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : 1)), [history]);
+  const newestFirst = useMemo(() => [...chronological].reverse(), [chronological]);
+
+  const save = () => {
+    const p = parseFloat(price);
+    if (!p || p <= 0) return;
+    recordPrice(part.id, p, qty ? parseFloat(qty) : null, supplier.trim());
+    setPrice(""); setQty(""); setSupplier("");
+  };
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+            <History size={16} color="var(--amber)" /> {part.name}{part.partNumber ? ` — ${part.partNumber}` : ""}
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input type="number" step="0.01" className="wb-input" style={{ width: 100 }} placeholder="New price £" value={price} onChange={(e) => setPrice(e.target.value)} />
+            <input type="number" className="wb-input" style={{ width: 100 }} placeholder="Qty ordered" value={qty} onChange={(e) => setQty(e.target.value)} />
+            <input type="text" className="wb-input" style={{ flex: 1, minWidth: 130 }} placeholder="Supplier (optional)" value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+            <button className="wb-btn" onClick={save}>Save price</button>
+          </div>
+
+          {newestFirst.length === 0 ? (
+            <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "16px 0" }}>No price history recorded yet — add one above.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="wb-table">
+                <thead><tr><th>Date</th><th>Price</th><th>Qty</th><th>Supplier</th><th>Change</th></tr></thead>
+                <tbody>
+                  {newestFirst.map((h) => {
+                    const idx = chronological.findIndex((c) => c.id === h.id);
+                    const prev = idx > 0 ? chronological[idx - 1] : null;
+                    const delta = prev ? h.price - prev.price : 0;
+                    return (
+                      <tr key={h.id}>
+                        <td className="wh-mono">{new Date(h.recordedAt).toLocaleDateString("en-GB")}</td>
+                        <td className="wh-mono">£{h.price.toFixed(2)}</td>
+                        <td className="wh-mono">{h.qty ?? "—"}</td>
+                        <td>{h.supplier || "—"}</td>
+                        <td>
+                          {!prev ? <span style={{ color: "var(--muted)" }}><Minus size={12} style={{ display: "inline" }} /> first entry</span>
+                            : delta > 0 ? <span style={{ color: "var(--red)" }}><TrendingUp size={12} style={{ display: "inline", verticalAlign: "middle" }} /> +£{delta.toFixed(2)}</span>
+                            : delta < 0 ? <span style={{ color: "var(--green)" }}><TrendingDown size={12} style={{ display: "inline", verticalAlign: "middle" }} /> -£{Math.abs(delta).toFixed(2)}</span>
+                            : <span style={{ color: "var(--muted)" }}><Minus size={12} style={{ display: "inline" }} /> no change</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
