@@ -258,6 +258,16 @@ export default function WorkshopHub() {
   }), [parts, partUsageWeekly]);
   const lowStockItems = stockRows.filter((r) => r.needsOrder);
 
+  // Pops up whenever a part crosses into "needs reorder" — lives at this
+  // level (not inside OfficeMode) so switching to Workshop and back doesn't
+  // forget a dismissal by remounting the component.
+  const [dismissedReorderIds, setDismissedReorderIds] = useState(() => new Set());
+  const pendingReorder = lowStockItems.filter((r) => !dismissedReorderIds.has(r.id));
+  const [showReorderAlert, setShowReorderAlert] = useState(false);
+  useEffect(() => {
+    if (pendingReorder.length > 0) setShowReorderAlert(true);
+  }, [lowStockItems.map((r) => r.id).join(",")]);
+
   const addBooking = (booking) => withSaveState(async () => {
     const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
     const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
@@ -528,6 +538,8 @@ export default function WorkshopHub() {
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
           priceHistory={priceHistory} recordPrice={recordPrice}
+          pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
+          setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
         />
       ) : (
         <WorkshopMode
@@ -545,7 +557,7 @@ export default function WorkshopHub() {
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
-  priceHistory, recordPrice,
+  priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -595,6 +607,95 @@ function OfficeMode({
           }}
         />
       )}
+      {showReorderAlert && pendingReorder.length > 0 && (
+        <ReorderAlertModal
+          items={pendingReorder}
+          priceHistory={priceHistory}
+          onClose={() => setShowReorderAlert(false)}
+          onDismiss={() => {
+            setDismissedReorderIds((prev) => new Set([...prev, ...pendingReorder.map((r) => r.id)]));
+            setShowReorderAlert(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Pops up when parts drop below reorder cover. Shows what's needed plus the
+// 12-month low from that part's price history, and offers to copy a ready
+// -made summary to paste to Claude in chat for a live price comparison —
+// there's no search API wired into the app itself, so this is the bridge.
+function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
+  const [copiedId, setCopiedId] = useState(null);
+  const yearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+
+  const rows = items.map((item) => {
+    const history = priceHistory.filter((h) => h.partId === item.id).sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : 1));
+    const last = history[history.length - 1] || null;
+    const recent = history.filter((h) => new Date(h.recordedAt).getTime() >= yearAgo);
+    const lowest12mo = recent.length ? Math.min(...recent.map((h) => h.price)) : null;
+    return {
+      item,
+      lastOrderQty: last?.qty ?? null,
+      lastPrice: last?.price ?? item.costPrice,
+      lowest12mo,
+    };
+  });
+
+  const copyDetails = async (r) => {
+    const text = `Check current prices for: ${r.item.name}${r.item.partNumber ? ` (part number ${r.item.partNumber})` : ""}, last ordered ${r.lastOrderQty ?? "?"} @ £${r.lastPrice.toFixed(2)}${r.lowest12mo !== null ? `, 12-month low £${r.lowest12mo.toFixed(2)}` : ""}.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(r.item.id);
+      setTimeout(() => setCopiedId((prev) => (prev === r.item.id ? null : prev)), 2000);
+    } catch {
+      // Clipboard access can be blocked (unfocused tab, permissions, older browsers)
+      // — fall back to a manual copy so the feature still works.
+      prompt("Copy this and paste it to Claude in chat:", text);
+    }
+  };
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8, color: "var(--red)" }}>
+            <AlertTriangle size={16} /> Parts order needed
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="wb-table">
+              <thead><tr><th>Product</th><th>Part no.</th><th>Last order qty</th><th>Last price</th><th>12-mo low</th><th></th></tr></thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.item.id}>
+                    <td style={{ fontWeight: 600 }}>{r.item.name}</td>
+                    <td>{r.item.partNumber || "—"}</td>
+                    <td className="wh-mono">{r.lastOrderQty ?? "—"}</td>
+                    <td className="wh-mono">£{r.lastPrice.toFixed(2)}</td>
+                    <td className="wh-mono">{r.lowest12mo !== null ? `£${r.lowest12mo.toFixed(2)}` : "—"}</td>
+                    <td>
+                      <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: 32, whiteSpace: "nowrap" }} onClick={() => copyDetails(r)}>
+                        {copiedId === r.item.id ? "Copied ✓" : "Search for a better price?"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+            "Search for a better price?" copies the part's details — paste them to Claude in chat to get a live comparison across suppliers.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <button className="wb-btn-ghost" onClick={onClose}>Not now</button>
+            <button className="wb-btn" onClick={onDismiss}>Dismiss</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
