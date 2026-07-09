@@ -24,6 +24,21 @@ import * as XLSX from "xlsx";
 // ============================================================
 const BUSINESSES = ["Warrington 4x4", "Timing Chain Specialists"];
 const REORDER_WEEKS = 1;
+
+// Which thermostat housing a model takes — lets the booking form pick the
+// right stock part automatically instead of staff having to remember which
+// of the two look-alike parts fits which model.
+const THERMOSTAT_MODEL_MAP = {
+  "Range Rover Evoque": "p_thermostat_housing_a",
+  "Land Rover Discovery Sport": "p_thermostat_housing_a",
+  "Jaguar E-Pace": "p_thermostat_housing_a",
+  "Range Rover Velar": "p_thermostat_housing_b",
+  "Jaguar F-Pace": "p_thermostat_housing_b",
+  "Jaguar XE": "p_thermostat_housing_b",
+  "Jaguar XF": "p_thermostat_housing_b",
+  "Land Rover Discovery 5": "p_thermostat_housing_b",
+};
+const VEHICLE_MODELS = Object.keys(THERMOSTAT_MODEL_MAP);
 const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fmtDate = (iso) => {
@@ -756,13 +771,23 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ fontWeight: 700, fontSize: 13 }}>{b.customerName || "Unnamed"}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                    {b.customerName || "Unnamed"}
+                    {b.completed && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}><Check size={9} style={{ display: "inline", marginRight: 2 }} />Completed</span>}
+                  </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     {bookingConfirmLink(b, jt) && (
                       <a href={bookingConfirmLink(b, jt)} target="_blank" rel="noopener noreferrer" title="Send booking confirmation on WhatsApp" style={{ color: "#25D366", display: "flex" }}>
                         <MessageCircle size={15} />
                       </a>
                     )}
+                    <button
+                      onClick={() => updateBooking(b.id, { completed: !b.completed })}
+                      title={b.completed ? "Mark as not yet complete" : "Mark job complete"}
+                      style={{ background: "none", border: "none", color: b.completed ? "var(--green)" : "var(--muted)", cursor: "pointer" }}
+                    >
+                      <Check size={13} />
+                    </button>
                     <button onClick={() => onEditBooking(b)} title="Edit booking" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
@@ -947,9 +972,11 @@ function ProfitabilityGate({ children }) {
 function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
+    const completed = priced.filter((b) => b.completed);
     const unpricedCount = bookings.length - priced.length;
+    const notYetCompleteCount = priced.length - completed.length;
     const byMonth = {};
-    priced.forEach((b) => {
+    completed.forEach((b) => {
       const key = b.date.slice(0, 7);
       byMonth[key] = byMonth[key] || [];
       byMonth[key].push({ booking: b, ...bookingProfit(b, jobTypes, parts, settings) });
@@ -964,7 +991,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
       const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
       return { key, label, rows, totals };
     });
-    return { monthList, unpricedCount };
+    return { monthList, unpricedCount, notYetCompleteCount };
   }, [bookings, jobTypes, parts, settings]);
 
   const grandTotal = months.monthList.reduce((acc, m) => ({
@@ -997,9 +1024,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
           </div>
           <button className="wb-btn-ghost" onClick={exportExcel} disabled={months.monthList.length === 0}><FileText size={13} /> Export to Excel</button>
         </div>
-        {months.unpricedCount > 0 && (
+        {(months.unpricedCount > 0 || months.notYetCompleteCount > 0) && (
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-            {months.unpricedCount} booking{months.unpricedCount !== 1 ? "s" : ""} without a price entered yet aren't counted here — add a job value on the Calendar tab to include them.
+            {months.unpricedCount > 0 && <span>{months.unpricedCount} booking{months.unpricedCount !== 1 ? "s" : ""} without a price entered yet. </span>}
+            {months.notYetCompleteCount > 0 && <span>{months.notYetCompleteCount} priced booking{months.notYetCompleteCount !== 1 ? "s" : ""} not yet marked complete. </span>}
+            None of these are counted here — add a job value and mark the job complete on the Calendar tab to include it.
           </div>
         )}
       </div>
@@ -1316,6 +1345,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || jobTypes[0]?.id || "");
   const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [extraParts, setExtraParts] = useState(booking?.extraParts || []);
+  const [vehicleModel, setVehicleModel] = useState(booking?.vehicleModel || "");
   const [date, setDate] = useState(booking?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
   const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
@@ -1350,6 +1380,14 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             <div><label className="wb-label">Phone</label><input className="wb-input" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
             <div><label className="wb-label">Vehicle registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} /></div>
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+            <div>
+              <label className="wb-label">Vehicle model (for thermostat housing etc.)</label>
+              <select className="wb-select" value={vehicleModel} onChange={(e) => setVehicleModel(e.target.value)}>
+                <option value="">Not set</option>
+                {VEHICLE_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                <option value="Other">Other / not listed</option>
+              </select>
+            </div>
           </div>
           <div><label className="wb-label">Symptoms / notes</label><textarea className="wb-textarea" rows={3} value={symptoms} onChange={(e) => setSymptoms(e.target.value)} /></div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
@@ -1398,10 +1436,19 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             )}
             <select
               className="wb-select" value=""
-              onChange={(e) => { if (e.target.value) setExtraParts((prev) => [...prev, { partId: e.target.value, qty: 1 }]); }}
+              onChange={(e) => {
+                if (e.target.value === "__thermostat__") {
+                  const partId = THERMOSTAT_MODEL_MAP[vehicleModel];
+                  if (!partId) { alert("Set the vehicle model above first, so the correct thermostat housing can be picked."); return; }
+                  if (!extraParts.some((l) => l.partId === partId)) setExtraParts((prev) => [...prev, { partId, qty: 1 }]);
+                  return;
+                }
+                if (e.target.value) setExtraParts((prev) => [...prev, { partId: e.target.value, qty: 1 }]);
+              }}
             >
               <option value="">+ add an extra part…</option>
-              {parts.filter((p) => !extraParts.some((l) => l.partId === p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              <option value="__thermostat__">Thermostat Housing (auto-picked by vehicle model)</option>
+              {parts.filter((p) => !extraParts.some((l) => l.partId === p.id) && p.id !== "p_thermostat_housing_a" && p.id !== "p_thermostat_housing_b").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </div>
           <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
@@ -1438,7 +1485,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days,
+            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
             // Only zero these out for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
