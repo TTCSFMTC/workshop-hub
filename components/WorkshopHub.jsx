@@ -54,6 +54,13 @@ const addDaysISO = (iso, days) => {
 };
 // Every calendar day a multi-day booking spans, e.g. days=3 from 2026-07-08 -> [07-08, 07-09, 07-10].
 const bookingDates = (b) => Array.from({ length: b.days || 1 }, (_, i) => addDaysISO(b.date, i));
+// Whole-day difference between two ISO dates (toIso - fromIso), UTC-based like addDaysISO
+// so it can't be thrown off by DST.
+const daysBetweenISO = (fromIso, toIso) => {
+  const [y1, m1, d1] = fromIso.split("-").map(Number);
+  const [y2, m2, d2] = toIso.split("-").map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+};
 
 // Pushes just a date + job-type colour to the public Google Calendar — never
 // the customer/vehicle detail this app holds. Failures are logged but never
@@ -103,10 +110,59 @@ function whatsappNumber(phone) {
   else if (!digits.startsWith("44")) digits = "44" + digits;
   return digits;
 }
-function bookingConfirmLink(b, jt) {
-  if (!b.phone) return null;
-  const message = `Hi ${b.customerName || "there"}, this confirms your booking with ${b.business} on ${fmtDate(b.date)} for ${jt?.name || "your service"}${b.reg ? ` (${b.reg})` : ""}. Thanks!`;
-  return `https://wa.me/${whatsappNumber(b.phone)}?text=${encodeURIComponent(message)}`;
+const firstName = (name) => (name || "").trim().split(/\s+/)[0] || "there";
+
+function whatsappLink(phone, message) {
+  return `https://wa.me/${whatsappNumber(phone)}?text=${encodeURIComponent(message)}`;
+}
+
+// The record of the agreed price lives in this message, so it's only ever
+// sendable once a job value has been entered — callers must check
+// booking.jobValue before opening this link.
+function confirmationMessage(b) {
+  return `Hi ${firstName(b.customerName)},
+
+Many thanks for sending all that through, and for reading through our terms and conditions.
+
+I can confirm your vehicle is booked in on ${fmtDate(b.date)} for approximately ${b.days || 1} day(s) — that's just an estimate, and we'll keep you updated throughout.
+
+We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
+
+Between now and then, if anything changes or comes up, please just let us know.
+
+We'll be there to greet you on the day — please bring your locking wheel nut (not just the key) with you, and aim to arrive around 9:30am.
+
+Many thanks,
+${b.business}`;
+}
+
+function reminderMessage(b) {
+  return `Hello ${firstName(b.customerName)},
+
+I hope you are well, just checking in before we finalise the details — just a reminder, please bring your locking wheel nut. We'll meet you in reception at 9:30. Just let us know if anything has changed since we booked you in.`;
+}
+
+function transportPriceRequestMessage(b) {
+  return `Hi, please can I have a firm price on this?
+
+Collection date: ${fmtDate(addDaysISO(b.date, -1))}
+Postcode: ${b.postcode || ""}
+
+Please confirm or decline the job.`;
+}
+
+// Bookings due a 2-days-before reminder: within the next 2 days, originally
+// booked with more than 2 days' notice (short-notice bookings never had a
+// meaningful "2 days before" window), and not already reminded.
+function reminderCandidates(bookings) {
+  const today = todayISO();
+  return bookings.filter((b) => {
+    if (b.reminderSent || !b.phone) return false;
+    const daysUntilAppt = daysBetweenISO(today, b.date);
+    if (daysUntilAppt < 0 || daysUntilAppt > 2) return false;
+    const bookedOn = new Date(b.createdAt).toISOString().slice(0, 10);
+    return daysBetweenISO(bookedOn, b.date) > 2;
+  });
 }
 
 function guessName(text, phone) {
@@ -162,7 +218,15 @@ const DEFAULT_SETTINGS = {
   vatRegistered: false,
   collectionInfoUrl: "",
   transportCompanies: [{ name: "Transport company 1", email: "" }, { name: "Transport company 2", email: "" }],
+  transportContactName: "Paul",
+  transportContactPhone: "",
 };
+
+// Standard pricing for a Timing Chain Replacement — pre-filled on new
+// bookings of this job type, and offered as a one-click fix for existing
+// bookings of this type that were never priced.
+const STANDARD_TIMING_CHAIN_PRICE = { jobValue: 1495, labourCost: 220 };
+const isTimingChainReplacement = (jt) => jt?.name === "Timing Chain Replacement";
 
 const BLANK_CARD = (booking) => ({
   id: uid("jc"),
@@ -730,7 +794,9 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
   const dayBookings = bookingsByDay[selectedDay] || [];
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <TwoDayReminderBanner bookings={bookings} updateBooking={updateBooking} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18 }}>
       <div className="wb-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -776,11 +842,17 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     {b.completed && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}><Check size={9} style={{ display: "inline", marginRight: 2 }} />Completed</span>}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {bookingConfirmLink(b, jt) && (
-                      <a href={bookingConfirmLink(b, jt)} target="_blank" rel="noopener noreferrer" title="Send booking confirmation on WhatsApp" style={{ color: "#25D366", display: "flex" }}>
-                        <MessageCircle size={15} />
-                      </a>
-                    )}
+                    <button
+                      onClick={() => {
+                        if (!b.jobValue) { alert("Set a job value before sending the WhatsApp confirmation — it becomes the record of the agreed price."); return; }
+                        if (!b.phone) { alert("This booking has no phone number set."); return; }
+                        window.open(whatsappLink(b.phone, confirmationMessage(b)), "_blank");
+                      }}
+                      title="Send WhatsApp confirmation"
+                      style={{ background: "none", border: "none", color: "#25D366", cursor: "pointer", display: "flex" }}
+                    >
+                      <MessageCircle size={15} />
+                    </button>
                     <button
                       onClick={() => updateBooking(b.id, { completed: !b.completed })}
                       title={b.completed ? "Mark as not yet complete" : "Mark job complete"}
@@ -827,6 +899,39 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             );
           })}
         </div>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+// Shows any booking due its 2-days-before reminder: within the next 2 days,
+// originally booked with more than 2 days' notice, and not already sent.
+function TwoDayReminderBanner({ bookings, updateBooking }) {
+  const candidates = useMemo(() => reminderCandidates(bookings), [bookings]);
+  if (candidates.length === 0) return null;
+
+  const send = (b) => {
+    window.open(whatsappLink(b.phone, reminderMessage(b)), "_blank");
+    updateBooking(b.id, { reminderSent: true });
+  };
+
+  return (
+    <div className="wb-panel" style={{ borderColor: "var(--amber)" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
+        <AlertTriangle size={15} /> {candidates.length} booking{candidates.length !== 1 ? "s" : ""} due a reminder
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {candidates.map((b) => (
+          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13 }}>
+              <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— in on {fmtDate(b.date)}</span>
+            </div>
+            <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
+              <MessageCircle size={13} /> Send WhatsApp reminder
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -879,6 +984,12 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
     const body = encodeURIComponent(`Hi,\n\nCould you quote to collect and return a customer vehicle for us?\n\nCustomer: ${booking.customerName || ""}\nVehicle registration: ${booking.reg || ""}\nPickup postcode: ${booking.postcode || ""}\nApprox distance: ${booking.distanceMiles || "?"} miles\nJob date: ${booking.date}\nJob type: ${jt?.name || ""}\n\nPlease treat this vehicle with care — it's the customer's own car.\n\nThanks,\nThe Timing Chain Specialists`);
     window.open(`mailto:${recipients}?subject=${subject}&body=${body}`, "_blank");
   };
+  const requestTransportQuote = (checked) => {
+    updateBooking(booking.id, { transportRequired: checked });
+    if (!checked) return;
+    if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
+    window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking)), "_blank");
+  };
   return (
     <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
@@ -893,7 +1004,13 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
             <div><label className="wb-label">Transport £</label><input type="number" className="wb-input" value={booking.transportCost || ""} onChange={(e) => updateBooking(booking.id, { transportCost: parseFloat(e.target.value) || 0 })} /></div>
           </div>
           <div className="wh-mono" style={{ fontSize: 11, color: "var(--muted)" }}>Parts cost: £{partsCost.toFixed(2)}{settings.vatRegistered ? ` · VAT: £${vat.toFixed(2)}` : ""}</div>
+          {isTimingChainReplacement(jt) && !booking.jobValue && (
+            <button className="wb-btn-ghost" onClick={() => updateBooking(booking.id, STANDARD_TIMING_CHAIN_PRICE)}>Use standard timing chain pricing</button>
+          )}
           {needsQuote && <button className="wb-btn-ghost" onClick={draftQuoteEmail}><Mail size={12} /> Draft transport quote request</button>}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
+            <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => requestTransportQuote(e.target.checked)} /> Transport required
+          </label>
         </div>
       )}
     </div>
@@ -1330,6 +1447,14 @@ function SettingsTab({ settings, updateSettingsField }) {
         </div>
         <button className="wb-btn-ghost" style={{ marginTop: 10 }} onClick={addCompany}><Plus size={13} /> Add transport company</button>
       </div>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Transport pricing contact</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Who "Transport required" on a booking sends a WhatsApp price-check to.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <input className="wb-input" value={settings.transportContactName} onChange={(e) => updateSettingsField({ transportContactName: e.target.value })} placeholder="Name" />
+          <input className="wb-input" value={settings.transportContactPhone} onChange={(e) => updateSettingsField({ transportContactPhone: e.target.value })} placeholder="Phone, e.g. 07911 123456" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1488,8 +1613,9 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
-            // Only zero these out for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
-            ...(booking ? {} : { jobValue: 0, labourCost: 0, transportCost: 0 }),
+            // Only set these for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
+            // Timing Chain Replacement gets its standard price pre-filled; everything else starts at zero.
+            ...(booking ? {} : { ...(isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE : { jobValue: 0, labourCost: 0 }), transportCost: 0 }),
           })}>{booking ? "Save changes" : "Save booking"}</button>
         </div>
       </div>
