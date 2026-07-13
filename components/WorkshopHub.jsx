@@ -1200,6 +1200,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
 function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, priceHistory, recordPrice }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [historyPart, setHistoryPart] = useState(null);
+  const [priceCheckOpen, setPriceCheckOpen] = useState(false);
   const renamePart = (r) => { const name = prompt("Rename part:", r.name); if (!name || !name.trim()) return; updatePartField(r.id, { name: name.trim() }); };
   const deletePartClick = (r) => {
     const usedIn = jobTypes.filter((jt) => jt.bom.some((l) => l.partId === r.id)).map((jt) => jt.name);
@@ -1231,6 +1232,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Stock levels</div>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>Usage from last 28 days · flags when cover &lt; {REORDER_WEEKS} week</div>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
+        <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
       </div>
       <div style={{ overflowX: "auto" }}>
       <table className="wb-table">
@@ -1281,6 +1283,113 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
           onClose={() => setHistoryPart(null)}
         />
       )}
+      {priceCheckOpen && (
+        <PartsPriceModal parts={stockRows} onClose={() => setPriceCheckOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+// Looks up the cheapest European price for a part number via /api/parts-price,
+// which queries Google Shopping (SearchApi.io) across several EU markets —
+// see parts-finder/README.md for why that route was chosen over scraping
+// retailer sites directly (most block bots).
+function PartsPriceModal({ parts, onClose }) {
+  const [selectedPartId, setSelectedPartId] = useState("");
+  const [partNumber, setPartNumber] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | loading | done | error
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const selectExisting = (id) => {
+    setSelectedPartId(id);
+    const p = parts.find((r) => r.id === id);
+    if (p) {
+      setPartNumber(p.partNumber || "");
+      setDescription(p.name || "");
+    }
+  };
+
+  const search = async () => {
+    if (!partNumber.trim()) return;
+    setStatus("loading");
+    setErrorMsg("");
+    setResult(null);
+    try {
+      const res = await fetch("/api/parts-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ partNumber, description }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lookup failed");
+      setResult(data);
+      setStatus("done");
+    } catch (e) {
+      setErrorMsg(e.message);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+            <Search size={16} color="var(--amber)" /> Find cheapest price
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <select className="wb-input" value={selectedPartId} onChange={(e) => selectExisting(e.target.value)}>
+            <option value="">— Or pick an existing part —</option>
+            {parts.filter((p) => p.partNumber).map((p) => (
+              <option key={p.id} value={p.id}>{p.name} ({p.partNumber})</option>
+            ))}
+          </select>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input type="text" className="wb-input" style={{ width: 150 }} placeholder="OEM part number" value={partNumber} onChange={(e) => setPartNumber(e.target.value)} />
+            <input type="text" className="wb-input" style={{ flex: 1, minWidth: 150 }} placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <button className="wb-btn" onClick={search} disabled={!partNumber.trim() || status === "loading"}>
+              {status === "loading" ? "Searching…" : "Search"}
+            </button>
+          </div>
+
+          {status === "loading" && (
+            <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "12px 0" }}>
+              Checking UK, DE, FR, IT, ES, NL and PL listings — this can take a few seconds…
+            </div>
+          )}
+
+          {status === "error" && (
+            <div style={{ color: "var(--red)", fontSize: 12 }}>{errorMsg}</div>
+          )}
+
+          {status === "done" && result && result.listingsFound === 0 && (
+            <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "12px 0" }}>
+              No listings found for "{result.partNumber}".
+            </div>
+          )}
+
+          {status === "done" && result && result.cheapest && (
+            <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>
+                £{result.cheapest.priceBase.toFixed(2)}
+                <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>
+                  {" "}({result.cheapest.currencyOriginal} {result.cheapest.priceOriginal.toFixed(2)})
+                </span>
+              </div>
+              <div style={{ fontSize: 13 }}>{result.cheapest.source} — {result.cheapest.country}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>{result.cheapest.title}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>{result.listingsFound} listing(s) found across all markets</div>
+              {result.cheapest.link && (
+                <a href={result.cheapest.link} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>View listing</a>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
