@@ -11,6 +11,7 @@ const COUNTRIES = [
   { gl: "pl", hl: "pl", currency: "PLN" },
 ];
 const BASE_CURRENCY = "GBP";
+const MAX_RESULTS = 5;
 
 async function getExchangeRates() {
   const others = [...new Set(COUNTRIES.map((c) => c.currency))].filter((c) => c !== BASE_CURRENCY);
@@ -36,6 +37,21 @@ async function searchCountry(partNumber, country, apiKey) {
   return data.shopping_results || [];
 }
 
+// Google Shopping's own matching is loose — it'll happily return a listing
+// that shares none of the actual part number with the query (e.g. searching
+// "FEBI 193356" surfacing a totally different "FEBI BILSTEIN 48356"). Require
+// every token of the query (brand words + the number itself) to actually
+// appear in the listing title before trusting it as a match.
+function tokenize(text) {
+  return (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(Boolean);
+}
+function isRealMatch(partNumber, title) {
+  const queryTokens = tokenize(partNumber);
+  if (queryTokens.length === 0) return false;
+  const titleTokens = new Set(tokenize(title));
+  return queryTokens.every((t) => titleTokens.has(t));
+}
+
 export async function POST(request) {
   const apiKey = process.env.SEARCHAPI_KEY;
   if (!apiKey) {
@@ -46,6 +62,7 @@ export async function POST(request) {
   if (!partNumber || !partNumber.trim()) {
     return NextResponse.json({ error: "Part number is required" }, { status: 400 });
   }
+  const cleanPartNumber = partNumber.trim();
 
   let rates;
   try {
@@ -55,7 +72,7 @@ export async function POST(request) {
   }
 
   const settled = await Promise.allSettled(
-    COUNTRIES.map((country) => searchCountry(partNumber.trim(), country, apiKey))
+    COUNTRIES.map((country) => searchCountry(cleanPartNumber, country, apiKey))
   );
 
   const results = [];
@@ -65,6 +82,7 @@ export async function POST(request) {
     const rate = rates[country.currency];
     for (const r of outcome.value) {
       if (typeof r.extracted_price !== "number" || !rate) continue;
+      if (!isRealMatch(cleanPartNumber, r.title || "")) continue;
       results.push({
         title: r.title || "",
         source: r.seller || r.source || "unknown",
@@ -78,30 +96,21 @@ export async function POST(request) {
   });
 
   results.sort((a, b) => a.priceBase - b.priceBase);
+  const top = results.slice(0, MAX_RESULTS);
 
-  if (results.length === 0) {
-    return NextResponse.json({
-      partNumber: partNumber.trim(),
-      description: description || "",
-      listingsFound: 0,
-      cheapest: null,
-    });
-  }
-
-  const cheapest = results[0];
   return NextResponse.json({
-    partNumber: partNumber.trim(),
+    partNumber: cleanPartNumber,
     description: description || "",
     listingsFound: results.length,
     baseCurrency: BASE_CURRENCY,
-    cheapest: {
-      priceBase: Math.round(cheapest.priceBase * 100) / 100,
-      priceOriginal: cheapest.priceOriginal,
-      currencyOriginal: cheapest.currencyOriginal,
-      source: cheapest.source,
-      country: cheapest.country,
-      title: cheapest.title,
-      link: cheapest.link,
-    },
+    results: top.map((r) => ({
+      priceBase: Math.round(r.priceBase * 100) / 100,
+      priceOriginal: r.priceOriginal,
+      currencyOriginal: r.currencyOriginal,
+      source: r.source,
+      country: r.country,
+      title: r.title,
+      link: r.link,
+    })),
   });
 }

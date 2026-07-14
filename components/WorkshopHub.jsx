@@ -1362,7 +1362,7 @@ function PartsPriceModal({ parts, onClose }) {
 
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
-      <div className="wb-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+      <div className="wb-modal" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
             <Search size={16} color="var(--amber)" /> Find cheapest price
@@ -1394,26 +1394,32 @@ function PartsPriceModal({ parts, onClose }) {
             <div style={{ color: "var(--red)", fontSize: 12 }}>{errorMsg}</div>
           )}
 
-          {status === "done" && result && result.listingsFound === 0 && (
+          {status === "done" && result && result.results.length === 0 && (
             <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "12px 0" }}>
-              No listings found for "{result.partNumber}".
+              No listings found that actually match "{result.partNumber}" — {result.listingsFound} loosely-related result(s) were discarded as unreliable.
             </div>
           )}
 
-          {status === "done" && result && result.cheapest && (
-            <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>
-                £{result.cheapest.priceBase.toFixed(2)}
-                <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>
-                  {" "}({result.cheapest.currencyOriginal} {result.cheapest.priceOriginal.toFixed(2)})
-                </span>
+          {status === "done" && result && result.results.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                Top {result.results.length} of {result.listingsFound} listing(s) that matched every word of "{result.partNumber}", cheapest first
               </div>
-              <div style={{ fontSize: 13 }}>{result.cheapest.source} — {result.cheapest.country}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>{result.cheapest.title}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>{result.listingsFound} listing(s) found across all markets</div>
-              {result.cheapest.link && (
-                <a href={result.cheapest.link} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>View listing</a>
-              )}
+              {result.results.map((r, i) => (
+                <div key={i} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>
+                    £{r.priceBase.toFixed(2)}
+                    <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>
+                      {" "}({r.currencyOriginal} {r.priceOriginal.toFixed(2)})
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 13 }}>{r.source} — {r.country}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{r.title}</div>
+                  {r.link && (
+                    <a href={r.link} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>View listing</a>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
