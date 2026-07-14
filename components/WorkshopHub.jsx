@@ -339,8 +339,36 @@ export default function WorkshopHub() {
 
   // Pops up whenever a part crosses into "needs reorder" — lives at this
   // level (not inside OfficeMode) so switching to Workshop and back doesn't
-  // forget a dismissal by remounting the component.
-  const [dismissedReorderIds, setDismissedReorderIds] = useState(() => new Set());
+  // forget a dismissal by remounting the component. Persisted to
+  // localStorage (not just in-memory) so dismissing it actually sticks
+  // across page reloads / relaunching the app, not just within one tab
+  // session — previously it reset to empty on every load, making "Dismiss"
+  // look broken since the alert came straight back next time you opened it.
+  const [dismissedReorderIds, setDismissedReorderIds] = useState(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      return new Set(JSON.parse(localStorage.getItem("wb-dismissed-reorder-ids") || "[]"));
+    } catch {
+      return new Set();
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem("wb-dismissed-reorder-ids", JSON.stringify([...dismissedReorderIds]));
+  }, [dismissedReorderIds]);
+  // Once a dismissed part is restocked (no longer low), forget its dismissal
+  // so a future shortage of that same part alerts again instead of staying
+  // silenced forever. Gated on `ready` — parts start out as [] before the
+  // initial fetch resolves, which looks identical to "nothing low stock"
+  // and would otherwise wipe out a just-loaded dismissal before the real
+  // data ever arrives.
+  useEffect(() => {
+    if (!ready) return;
+    const lowIds = new Set(lowStockItems.map((r) => r.id));
+    setDismissedReorderIds((prev) => {
+      const next = new Set([...prev].filter((id) => lowIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [ready, lowStockItems.map((r) => r.id).join(",")]);
   const pendingReorder = lowStockItems.filter((r) => !dismissedReorderIds.has(r.id));
   const [showReorderAlert, setShowReorderAlert] = useState(false);
   useEffect(() => {
