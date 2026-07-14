@@ -12,17 +12,17 @@ import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings, fetchPriceHistory,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
-  setBookingExtraPart, removeBookingExtraPart, upsertJobCardRow, updateJobCardRow,
+  setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
   insertPriceHistory, deletePriceHistory,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
+import { BUSINESSES, REVIEW_LINKS } from "@/lib/constants";
 import * as XLSX from "xlsx";
 
 // ============================================================
 // Shared constants & helpers
 // ============================================================
-const BUSINESSES = ["Warrington 4x4", "Timing Chain Specialists"];
 const REORDER_WEEKS = 1;
 
 // Which thermostat housing a model takes — lets the booking form pick the
@@ -165,6 +165,50 @@ function reminderCandidates(bookings) {
   });
 }
 
+function followUpMessage(b) {
+  return `Hi ${firstName(b.customerName)}, just checking in now it's been a couple of days since we finished the work on your vehicle — how's everything running? If all good, we'd really appreciate a quick Google review: ${REVIEW_LINKS[b.business] || ""}. And if anything doesn't feel right, just let us know.`;
+}
+
+// Bookings due a post-completion follow-up: marked complete at least 2 days
+// ago and not already followed up on. Uses completed_at (stamped when the
+// checkbox is ticked) rather than the booking's date/days, since jobs often
+// finish early or late relative to the scheduled span.
+function followUpCandidates(bookings) {
+  const today = todayISO();
+  return bookings.filter((b) => {
+    if (!b.completed || !b.completedAt || b.followupSent || !b.phone) return false;
+    const completedOn = new Date(b.completedAt).toISOString().slice(0, 10);
+    return daysBetweenISO(completedOn, today) >= 2;
+  });
+}
+
+// The dedicated 4-days-later review ask — separate from the 2-day check-in
+// above, with its own fixed wording per business.
+function reviewFollowUpMessage(b) {
+  const link = REVIEW_LINKS[b.business] || "";
+  return `Just a friendly reminder to leave us a Google review if you haven't already. ⭐
+
+Your feedback really helps our small family business and gives other Land Rover & Jaguar owners the confidence to choose us.
+
+It only takes a minute, and we genuinely appreciate every review.
+
+Here's the link... ${link}
+
+Thank you for your support! 🚗`;
+}
+
+// Bookings due the 4-day review check: marked complete at least 4 days ago
+// and not yet resolved (either a reminder was sent, or Office confirmed the
+// customer had already left a review).
+function reviewFollowUpCandidates(bookings) {
+  const today = todayISO();
+  return bookings.filter((b) => {
+    if (!b.completed || !b.completedAt || b.reviewFollowupDone || !b.phone) return false;
+    const completedOn = new Date(b.completedAt).toISOString().slice(0, 10);
+    return daysBetweenISO(completedOn, today) >= 4;
+  });
+}
+
 function guessName(text, phone) {
   const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";
   const cleaned = firstLine.replace(phone, "").trim();
@@ -297,6 +341,7 @@ export default function WorkshopHub() {
       subscribeTable("bookings", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_job_types", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_extra_parts", async () => setBookings(await fetchBookings())),
+      subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
@@ -380,6 +425,7 @@ export default function WorkshopHub() {
     const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
     const extraIds = newBooking.extraJobTypeIds || [];
     const extraParts = newBooking.extraParts || [];
+    const jobTypePrices = newBooking.jobTypePrices || [];
 
     const bom = fullBookingBom(newBooking, jobTypes);
     const updatedParts = parts.map((p) => {
@@ -396,6 +442,7 @@ export default function WorkshopHub() {
     await Promise.all([
       ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
       ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
+      ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
       ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
     ]);
 
@@ -431,9 +478,9 @@ export default function WorkshopHub() {
     const before = bookings.find((b) => b.id === id);
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
-    // bookings-table patch never includes extraJobTypeIds/extraParts — those
-    // live in their own junction tables, reconciled separately below.
-    const { extraJobTypeIds, extraParts, ...rowPatch } = patch;
+    // bookings-table patch never includes extraJobTypeIds/extraParts/jobTypePrices
+    // — those live in their own junction tables, reconciled separately below.
+    const { extraJobTypeIds, extraParts, jobTypePrices, ...rowPatch } = patch;
 
     // Editing the job type, extras, or extra parts on an existing booking
     // means the parts it reserved need correcting too — restock the old
@@ -465,6 +512,11 @@ export default function WorkshopHub() {
       const beforeParts = before?.extraParts || [];
       const removed = beforeParts.filter((l) => !extraParts.some((n) => n.partId === l.partId));
       jobs.push(...extraParts.map((l) => setBookingExtraPart(id, l.partId, l.qty)), ...removed.map((l) => removeBookingExtraPart(id, l.partId)));
+    }
+    if (jobTypePrices) {
+      const beforePrices = before?.jobTypePrices || [];
+      const removed = beforePrices.filter((l) => !jobTypePrices.some((n) => n.jobTypeId === l.jobTypeId));
+      jobs.push(...jobTypePrices.map((l) => setBookingJobTypePrice(id, l.jobTypeId, l.price)), ...removed.map((l) => removeBookingJobTypePrice(id, l.jobTypeId)));
     }
     await Promise.all(jobs.filter(Boolean));
 
@@ -824,6 +876,8 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <TwoDayReminderBanner bookings={bookings} updateBooking={updateBooking} />
+      <FollowUpBanner bookings={bookings} updateBooking={updateBooking} />
+      <ReviewFollowUpBanner bookings={bookings} updateBooking={updateBooking} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18 }}>
       <div className="wb-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -882,7 +936,12 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       <MessageCircle size={15} />
                     </button>
                     <button
-                      onClick={() => updateBooking(b.id, { completed: !b.completed })}
+                      onClick={() => {
+                        const nowComplete = !b.completed;
+                        updateBooking(b.id, nowComplete
+                          ? { completed: true, completedAt: Date.now(), followupSent: false }
+                          : { completed: false, completedAt: null });
+                      }}
                       title={b.completed ? "Mark as not yet complete" : "Mark job complete"}
                       style={{ background: "none", border: "none", color: b.completed ? "var(--green)" : "var(--muted)", cursor: "pointer" }}
                     >
@@ -965,6 +1024,75 @@ function TwoDayReminderBanner({ bookings, updateBooking }) {
   );
 }
 
+// Bookings marked complete 2+ days ago, due a check-in + review-request message.
+function FollowUpBanner({ bookings, updateBooking }) {
+  const candidates = useMemo(() => followUpCandidates(bookings), [bookings]);
+  if (candidates.length === 0) return null;
+
+  const send = (b) => {
+    window.open(whatsappLink(b.phone, followUpMessage(b)), "_blank");
+    updateBooking(b.id, { followupSent: true });
+  };
+
+  return (
+    <div className="wb-panel" style={{ borderColor: "var(--green)" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--green)" }}>
+        <Check size={15} /> {candidates.length} booking{candidates.length !== 1 ? "s" : ""} due a follow-up
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {candidates.map((b) => (
+          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13 }}>
+              <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— completed {fmtDate(new Date(b.completedAt).toISOString().slice(0, 10))}</span>
+            </div>
+            <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
+              <MessageCircle size={13} /> Send WhatsApp follow-up
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Bookings marked complete 4+ days ago, due the dedicated review check —
+// separate from the softer 2-day check-in above. Lets Office record either
+// that the reminder was sent, or that the customer had already left a
+// review, without sending anything in the latter case.
+function ReviewFollowUpBanner({ bookings, updateBooking }) {
+  const candidates = useMemo(() => reviewFollowUpCandidates(bookings), [bookings]);
+  if (candidates.length === 0) return null;
+
+  const send = (b) => {
+    window.open(whatsappLink(b.phone, reviewFollowUpMessage(b)), "_blank");
+    updateBooking(b.id, { reviewFollowupDone: true });
+  };
+  const markAlreadyReviewed = (b) => updateBooking(b.id, { reviewFollowupDone: true });
+
+  return (
+    <div className="wb-panel" style={{ borderColor: "var(--amber)" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
+        <AlertTriangle size={15} /> {candidates.length} booking{candidates.length !== 1 ? "s" : ""} due a review check
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {candidates.map((b) => (
+          <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 13 }}>
+              <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— completed {fmtDate(new Date(b.completedAt).toISOString().slice(0, 10))} · {b.business}</span>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => markAlreadyReviewed(b)}>Already reviewed</button>
+              <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
+                <MessageCircle size={13} /> Send review reminder
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Parts cost for a job type's recipe, priced from the Stock tab's cost prices.
 function partsCostForJobType(jt, parts) {
   return jt ? jt.bom.reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0) : 0;
@@ -1002,6 +1130,7 @@ function computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegi
 
 function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking }) {
   const [open, setOpen] = useState(false);
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
   const partsCost = useMemo(() => partsCostForBooking(booking, jobTypes, parts), [booking, jobTypes, parts]);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
   const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
@@ -1017,6 +1146,25 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
     if (!checked) return;
     if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
     window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking)), "_blank");
+  };
+  const createZohoInvoice = async () => {
+    setCreatingInvoice(true);
+    try {
+      const res = await fetch("/api/office/zoho-invoice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          business: booking.business, customerName: booking.customerName, phone: booking.phone,
+          jobValue: booking.jobValue, reg: booking.reg, jobTypeName: jt?.name || "",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(data.error || "Zoho invoice creation failed."); return; }
+      updateBooking(booking.id, { zohoInvoiceId: data.invoiceId, zohoInvoiceNumber: data.invoiceNumber, zohoInvoiceUrl: data.invoiceUrl });
+    } catch (e) {
+      alert("Zoho invoice creation failed — network error.");
+    }
+    setCreatingInvoice(false);
   };
   return (
     <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
@@ -1039,6 +1187,17 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
             <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => requestTransportQuote(e.target.checked)} /> Transport required
           </label>
+          {booking.completed && (
+            booking.zohoInvoiceId ? (
+              <a href={booking.zohoInvoiceUrl} target="_blank" rel="noopener noreferrer" className="wb-btn-ghost" style={{ textDecoration: "none", textAlign: "center", color: "var(--green)" }}>
+                <Check size={12} style={{ display: "inline", marginRight: 4 }} />Zoho invoice {booking.zohoInvoiceNumber ? `#${booking.zohoInvoiceNumber}` : ""} created
+              </a>
+            ) : (
+              <button className="wb-btn-ghost" onClick={createZohoInvoice} disabled={creatingInvoice || !booking.jobValue}>
+                {creatingInvoice ? "Creating…" : "Create Zoho invoice"}
+              </button>
+            )
+          )}
         </div>
       )}
     </div>
@@ -1620,6 +1779,29 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || "");
   const [postcode, setPostcode] = useState(booking?.postcode || "");
   const [distanceMiles, setDistanceMiles] = useState(booking?.distanceMiles ?? null);
+  // Price per job type on this booking (main + each extra), keyed by job
+  // type id — summed into the invoice total below. An existing booking with
+  // no breakdown saved yet (from before this existed) falls back to putting
+  // its whole current total on the main job type, rather than losing it.
+  const [jobTypePrices, setJobTypePrices] = useState(() => {
+    if (booking?.jobTypePrices?.length) return Object.fromEntries(booking.jobTypePrices.map((p) => [p.jobTypeId, p.price]));
+    if (booking) return { [booking.jobTypeId]: booking.jobValue || 0 };
+    return {};
+  });
+  // Pre-fills the standard Timing Chain Replacement price the moment that job
+  // type is picked (main or extra) on a new booking — preserves whatever was
+  // already typed for a job type if it's picked again, and never touches an
+  // existing booking's already-agreed prices when editing.
+  const priceForNewJobType = (id) => {
+    const jt = jobTypes.find((j) => j.id === id);
+    return isTimingChainReplacement(jt) ? STANDARD_TIMING_CHAIN_PRICE.jobValue : 0;
+  };
+  useEffect(() => {
+    if (booking) return;
+    setJobTypePrices((prev) => (jobTypeId in prev ? prev : { ...prev, [jobTypeId]: priceForNewJobType(jobTypeId) }));
+  }, [jobTypeId]);
+  const allJobTypeIds = [jobTypeId, ...extraJobTypeIds].filter(Boolean);
+  const jobValue = allJobTypeIds.reduce((sum, id) => sum + (jobTypePrices[id] || 0), 0);
   const isTCS = business === "Timing Chain Specialists";
   const handlePostcodeChange = (val) => { setPostcode(val); setDistanceMiles(estimateDistanceMiles(settings.workshopPostcode, val)); };
   const withinFreeRadius = typeof distanceMiles === "number" ? distanceMiles <= 150 : null;
@@ -1672,7 +1854,10 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
                   return (
                     <span key={id} className="wb-chip" style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 0 }}>
                       {jt?.name || id}
-                      <X size={11} style={{ cursor: "pointer" }} onClick={() => setExtraJobTypeIds((prev) => prev.filter((x) => x !== id))} />
+                      <X size={11} style={{ cursor: "pointer" }} onClick={() => {
+                        setExtraJobTypeIds((prev) => prev.filter((x) => x !== id));
+                        setJobTypePrices((prev) => { const next = { ...prev }; delete next[id]; return next; });
+                      }} />
                     </span>
                   );
                 })}
@@ -1680,11 +1865,38 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             )}
             <select
               className="wb-select" value=""
-              onChange={(e) => { if (e.target.value) setExtraJobTypeIds((prev) => [...prev, e.target.value]); }}
+              onChange={(e) => {
+                if (!e.target.value) return;
+                const id = e.target.value;
+                setExtraJobTypeIds((prev) => [...prev, id]);
+                setJobTypePrices((prev) => (id in prev ? prev : { ...prev, [id]: priceForNewJobType(id) }));
+              }}
             >
               <option value="">+ add an extra job…</option>
               {jobTypes.filter((jt) => jt.id !== jobTypeId && !extraJobTypeIds.includes(jt.id)).map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="wb-label">Pricing</label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {allJobTypeIds.map((id) => {
+                const jtObj = jobTypes.find((j) => j.id === id);
+                return (
+                  <div key={id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13 }}>{jtObj?.name || id}</span>
+                    <span style={{ fontSize: 13, color: "var(--muted)" }}>£</span>
+                    <input
+                      type="number" className="wb-input" style={{ width: 100 }} value={jobTypePrices[id] || ""}
+                      onChange={(e) => { const price = parseFloat(e.target.value) || 0; setJobTypePrices((prev) => ({ ...prev, [id]: price })); }}
+                    />
+                  </div>
+                );
+              })}
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 13, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                <span>Total invoice</span>
+                <span className="wh-mono">£{jobValue.toFixed(2)}</span>
+              </div>
+            </div>
           </div>
           <div>
             <label className="wb-label">Extra parts (single items straight from Stock, e.g. one extra gasket)</label>
@@ -1756,9 +1968,11 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
-            // Only set these for a brand-new booking — editing must never clobber job value/costs already entered on the Calendar tab.
-            // Timing Chain Replacement gets its standard price pre-filled; everything else starts at zero.
-            ...(booking ? {} : { ...(isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE : { jobValue: 0, labourCost: 0 }), transportCost: 0 }),
+            jobValue,
+            jobTypePrices: allJobTypeIds.map((id) => ({ jobTypeId: id, price: jobTypePrices[id] || 0 })),
+            // Labour/transport stay calendar-tab-only for an existing booking — editing here must never clobber those.
+            // Timing Chain Replacement gets its standard labour cost alongside the pricing breakdown above; everything else starts at zero.
+            ...(booking ? {} : { labourCost: isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE.labourCost : 0, transportCost: 0 }),
           })}>{booking ? "Save changes" : "Save booking"}</button>
         </div>
       </div>
