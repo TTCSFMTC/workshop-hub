@@ -641,7 +641,12 @@ export default function WorkshopHub() {
         .wb-tabs { display:flex; gap:4px; padding:10px 18px 0; border-bottom:1px solid var(--line); overflow-x:auto; }
         .wb-tab { padding:10px 14px; font-size:13px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; }
         .wb-tab.active { color:var(--amber2); border-bottom-color: var(--amber); }
-        .wb-body { padding:20px; }
+        .wb-cal-layout { display:grid; grid-template-columns: 1fr 340px; gap:18px; }
+@media (max-width: 800px) {
+  .wb-cal-layout { grid-template-columns: 1fr; }
+  .wb-body { padding:12px; }
+  .wb-day { min-height:56px; padding:4px; }
+}
         .wb-panel, .jc-card { background: var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
         .wb-btn, .jc-btn { background: var(--amber); color:#1a1508; font-weight:700; border:none; border-radius:8px; padding:12px 16px; font-size:14px; display:inline-flex; align-items:center; gap:7px; cursor:pointer; min-height:44px; }
         .wb-btn:hover { background: var(--amber2); }
