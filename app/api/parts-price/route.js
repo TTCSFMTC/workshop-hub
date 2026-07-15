@@ -52,6 +52,23 @@ function isRealMatch(partNumber, title) {
   return queryTokens.every((t) => titleTokens.has(t));
 }
 
+// SearchApi's `condition` request param was tried and rejected — it changes
+// what Google Shopping matches entirely rather than just filtering by
+// condition (searching "FEBI 193356" with condition=new returned completely
+// unrelated FEBI products, zero of which mentioned 193356). There's also no
+// per-listing condition field in the response to filter on afterwards. A
+// title keyword check is the only reliable signal available.
+const USED_KEYWORDS = [
+  "used", "second hand", "secondhand", "reconditioned", "recon", "refurbished",
+  "refurb", "salvage", "breaker", "breaking", "part worn", "partworn",
+  "pre-owned", "preowned", "takeoff", "take off", "take-off", "removed from",
+  "genuine used", "ex-demo", "exdemo", "scrap",
+];
+function looksUsed(title) {
+  const lower = title.toLowerCase();
+  return USED_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 export async function POST(request) {
   const apiKey = process.env.SEARCHAPI_KEY;
   if (!apiKey) {
@@ -83,6 +100,7 @@ export async function POST(request) {
     for (const r of outcome.value) {
       if (typeof r.extracted_price !== "number" || !rate) continue;
       if (!isRealMatch(cleanPartNumber, r.title || "")) continue;
+      if (looksUsed(r.title || "")) continue;
       results.push({
         title: r.title || "",
         source: r.seller || r.source || "unknown",
