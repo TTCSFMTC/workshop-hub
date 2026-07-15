@@ -878,7 +878,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
       <TwoDayReminderBanner bookings={bookings} updateBooking={updateBooking} />
       <FollowUpBanner bookings={bookings} updateBooking={updateBooking} />
       <ReviewFollowUpBanner bookings={bookings} updateBooking={updateBooking} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18 }}>
+      <div className="wb-cal-layout">
       <div className="wb-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
