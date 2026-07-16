@@ -678,6 +678,12 @@ export default function WorkshopHub() {
         .jc-chip.w4 { background:#241d10; color:var(--amber2); }
         .req-banner { background:#241512; border:1px solid #4a2420; color: var(--red); border-radius:8px; padding:10px 12px; font-size:12px; display:flex; align-items:center; gap:8px; }
         .req-banner.ok { background:#10281a; border-color:#1f4530; color: var(--green); }
+        .print-job-card { display: none; }
+        @media print {
+          body * { visibility: hidden; }
+          .print-job-card, .print-job-card * { visibility: visible; }
+          .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+        }
       `}</style>
 
       <div className="wh-topbar">
@@ -728,6 +734,18 @@ function OfficeMode({
   const [selectedDay, setSelectedDay] = useState(todayISO());
   const [showNewBooking, setShowNewBooking] = useState(false);
   const [editingBooking, setEditingBooking] = useState(null);
+  const [printJob, setPrintJob] = useState(null);
+
+  // Fires the OS print dialog the moment a new booking is saved — each job
+  // card then lands in a physical pile at reception for the next available
+  // tech to pick up, one card per booking taken.
+  useEffect(() => {
+    if (!printJob) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintJob(null);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printJob]);
 
   return (
     <div>
@@ -765,12 +783,17 @@ function OfficeMode({
           jobTypes={jobTypes} parts={parts} settings={settings} defaultDate={selectedDay} booking={editingBooking}
           onClose={() => { setShowNewBooking(false); setEditingBooking(null); }}
           onSave={(b) => {
-            if (editingBooking) updateBooking(editingBooking.id, b);
-            else addBooking(b);
+            if (editingBooking) {
+              updateBooking(editingBooking.id, b);
+            } else {
+              addBooking(b);
+              setPrintJob(b);
+            }
             setShowNewBooking(false); setEditingBooking(null); setSelectedDay(b.date);
           }}
         />
       )}
+      {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} />}
       {showReorderAlert && pendingReorder.length > 0 && (
         <ReorderAlertModal
           items={pendingReorder}
@@ -782,6 +805,51 @@ function OfficeMode({
           }}
         />
       )}
+    </div>
+  );
+}
+
+// Printed the moment a new booking is saved (see OfficeMode's onSave) so it
+// can go straight into a physical pile at reception — techs work through the
+// pile one job card at a time. Plain black-on-white regardless of the app's
+// dark theme, since it's meant for a printer, not a screen.
+function JobCardPrintout({ booking, jobTypes }) {
+  const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+  const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
+  const jobTypeLabel = [jt?.name, ...extraJts.map((e) => e.name)].filter(Boolean).join(" + ");
+  const rows = [
+    ["Business", booking.business],
+    ["Booking date", booking.date ? fmtDate(booking.date) : ""],
+    ["Customer name", booking.customerName],
+    ["Address", booking.pickupAddress],
+    ["Phone", booking.phone],
+    ["Vehicle registration", booking.reg],
+    ["Vehicle model", booking.vehicleModel],
+    ["Booked in for", jobTypeLabel],
+  ].filter(([, value]) => value);
+
+  return (
+    <div className="print-job-card">
+      <div style={{ padding: 32, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2 }}>{booking.business}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.08em", color: "#555", marginBottom: 20 }}>JOB CARD</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 20 }}>
+          <tbody>
+            {rows.map(([label, value]) => (
+              <tr key={label}>
+                <td style={{ padding: "6px 12px 6px 0", fontWeight: 700, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
+                <td style={{ padding: "6px 0", borderBottom: "1px solid #ccc" }}>{value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Customer notes</div>
+        <div style={{ border: "1px solid #000", borderRadius: 4, padding: 10, minHeight: 90, fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 20 }}>
+          {booking.symptoms || "—"}
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Comments</div>
+        <div style={{ border: "1px solid #000", borderRadius: 4, minHeight: 220 }} />
+      </div>
     </div>
   );
 }
