@@ -1150,12 +1150,20 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
   const createZohoInvoice = async () => {
     setCreatingInvoice(true);
     try {
+      // One invoice line per job type on the booking (Timing Chain Replacement,
+      // Piston Cooling Jet Solenoid, etc. each priced separately) — never split
+      // further into the individual parts within a job type. A booking saved
+      // before the pricing breakdown existed falls back to one line for the
+      // whole total.
+      const lineItems = booking.jobTypePrices?.length
+        ? booking.jobTypePrices.map((p) => ({ name: jobTypes.find((j) => j.id === p.jobTypeId)?.name || p.jobTypeId, amount: p.price }))
+        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue }];
       const res = await fetch("/api/office/zoho-invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           business: booking.business, customerName: booking.customerName, phone: booking.phone,
-          jobValue: booking.jobValue, reg: booking.reg, jobTypeName: jt?.name || "",
+          jobValue: booking.jobValue, reg: booking.reg, lineItems,
         }),
       });
       const data = await res.json().catch(() => ({}));
