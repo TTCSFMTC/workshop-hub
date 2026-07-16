@@ -9,11 +9,11 @@ import {
   Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings, fetchPriceHistory,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings, fetchPriceHistory, fetchStockBatches,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
-  insertPriceHistory, deletePriceHistory,
+  insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -54,6 +54,54 @@ const addDaysISO = (iso, days) => {
 };
 // Every calendar day a multi-day booking spans, e.g. days=3 from 2026-07-08 -> [07-08, 07-09, 07-10].
 const bookingDates = (b) => Array.from({ length: b.days || 1 }, (_, i) => addDaysISO(b.date, i));
+
+// ============================================================
+// Stock batches — FIFO cost basis
+//
+// A part's stock/cost price is derived from its delivered batches, oldest
+// first, rather than stored directly: an existing cheaper batch keeps being
+// "the" reported cost price until it's actually used up, then the next
+// batch takes over. Parts that have never had a delivered batch (brand new,
+// never ordered) fall back to their raw (zero) stock/costPrice.
+// ============================================================
+function derivePartFromBatches(part, batches) {
+  const allDelivered = batches.filter((b) => b.partId === part.id && b.status === "delivered").sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1));
+  if (allDelivered.length === 0) return part;
+  const active = allDelivered.filter((b) => b.qtyRemaining > 0);
+  const stock = +allDelivered.reduce((sum, b) => sum + b.qtyRemaining, 0).toFixed(2);
+  const costPrice = active.length > 0 ? active[0].price : allDelivered[allDelivered.length - 1].price;
+  return { ...part, stock, costPrice };
+}
+// Deducting qty from a part's stock (booking created, or edited to use
+// more) — walks delivered batches oldest-first, splitting across batches if
+// one alone doesn't cover it. Returns the {batchId, qtyRemaining} writes
+// needed; doesn't go negative if the request exceeds what's tracked.
+function allocateFIFO(batches, partId, qty) {
+  const active = batches.filter((b) => b.partId === partId && b.status === "delivered" && b.qtyRemaining > 0).sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1));
+  const updates = [];
+  let remaining = qty;
+  for (const b of active) {
+    if (remaining <= 0) break;
+    const take = Math.min(b.qtyRemaining, remaining);
+    updates.push({ batchId: b.id, qtyRemaining: +(b.qtyRemaining - take).toFixed(2) });
+    remaining = +(remaining - take).toFixed(2);
+  }
+  return updates;
+}
+// Returning qty to stock (booking deleted, or edited to use less) — added
+// back into the oldest existing delivered batch for that part, since a
+// booking doesn't track exactly which batch(es) it originally drew from.
+// An approximation, not a perfect lot-reversal, but keeps totals correct.
+function returnFIFO(batches, partId, qty) {
+  const existing = batches.filter((b) => b.partId === partId && b.status === "delivered").sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1));
+  if (existing.length === 0) return [];
+  const b = existing[0];
+  return [{ batchId: b.id, qtyRemaining: +(b.qtyRemaining + qty).toFixed(2) }];
+}
+function applyBatchUpdates(batches, updates) {
+  const map = new Map(updates.map((u) => [u.batchId, u.qtyRemaining]));
+  return batches.map((b) => (map.has(b.id) ? { ...b, qtyRemaining: map.get(b.id) } : b));
+}
 // Whole-day difference between two ISO dates (toIso - fromIso), UTC-based like addDaysISO
 // so it can't be thrown off by DST.
 const daysBetweenISO = (fromIso, toIso) => {
@@ -304,25 +352,34 @@ const BLANK_CARD = (booking) => ({
 export default function WorkshopHub() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [parts, setParts] = useState([]);
+  const [rawParts, setRawParts] = useState([]);
   const [jobTypes, setJobTypes] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [jobCards, setJobCards] = useState([]);
   const [priceHistory, setPriceHistory] = useState([]);
+  const [stockBatches, setStockBatches] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
+
+  // Every part's stock/cost price is derived from its delivered stock
+  // batches (oldest-first), not stored directly — see lib/stockBatches
+  // helpers below. Everything downstream (Stock tab, profit calc, Zoho
+  // invoicing, job type recipes) just reads part.stock/part.costPrice as
+  // before, unaware this is now computed rather than a raw column.
+  const parts = useMemo(() => rawParts.map((p) => derivePartFromBatches(p, stockBatches)), [rawParts, stockBatches]);
 
   useEffect(() => {
     (async () => {
       try {
         const d = await fetchAll();
-        setParts(d.parts);
+        setRawParts(d.parts);
         setJobTypes(d.jobTypes);
         setBookings(d.bookings);
         if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setJobCards(d.jobCards);
         setPriceHistory(d.priceHistory);
+        setStockBatches(d.stockBatches);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -335,7 +392,7 @@ export default function WorkshopHub() {
   useEffect(() => {
     if (!ready) return;
     const unsubs = [
-      subscribeTable("parts", async () => setParts(await fetchParts())),
+      subscribeTable("parts", async () => setRawParts(await fetchParts())),
       subscribeTable("job_types", async () => setJobTypes(await fetchJobTypes())),
       subscribeTable("job_type_parts", async () => setJobTypes(await fetchJobTypes())),
       subscribeTable("bookings", async () => setBookings(await fetchBookings())),
@@ -344,6 +401,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
+      subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -428,12 +486,8 @@ export default function WorkshopHub() {
     const jobTypePrices = newBooking.jobTypePrices || [];
 
     const bom = fullBookingBom(newBooking, jobTypes);
-    const updatedParts = parts.map((p) => {
-      const line = bom.find((l) => l.partId === p.id);
-      if (!line) return p;
-      return { ...p, stock: Math.max(0, +(p.stock - line.qty).toFixed(2)) };
-    });
-    setParts(updatedParts);
+    const batchUpdates = bom.flatMap((l) => allocateFIFO(stockBatches, l.partId, l.qty));
+    setStockBatches((prev) => applyBatchUpdates(prev, batchUpdates));
     setBookings((prev) => [...prev, newBooking]);
 
     // booking_job_types has a foreign key on bookings, so the insert must
@@ -443,7 +497,7 @@ export default function WorkshopHub() {
       ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
       ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
       ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
-      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+      ...batchUpdates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)),
     ]);
 
     const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
@@ -455,21 +509,22 @@ export default function WorkshopHub() {
 
   const removeBooking = (id) => withSaveState(async () => {
     const b = bookings.find((x) => x.id === id);
-    let updatedParts = parts;
+    let batchUpdates = [];
     if (b) {
       const bom = fullBookingBom(b, jobTypes);
-      updatedParts = parts.map((p) => {
-        const line = bom.find((l) => l.partId === p.id);
-        if (!line) return p;
-        return { ...p, stock: +(p.stock + line.qty).toFixed(2) };
-      });
-      setParts(updatedParts);
+      let working = stockBatches;
+      for (const l of bom) {
+        const updates = returnFIFO(working, l.partId, l.qty);
+        batchUpdates.push(...updates);
+        working = applyBatchUpdates(working, updates);
+      }
+      setStockBatches(working);
     }
     setBookings((prev) => prev.filter((x) => x.id !== id));
 
     await Promise.all([
       deleteBookingRow(id), // cascades booking_job_types + booking_extra_parts rows too
-      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+      ...batchUpdates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)),
       deleteBookingFromGoogle(b?.googleEventId),
     ]);
   });
@@ -484,23 +539,28 @@ export default function WorkshopHub() {
 
     // Editing the job type, extras, or extra parts on an existing booking
     // means the parts it reserved need correcting too — restock the old
-    // combined recipe, deduct the new one.
-    let updatedParts = parts;
+    // combined recipe, deduct the new one, FIFO either way.
+    let batchUpdates = [];
     if (before && ("jobTypeId" in patch || "extraJobTypeIds" in patch || "extraParts" in patch)) {
       const beforeBom = fullBookingBom(before, jobTypes);
       const afterBom = fullBookingBom({ ...before, ...patch }, jobTypes);
-      updatedParts = parts.map((p) => {
-        const oldQty = beforeBom.find((l) => l.partId === p.id)?.qty || 0;
-        const newQty = afterBom.find((l) => l.partId === p.id)?.qty || 0;
-        const delta = oldQty - newQty;
-        return delta === 0 ? p : { ...p, stock: Math.max(0, +(p.stock + delta).toFixed(2)) };
-      });
-      setParts(updatedParts);
+      const allPartIds = new Set([...beforeBom.map((l) => l.partId), ...afterBom.map((l) => l.partId)]);
+      let working = stockBatches;
+      for (const partId of allPartIds) {
+        const oldQty = beforeBom.find((l) => l.partId === partId)?.qty || 0;
+        const newQty = afterBom.find((l) => l.partId === partId)?.qty || 0;
+        const delta = oldQty - newQty; // positive = return to stock, negative = allocate more
+        if (delta === 0) continue;
+        const updates = delta > 0 ? returnFIFO(working, partId, delta) : allocateFIFO(working, partId, -delta);
+        batchUpdates.push(...updates);
+        working = applyBatchUpdates(working, updates);
+      }
+      setStockBatches(working);
     }
 
     const jobs = [
       Object.keys(rowPatch).length > 0 ? updateBookingRow(id, rowPatch) : null,
-      ...updatedParts.filter((p, i) => p.stock !== parts[i].stock).map((p) => updatePart(p.id, { stock: p.stock })),
+      ...batchUpdates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)),
     ];
     if (extraJobTypeIds) {
       const beforeExtras = before?.extraJobTypeIds || [];
@@ -531,36 +591,68 @@ export default function WorkshopHub() {
     }
   });
 
+  // Plain quantity correction (stocktake found more/less, wastage) — no
+  // price involved, unlike ordering. Adding creates one new delivered batch
+  // at the part's current derived cost price; removing deducts FIFO from
+  // existing batches, same as a booking using the part up.
   const receiveStock = (partId, qty) => withSaveState(async () => {
-    const part = parts.find((p) => p.id === partId);
-    const stock = Math.max(0, +((part?.stock || 0) + qty).toFixed(2));
-    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, stock } : p)));
-    await updatePart(partId, { stock });
+    if (qty > 0) {
+      const part = parts.find((p) => p.id === partId);
+      const now = new Date().toISOString();
+      const newBatch = { id: uid("sb"), partId, qtyOrdered: qty, qtyRemaining: qty, price: part?.costPrice || 0, supplier: "", status: "delivered", orderedAt: now, deliveredAt: now };
+      setStockBatches((prev) => [...prev, newBatch]);
+      await insertStockBatch(newBatch);
+    } else if (qty < 0) {
+      const updates = allocateFIFO(stockBatches, partId, -qty);
+      setStockBatches((prev) => applyBatchUpdates(prev, updates));
+      await Promise.all(updates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)));
+    }
+  });
+
+  // Places an order at a price — doesn't count as physical stock yet.
+  const orderStock = (partId, qty, price, supplier) => withSaveState(async () => {
+    const newBatch = { id: uid("sb"), partId, qtyOrdered: qty, qtyRemaining: qty, price, supplier: supplier || "", status: "ordered", orderedAt: new Date().toISOString(), deliveredAt: null };
+    setStockBatches((prev) => [...prev, newBatch]);
+    await insertStockBatch(newBatch);
+  });
+
+  // Marks an order as physically arrived — from this point it counts toward
+  // physical stock and joins the FIFO cost queue. Also logs it to price
+  // history so the existing reorder-alert "12-month low" feature stays fed
+  // without a separate manual entry.
+  const deliverStock = (batchId) => withSaveState(async () => {
+    const batch = stockBatches.find((b) => b.id === batchId);
+    if (!batch) return;
+    const deliveredAt = new Date().toISOString();
+    setStockBatches((prev) => prev.map((b) => (b.id === batchId ? { ...b, status: "delivered", deliveredAt } : b)));
+    const historyEntry = { id: uid("ph"), partId: batch.partId, price: batch.price, qty: batch.qtyOrdered, supplier: batch.supplier || null, recordedAt: deliveredAt };
+    setPriceHistory((prev) => [...prev, historyEntry]);
+    await Promise.all([markStockBatchDelivered(batchId, deliveredAt), insertPriceHistory(historyEntry)]);
   });
 
   const updatePartField = (partId, patch) => withSaveState(async () => {
-    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, ...patch } : p)));
+    setRawParts((prev) => prev.map((p) => (p.id === partId ? { ...p, ...patch } : p)));
     await updatePart(partId, patch);
   });
 
-  // Recording a new price both logs it to history (for trend analysis) and
-  // becomes the part's current cost price — the old price isn't lost, it's
-  // just no longer "current".
+  // Manually logging a price seen elsewhere (for the reorder alert's
+  // "12-month low" trend) — no longer changes the part's actual cost price,
+  // since that's derived from delivered stock batches now. Purely a log.
   const recordPrice = (partId, price, qty, supplier) => withSaveState(async () => {
     const entry = { id: uid("ph"), partId, price, qty: qty || null, supplier: supplier || null, recordedAt: new Date().toISOString() };
     setPriceHistory((prev) => [...prev, entry]);
-    setParts((prev) => prev.map((p) => (p.id === partId ? { ...p, costPrice: price } : p)));
-    await Promise.all([insertPriceHistory(entry), updatePart(partId, { costPrice: price })]);
+    await insertPriceHistory(entry);
   });
 
   const addPart = (name, unit) => withSaveState(async () => {
     const part = { id: uid("p"), name, unit, stock: 0, costPrice: 0 };
-    setParts((prev) => [...prev, part]);
+    setRawParts((prev) => [...prev, part]);
     await insertPart(part);
   });
 
   const removePart = (partId) => withSaveState(async () => {
-    setParts((prev) => prev.filter((p) => p.id !== partId));
+    setRawParts((prev) => prev.filter((p) => p.id !== partId));
+    setStockBatches((prev) => prev.filter((b) => b.partId !== partId)); // DB cascades this delete too
     setJobTypes((prev) => prev.map((jt) => ({ ...jt, bom: jt.bom.filter((l) => l.partId !== partId) })));
     await deletePart(partId);
   });
@@ -662,6 +754,8 @@ export default function WorkshopHub() {
         .wb-daynum { font-size:11px; color:var(--muted); font-weight:600; }
         .wb-chip, .jc-chip { font-size:10px; background:#2b2410; color:var(--amber2); border-radius:3px; padding:1px 5px; margin-top:3px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .wb-chip.tcs, .jc-chip.tcs { background:#0f2a24; color:#6fd6b8; }
+        .wb-chip.status-workshop-completed { background:#3a2410; color:#ffb84d; }
+        .wb-chip.status-collected { background:#10281a; color:var(--green); }
         .wb-badge-low { background:#3a1210; color:var(--red); border:1px solid #5a2320; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-badge-ok { background:#10281a; color:var(--green); border:1px solid #1f4530; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:flex-start; justify-content:center; padding:30px 14px; z-index:50; overflow-y:auto; }
@@ -707,6 +801,7 @@ export default function WorkshopHub() {
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
+          stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock}
           priceHistory={priceHistory} recordPrice={recordPrice}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
@@ -727,6 +822,7 @@ export default function WorkshopHub() {
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
+  stockBatches, orderStock, deliverStock,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
 }) {
   const [tab, setTab] = useState("calendar");
@@ -765,6 +861,7 @@ function OfficeMode({
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
+            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock}
             priceHistory={priceHistory} recordPrice={recordPrice} />
         )}
         {tab === "jobtypes" && (
@@ -973,7 +1070,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => setSelectedDay(iso)}>
                 <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 3).map((b) => <span key={b.id} className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}>{b.customerName || "Booking"}</span>)}
+                {dayBk.slice(0, 3).map((b) => {
+                  const statusClass = b.completed ? "status-collected" : b.workshopCompleted ? "status-workshop-completed" : "";
+                  return <span key={b.id} className={`wb-chip ${statusClass || (b.business === "Timing Chain Specialists" ? "tcs" : "")}`}>{b.customerName || "Booking"}</span>;
+                })}
                 {dayBk.length > 3 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 3} more</span>}
               </div>
             );
@@ -992,9 +1092,13 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6, color: b.completed ? "var(--green)" : b.workshopCompleted ? "#ffb84d" : "var(--text)" }}>
                     {b.customerName || "Unnamed"}
-                    {b.completed && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}><Check size={9} style={{ display: "inline", marginRight: 2 }} />Completed</span>}
+                    {b.completed ? (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}><Check size={9} style={{ display: "inline", marginRight: 2 }} />Collected</span>
+                    ) : b.workshopCompleted ? (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#ffb84d", border: "1px solid #ffb84d", borderRadius: 20, padding: "1px 7px" }}><Wrench size={9} style={{ display: "inline", marginRight: 2 }} />Ready for collection</span>
+                    ) : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <button
@@ -1010,12 +1114,22 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     </button>
                     <button
                       onClick={() => {
+                        const now = !b.workshopCompleted;
+                        updateBooking(b.id, now ? { workshopCompleted: true, workshopCompletedAt: Date.now() } : { workshopCompleted: false, workshopCompletedAt: null });
+                      }}
+                      title={b.workshopCompleted ? "Mark as not yet workshop completed" : "Mark workshop completed — ready for collection, can be invoiced"}
+                      style={{ background: "none", border: "none", color: b.workshopCompleted ? "#ffb84d" : "var(--muted)", cursor: "pointer" }}
+                    >
+                      <Wrench size={13} />
+                    </button>
+                    <button
+                      onClick={() => {
                         const nowComplete = !b.completed;
                         updateBooking(b.id, nowComplete
                           ? { completed: true, completedAt: Date.now(), followupSent: false }
                           : { completed: false, completedAt: null });
                       }}
-                      title={b.completed ? "Mark as not yet complete" : "Mark job complete"}
+                      title={b.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
                       style={{ background: "none", border: "none", color: b.completed ? "var(--green)" : "var(--muted)", cursor: "pointer" }}
                     >
                       <Check size={13} />
@@ -1116,7 +1230,7 @@ function FollowUpBanner({ bookings, updateBooking }) {
         {candidates.map((b) => (
           <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ fontSize: 13 }}>
-              <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— completed {fmtDate(new Date(b.completedAt).toISOString().slice(0, 10))}</span>
+              <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— collected {fmtDate(new Date(b.completedAt).toISOString().slice(0, 10))}</span>
             </div>
             <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
               <MessageCircle size={13} /> Send WhatsApp follow-up
@@ -1268,7 +1382,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
             <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => requestTransportQuote(e.target.checked)} /> Transport required
           </label>
-          {booking.completed && (
+          {booking.workshopCompleted && (
             booking.zohoInvoiceId ? (
               <a href={booking.zohoInvoiceUrl} target="_blank" rel="noopener noreferrer" className="wb-btn-ghost" style={{ textDecoration: "none", textAlign: "center", color: "var(--green)" }}>
                 <Check size={12} style={{ display: "inline", marginRight: 4 }} />Zoho invoice {booking.zohoInvoiceNumber ? `#${booking.zohoInvoiceNumber}` : ""} created
@@ -1412,8 +1526,8 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
         {(months.unpricedCount > 0 || months.notYetCompleteCount > 0) && (
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
             {months.unpricedCount > 0 && <span>{months.unpricedCount} booking{months.unpricedCount !== 1 ? "s" : ""} without a price entered yet. </span>}
-            {months.notYetCompleteCount > 0 && <span>{months.notYetCompleteCount} priced booking{months.notYetCompleteCount !== 1 ? "s" : ""} not yet marked complete. </span>}
-            None of these are counted here — add a job value and mark the job complete on the Calendar tab to include it.
+            {months.notYetCompleteCount > 0 && <span>{months.notYetCompleteCount} priced booking{months.notYetCompleteCount !== 1 ? "s" : ""} not yet marked collected. </span>}
+            None of these are counted here — add a job value and mark it collected on the Calendar tab to include it.
           </div>
         )}
       </div>
@@ -1465,10 +1579,17 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, priceHistory, recordPrice }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, priceHistory, recordPrice }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
+  const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const pendingByPart = useMemo(() => {
+    const map = {};
+    stockBatches.filter((b) => b.status === "ordered").forEach((b) => { map[b.partId] = map[b.partId] || []; map[b.partId].push(b); });
+    return map;
+  }, [stockBatches]);
+  const daysAgo = (iso) => Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 86400000));
   const renamePart = (r) => { const name = prompt("Rename part:", r.name); if (!name || !name.trim()) return; updatePartField(r.id, { name: name.trim() }); };
   const deletePartClick = (r) => {
     const usedIn = jobTypes.filter((jt) => jt.bom.some((l) => l.partId === r.id)).map((jt) => jt.name);
@@ -1504,7 +1625,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
       </div>
       <div style={{ overflowX: "auto" }}>
       <table className="wb-table">
-        <thead><tr><th>Part</th><th>Part no.</th><th>In stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>Receive</th><th></th></tr></thead>
+        <thead><tr><th>Part</th><th>Part no.</th><th>Physical stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>On order / due in</th><th>Order stock</th><th>Correct</th><th></th></tr></thead>
         <tbody>
           {stockRows.map((r) => (
             <tr key={r.id}>
@@ -1523,11 +1644,43 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
               <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <input type="number" step="0.01" className="wb-input" style={{ width: 100 }} value={r.costPrice ?? 0} onChange={(e) => updatePartField(r.id, { costPrice: parseFloat(e.target.value) || 0 })} />
+                  <span className="wh-mono">£{(r.costPrice ?? 0).toFixed(2)}</span>
                   <button onClick={() => setHistoryPart(r)} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
                 </div>
               </td>
               <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
+              <td>
+                {(pendingByPart[r.id] || []).length === 0 ? (
+                  <span style={{ color: "var(--muted)" }}>—</span>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {pendingByPart[r.id].map((b) => (
+                      <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
+                        <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
+                        <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
+                          <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </td>
+              <td>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
+                  <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
+                  <button
+                    className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
+                    onClick={() => {
+                      const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
+                      if (!qty || qty <= 0 || !price || price < 0) return;
+                      orderStock(r.id, qty, price);
+                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "" } }));
+                    }}
+                  >Order</button>
+                </div>
+              </td>
               <td>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
