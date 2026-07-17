@@ -1091,7 +1091,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const combinedParts = fullBookingBom(b, jobTypes);
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6, color: b.completed ? "var(--green)" : b.workshopCompleted ? "#ffb84d" : "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                     {b.completed ? (
@@ -1100,7 +1100,9 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       <span style={{ fontSize: 10, fontWeight: 700, color: "#ffb84d", border: "1px solid #ffb84d", borderRadius: 20, padding: "1px 7px" }}><Wrench size={9} style={{ display: "inline", marginRight: 2 }} />Ready for collection</span>
                     ) : null}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {/* Left-aligned, directly under the name — not pushed to the far right edge of
+                      the card, which was unreachable one-handed on the mobile/iPad layout. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                     <button
                       onClick={() => {
                         if (!b.jobValue) { alert("Set a job value before sending the WhatsApp confirmation — it becomes the record of the agreed price."); return; }
