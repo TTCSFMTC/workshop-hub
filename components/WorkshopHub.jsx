@@ -610,8 +610,8 @@ export default function WorkshopHub() {
   });
 
   // Places an order at a price — doesn't count as physical stock yet.
-  const orderStock = (partId, qty, price, supplier) => withSaveState(async () => {
-    const newBatch = { id: uid("sb"), partId, qtyOrdered: qty, qtyRemaining: qty, price, supplier: supplier || "", status: "ordered", orderedAt: new Date().toISOString(), deliveredAt: null };
+  const orderStock = (partId, qty, price, dueDate, supplier) => withSaveState(async () => {
+    const newBatch = { id: uid("sb"), partId, qtyOrdered: qty, qtyRemaining: qty, price, supplier: supplier || "", status: "ordered", orderedAt: new Date().toISOString(), deliveredAt: null, dueDate: dueDate || null };
     setStockBatches((prev) => [...prev, newBatch]);
     await insertStockBatch(newBatch);
   });
@@ -1656,29 +1656,39 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                   <span style={{ color: "var(--muted)" }}>—</span>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {pendingByPart[r.id].map((b) => (
-                      <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
-                        <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
-                        <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
-                          <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
-                        </button>
-                      </div>
-                    ))}
+                    {pendingByPart[r.id].map((b) => {
+                      const overdue = b.dueDate && b.dueDate < todayISO();
+                      return (
+                        <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
+                          <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
+                          <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
+                          {b.dueDate && (
+                            <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
+                              {overdue && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
+                              due {fmtDate(b.dueDate)}
+                            </span>
+                          )}
+                          <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
+                            <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </td>
               <td>
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
                   <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
+                  <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
                   <button
                     className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
                     onClick={() => {
                       const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
                       if (!qty || qty <= 0 || !price || price < 0) return;
-                      orderStock(r.id, qty, price);
-                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "" } }));
+                      orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null);
+                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "" } }));
                     }}
                   >Order</button>
                 </div>
