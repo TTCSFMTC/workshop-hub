@@ -1070,11 +1070,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => setSelectedDay(iso)}>
                 <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 3).map((b) => {
+                {dayBk.slice(0, 5).map((b) => {
                   const statusClass = b.completed ? "status-collected" : b.workshopCompleted ? "status-workshop-completed" : "";
                   return <span key={b.id} className={`wb-chip ${statusClass || (b.business === "Timing Chain Specialists" ? "tcs" : "")}`}>{b.customerName || "Booking"}</span>;
                 })}
-                {dayBk.length > 3 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 3} more</span>}
+                {dayBk.length > 5 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 5} more</span>}
               </div>
             );
           })}
