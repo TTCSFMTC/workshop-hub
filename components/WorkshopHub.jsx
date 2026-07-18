@@ -760,10 +760,14 @@ export default function WorkshopHub() {
         .wb-tab { padding:10px 14px; font-size:13px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; }
         .wb-tab.active { color:var(--amber2); border-bottom-color: var(--amber); }
         .wb-cal-layout { display:grid; grid-template-columns: 1fr 340px; gap:18px; }
+        .wb-daypanel-close { display:none; }
 @media (max-width: 800px) {
   .wb-cal-layout { grid-template-columns: 1fr; }
   .wb-body { padding:12px; }
   .wb-day { min-height:56px; padding:4px; }
+  .wb-daypanel { position:fixed; top:0; left:0; bottom:0; width:100%; z-index:45; border-radius:0; overflow-y:auto; transform:translateX(-100%); transition:transform 0.2s ease; visibility:hidden; }
+  .wb-daypanel.open { transform:translateX(0); visibility:visible; }
+  .wb-daypanel-close { display:flex; background:none; border:1px solid var(--line); border-radius:8px; color:var(--text); cursor:pointer; padding:8px; align-items:center; justify-content:center; }
 }
         .wb-panel, .jc-card { background: var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
         .wb-btn, .jc-btn { background: var(--amber); color:#1a1508; font-weight:700; border:none; border-radius:8px; padding:12px 16px; font-size:14px; display:inline-flex; align-items:center; gap:7px; cursor:pointer; min-height:44px; }
@@ -1091,6 +1095,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
     return map;
   }, [bookings]);
   const dayBookings = bookingsByDay[selectedDay] || [];
+  // On mobile the day panel normally sits below the whole month grid, so
+  // tapping a tiny customer chip meant scrolling right past it to do
+  // anything — this makes it open as a full-screen overlay instead.
+  const [mobileDayOpen, setMobileDayOpen] = useState(false);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1117,7 +1125,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const dayBk = bookingsByDay[iso] || [];
             const isToday = iso === todayISO();
             return (
-              <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => setSelectedDay(iso)}>
+              <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}>
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => (
                   <span key={b.id} className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}>{b.customerName || "Booking"}</span>
@@ -1128,8 +1136,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           })}
         </div>
       </div>
-      <div className="wb-panel">
-        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{fmtDate(selectedDay)}</div>
+      <div className={`wb-panel wb-daypanel ${mobileDayOpen ? "open" : ""}`}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(selectedDay)}</div>
+          <button className="wb-daypanel-close" onClick={() => setMobileDayOpen(false)} title="Close"><X size={18} /></button>
+        </div>
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>{dayBookings.length} booking{dayBookings.length !== 1 ? "s" : ""}</div>
         {dayBookings.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>No bookings this day yet.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
