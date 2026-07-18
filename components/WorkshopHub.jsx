@@ -2403,23 +2403,30 @@ function Toggle({ label, on, onClick, disabled }) {
 }
 
 function DictateField({ label, value, onChange, rows = 4, disabled }) {
-  const [listening, setListening] = useState(false);
+  // Tracks which language is currently listening (or null) rather than a
+  // plain boolean, since both an English and an Albanian mic button share
+  // this field and only one recognition session can run at a time.
+  const [listeningLang, setListeningLang] = useState(null);
   const recogRef = useRef(null);
   const baseValueRef = useRef(value);
   const supported = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
-  const toggleDictate = () => {
+  const toggleDictate = (lang) => {
     if (disabled) return;
-    if (listening) { recogRef.current?.stop(); setListening(false); return; }
+    if (listeningLang) {
+      recogRef.current?.stop();
+      setListeningLang(null);
+      if (listeningLang === lang) return; // was already dictating this language — just stop
+    }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
     const recog = new SR();
-    recog.lang = "en-GB"; recog.continuous = true; recog.interimResults = true;
+    recog.lang = lang; recog.continuous = true; recog.interimResults = true;
     baseValueRef.current = value ? value + " " : "";
     recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; onChange(baseValueRef.current + t); };
-    recog.onerror = () => setListening(false);
-    recog.onend = () => setListening(false);
-    try { recog.start(); recogRef.current = recog; setListening(true); } catch (e) { setListening(false); }
+    recog.onerror = () => setListeningLang(null);
+    recog.onend = () => setListeningLang(null);
+    try { recog.start(); recogRef.current = recog; setListeningLang(lang); } catch (e) { setListeningLang(null); }
   };
 
   return (
@@ -2427,9 +2434,14 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         {label && <label className="jc-label" style={{ marginBottom: 0 }}>{label}</label>}
         {supported && !disabled && (
-          <button className="jc-btn-sm" style={listening ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}} onClick={toggleDictate} type="button">
-            {listening ? <MicOff size={14} /> : <Mic size={14} />} {listening ? "Stop" : "Dictate"}
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="jc-btn-sm" style={listeningLang === "en-GB" ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}} onClick={() => toggleDictate("en-GB")} type="button">
+              {listeningLang === "en-GB" ? <MicOff size={14} /> : <Mic size={14} />} {listeningLang === "en-GB" ? "Stop" : "Dictate"}
+            </button>
+            <button className="jc-btn-sm" style={listeningLang === "sq-AL" ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}} onClick={() => toggleDictate("sq-AL")} type="button">
+              {listeningLang === "sq-AL" ? <MicOff size={14} /> : <Mic size={14} />} {listeningLang === "sq-AL" ? "Stop" : "Dictate (Albanian)"}
+            </button>
+          </div>
         )}
       </div>
       <textarea className="jc-textarea" rows={rows} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder="Tap here, then use your keyboard's dictation button to speak this in…" style={disabled ? { opacity: 0.6 } : {}} />
