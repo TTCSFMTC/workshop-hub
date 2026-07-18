@@ -478,6 +478,10 @@ export default function WorkshopHub() {
     if (pendingReorder.length > 0) setShowReorderAlert(true);
   }, [lowStockItems.map((r) => r.id).join(",")]);
 
+  // Booking a job no longer touches physical stock — parts are only taken
+  // out of the FIFO batches once the job is actually marked workshop
+  // completed (see updateBooking below), so stock reflects what's actually
+  // been used rather than what's merely been booked in.
   const addBooking = (booking) => withSaveState(async () => {
     const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
     const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
@@ -485,9 +489,6 @@ export default function WorkshopHub() {
     const extraParts = newBooking.extraParts || [];
     const jobTypePrices = newBooking.jobTypePrices || [];
 
-    const bom = fullBookingBom(newBooking, jobTypes);
-    const batchUpdates = bom.flatMap((l) => allocateFIFO(stockBatches, l.partId, l.qty));
-    setStockBatches((prev) => applyBatchUpdates(prev, batchUpdates));
     setBookings((prev) => [...prev, newBooking]);
 
     // booking_job_types has a foreign key on bookings, so the insert must
@@ -497,7 +498,6 @@ export default function WorkshopHub() {
       ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
       ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
       ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
-      ...batchUpdates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)),
     ]);
 
     const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
@@ -510,7 +510,9 @@ export default function WorkshopHub() {
   const removeBooking = (id) => withSaveState(async () => {
     const b = bookings.find((x) => x.id === id);
     let batchUpdates = [];
-    if (b) {
+    // Only give stock back if it was actually taken — that only happens once
+    // a booking's been marked workshop completed.
+    if (b && b.workshopCompleted) {
       const bom = fullBookingBom(b, jobTypes);
       let working = stockBatches;
       for (const l of bom) {
@@ -537,25 +539,49 @@ export default function WorkshopHub() {
     // — those live in their own junction tables, reconciled separately below.
     const { extraJobTypeIds, extraParts, jobTypePrices, ...rowPatch } = patch;
 
-    // Editing the job type, extras, or extra parts on an existing booking
-    // means the parts it reserved need correcting too — restock the old
-    // combined recipe, deduct the new one, FIFO either way.
+    // Stock is only taken out (or given back) at the workshop-completed
+    // transition, not at booking time — see addBooking. Three cases:
+    //  - first time marked workshop completed: deduct the full recipe now
+    //  - un-marking workshop completed: give the full recipe back
+    //  - recipe edited on a booking that's already been workshop completed:
+    //    stock was already taken, so reconcile just the delta
     let batchUpdates = [];
-    if (before && ("jobTypeId" in patch || "extraJobTypeIds" in patch || "extraParts" in patch)) {
-      const beforeBom = fullBookingBom(before, jobTypes);
-      const afterBom = fullBookingBom({ ...before, ...patch }, jobTypes);
-      const allPartIds = new Set([...beforeBom.map((l) => l.partId), ...afterBom.map((l) => l.partId)]);
+    if (before) {
+      const completingNow = patch.workshopCompleted === true && !before.workshopCompleted;
+      const uncompletingNow = patch.workshopCompleted === false && before.workshopCompleted;
       let working = stockBatches;
-      for (const partId of allPartIds) {
-        const oldQty = beforeBom.find((l) => l.partId === partId)?.qty || 0;
-        const newQty = afterBom.find((l) => l.partId === partId)?.qty || 0;
-        const delta = oldQty - newQty; // positive = return to stock, negative = allocate more
-        if (delta === 0) continue;
-        const updates = delta > 0 ? returnFIFO(working, partId, delta) : allocateFIFO(working, partId, -delta);
-        batchUpdates.push(...updates);
-        working = applyBatchUpdates(working, updates);
+
+      if (completingNow) {
+        const bom = fullBookingBom({ ...before, ...patch }, jobTypes);
+        for (const l of bom) {
+          const updates = allocateFIFO(working, l.partId, l.qty);
+          batchUpdates.push(...updates);
+          working = applyBatchUpdates(working, updates);
+        }
+        setStockBatches(working);
+      } else if (uncompletingNow) {
+        const bom = fullBookingBom(before, jobTypes);
+        for (const l of bom) {
+          const updates = returnFIFO(working, l.partId, l.qty);
+          batchUpdates.push(...updates);
+          working = applyBatchUpdates(working, updates);
+        }
+        setStockBatches(working);
+      } else if (before.workshopCompleted && ("jobTypeId" in patch || "extraJobTypeIds" in patch || "extraParts" in patch)) {
+        const beforeBom = fullBookingBom(before, jobTypes);
+        const afterBom = fullBookingBom({ ...before, ...patch }, jobTypes);
+        const allPartIds = new Set([...beforeBom.map((l) => l.partId), ...afterBom.map((l) => l.partId)]);
+        for (const partId of allPartIds) {
+          const oldQty = beforeBom.find((l) => l.partId === partId)?.qty || 0;
+          const newQty = afterBom.find((l) => l.partId === partId)?.qty || 0;
+          const delta = oldQty - newQty; // positive = return to stock, negative = allocate more
+          if (delta === 0) continue;
+          const updates = delta > 0 ? returnFIFO(working, partId, delta) : allocateFIFO(working, partId, -delta);
+          batchUpdates.push(...updates);
+          working = applyBatchUpdates(working, updates);
+        }
+        setStockBatches(working);
       }
-      setStockBatches(working);
     }
 
     const jobs = [
@@ -754,8 +780,6 @@ export default function WorkshopHub() {
         .wb-daynum { font-size:11px; color:var(--muted); font-weight:600; }
         .wb-chip, .jc-chip { font-size:10px; background:#2b2410; color:var(--amber2); border-radius:3px; padding:1px 5px; margin-top:3px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .wb-chip.tcs, .jc-chip.tcs { background:#0f2a24; color:#6fd6b8; }
-        .wb-chip.status-workshop-completed { background:#3a2410; color:#ffb84d; }
-        .wb-chip.status-collected { background:#10281a; color:var(--green); }
         .wb-badge-low { background:#3a1210; color:var(--red); border:1px solid #5a2320; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-badge-ok { background:#10281a; color:var(--green); border:1px solid #1f4530; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:flex-start; justify-content:center; padding:30px 14px; z-index:50; overflow-y:auto; }
@@ -809,7 +833,7 @@ export default function WorkshopHub() {
       ) : (
         <WorkshopMode
           bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
-          jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard}
+          jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard} updateBooking={updateBooking}
         />
       )}
     </div>
@@ -1029,6 +1053,31 @@ function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
   );
 }
 
+// Three small dots tracking a booking through the workshop: red once the
+// vehicle's arrived, orange once the workshop's finished the job, green once
+// the customer's collected it. Dim/outline until each stage is reached.
+function TrafficLights({ booking }) {
+  const lights = [
+    { on: booking.arrived, color: "var(--red)", label: "Arrived" },
+    { on: booking.workshopCompleted, color: "#ffb84d", label: "Workshop completed" },
+    { on: booking.completed, color: "var(--green)", label: "Collected" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 5 }} title={lights.filter((l) => l.on).map((l) => l.label).join(", ") || "Not started"}>
+      {lights.map((l) => (
+        <span
+          key={l.label}
+          style={{
+            width: 9, height: 9, borderRadius: "50%",
+            background: l.on ? l.color : "transparent",
+            border: `1.5px solid ${l.on ? l.color : "var(--line)"}`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
@@ -1070,10 +1119,9 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => setSelectedDay(iso)}>
                 <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 5).map((b) => {
-                  const statusClass = b.completed ? "status-collected" : b.workshopCompleted ? "status-workshop-completed" : "";
-                  return <span key={b.id} className={`wb-chip ${statusClass || (b.business === "Timing Chain Specialists" ? "tcs" : "")}`}>{b.customerName || "Booking"}</span>;
-                })}
+                {dayBk.slice(0, 5).map((b) => (
+                  <span key={b.id} className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}>{b.customerName || "Booking"}</span>
+                ))}
                 {dayBk.length > 5 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 5} more</span>}
               </div>
             );
@@ -1092,14 +1140,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6, color: b.completed ? "var(--green)" : b.workshopCompleted ? "#ffb84d" : "var(--text)" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
                     {b.customerName || "Unnamed"}
-                    {b.completed ? (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}><Check size={9} style={{ display: "inline", marginRight: 2 }} />Collected</span>
-                    ) : b.workshopCompleted ? (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#ffb84d", border: "1px solid #ffb84d", borderRadius: 20, padding: "1px 7px" }}><Wrench size={9} style={{ display: "inline", marginRight: 2 }} />Ready for collection</span>
-                    ) : null}
                   </div>
+                  <TrafficLights booking={b} />
                   {/* Left-aligned, directly under the name — not pushed to the far right edge of
                       the card, which was unreachable one-handed on the mobile/iPad layout. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -1113,6 +1157,16 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       style={{ background: "none", border: "none", color: "#25D366", cursor: "pointer", display: "flex" }}
                     >
                       <MessageCircle size={15} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        const now = !b.arrived;
+                        updateBooking(b.id, now ? { arrived: true, arrivedAt: Date.now() } : { arrived: false, arrivedAt: null });
+                      }}
+                      title={b.arrived ? "Mark as not yet arrived" : "Mark vehicle arrived"}
+                      style={{ background: "none", border: "none", color: b.arrived ? "var(--red)" : "var(--muted)", cursor: "pointer" }}
+                    >
+                      <Car size={13} />
                     </button>
                     <button
                       onClick={() => {
@@ -2229,13 +2283,13 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
 // ============================================================
 // WORKSHOP MODE (iPad / technician)
 // ============================================================
-function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard }) {
+function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard, updateBooking }) {
   const [openCardId, setOpenCardId] = useState(null);
   const openCard = jobCards.find((c) => c.id === openCardId);
 
   if (openCard) {
     const booking = bookings.find((b) => b.id === openCard.bookingId);
-    return <JobCardDetail card={openCard} booking={booking} jobTypes={jobTypes} parts={parts} onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} />;
+    return <JobCardDetail card={openCard} booking={booking} jobTypes={jobTypes} parts={parts} onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} updateBooking={updateBooking} />;
   }
 
   return <WorkshopHome bookings={bookings} jobTypes={jobTypes} parts={parts} jobCards={jobCards} onOpenCard={setOpenCardId} onCreateCard={(card) => { upsertJobCard(card); setOpenCardId(card.id); }} />;
@@ -2561,7 +2615,7 @@ function SignatureSection({ card, onUpdate }) {
 }
 
 // ---- Full job card detail ----
-function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack }) {
+function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updateBooking }) {
   const locked = card.locked;
   const setField = (field, val) => onUpdate({ [field]: val });
   const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
@@ -2573,6 +2627,40 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack }) {
       </div>
       <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto" }}>
         <JobBreakdown booking={booking} jobTypes={jobTypes} parts={parts} />
+
+        {booking && (
+          <div className="jc-card">
+            <div className="jc-section-title">Job progress</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+              <TrafficLights booking={booking} />
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                {booking.completed ? "Collected" : booking.workshopCompleted ? "Workshop completed — awaiting collection" : booking.arrived ? "Arrived — in progress" : "Not yet arrived"}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <button
+                className="jc-btn-sm"
+                onClick={() => updateBooking(booking.id, booking.arrived ? { arrived: false, arrivedAt: null } : { arrived: true, arrivedAt: Date.now() })}
+                style={booking.arrived ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}}
+              >
+                <Car size={14} /> {booking.arrived ? "Undo arrived" : "Mark arrived"}
+              </button>
+              {booking.workshopCompleted ? (
+                <button
+                  className="jc-btn-sm"
+                  onClick={() => updateBooking(booking.id, { workshopCompleted: false, workshopCompletedAt: null })}
+                  style={{ background: "#3a2410", borderColor: "#ffb84d", color: "#ffb84d" }}
+                >
+                  <RotateCcw size={14} /> Undo workshop completed
+                </button>
+              ) : (
+                <button className="jc-btn-sm" onClick={() => updateBooking(booking.id, { workshopCompleted: true, workshopCompletedAt: Date.now() })}>
+                  <Wrench size={14} /> Mark workshop completed
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="jc-card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
