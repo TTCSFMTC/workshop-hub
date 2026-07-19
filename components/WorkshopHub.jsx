@@ -192,13 +192,17 @@ function reminderMessage(b) {
 I hope you are well, just checking in before we finalise the details — just a reminder, please bring your locking wheel nut. We'll meet you in reception at 9:30. Just let us know if anything has changed since we booked you in.`;
 }
 
-function transportPriceRequestMessage(b) {
-  return `Hi, please can I have a firm price on this?
+function transportPriceRequestMessage(b, contactName) {
+  return `Hi ${firstName(contactName)}, we have a customer wanting a car collecting on ${fmtDate(addDaysISO(b.date, -1))} for a job starting ${fmtDate(b.date)}.
 
-Collection date: ${fmtDate(addDaysISO(b.date, -1))}
+Vehicle: ${b.vehicleModel || "not specified"}
 Postcode: ${b.postcode || ""}
 
-Please confirm or decline the job.`;
+Please could you let me know a price and whether you're able to do this?`;
+}
+
+function workshopCompletedMessage(b) {
+  return `Great news ${firstName(b.customerName)}, your vehicle has been completed! It's ready for collection whenever's convenient for you — just let us know if you have any questions.`;
 }
 
 // Bookings due a 2-days-before reminder: within the next 2 days, originally
@@ -1145,7 +1149,11 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
       <TrafficLightButton
         on={booking.workshopCompleted} color="#ffb84d" textOn="#1a1508" label="DONE"
         title={booking.workshopCompleted ? "Mark as not yet workshop completed" : "Mark workshop completed — ready for collection, can be invoiced"}
-        onClick={() => updateBooking(booking.id, booking.workshopCompleted ? { workshopCompleted: false, workshopCompletedAt: null } : { workshopCompleted: true, workshopCompletedAt: Date.now() })}
+        onClick={() => {
+          const turningOn = !booking.workshopCompleted;
+          updateBooking(booking.id, turningOn ? { workshopCompleted: true, workshopCompletedAt: Date.now() } : { workshopCompleted: false, workshopCompletedAt: null });
+          if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, workshopCompletedMessage(booking)), "_blank");
+        }}
       />
       {showCollected && (
         <TrafficLightButton
@@ -1710,7 +1718,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
   };
   const messageTransport = () => {
     if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
-    window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking)), "_blank");
+    window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking, settings.transportContactName)), "_blank");
   };
   const createZohoInvoice = async () => {
     setCreatingInvoice(true);
