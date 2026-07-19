@@ -9,11 +9,12 @@ import {
   Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchSettings, fetchPriceHistory, fetchStockBatches,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
   insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
+  insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -357,6 +358,7 @@ export default function WorkshopHub() {
   const [bookings, setBookings] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [jobCards, setJobCards] = useState([]);
+  const [jobApprovals, setJobApprovals] = useState([]);
   const [priceHistory, setPriceHistory] = useState([]);
   const [stockBatches, setStockBatches] = useState([]);
   const [mode, setMode] = useState("workshop");
@@ -378,6 +380,7 @@ export default function WorkshopHub() {
         setBookings(d.bookings);
         if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
         setJobCards(d.jobCards);
+        setJobApprovals(d.jobApprovals);
         setPriceHistory(d.priceHistory);
         setStockBatches(d.stockBatches);
       } catch (e) {
@@ -400,6 +403,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_extra_parts", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
+      subscribeTable("job_approvals", async () => setJobApprovals(await fetchJobApprovals())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
       subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
@@ -736,6 +740,25 @@ export default function WorkshopHub() {
     await updateJobCardRow(id, patch);
   });
 
+  // Technician flags extra work found during diagnosis — raw notes only,
+  // no price, nothing sent to the customer yet. Office reviews it (see the
+  // pending-approvals banner), sets a price, and sends it on.
+  const addJobApproval = (jobCardId, bookingId, description) => withSaveState(async () => {
+    const approval = { id: uid("ja"), jobCardId, bookingId, description, status: "draft" };
+    setJobApprovals((prev) => [approval, ...prev]);
+    await insertJobApproval(approval);
+  });
+
+  const updateJobApproval = (id, patch) => withSaveState(async () => {
+    setJobApprovals((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+    await updateJobApprovalRow(id, patch);
+  });
+
+  const removeJobApproval = (id) => withSaveState(async () => {
+    setJobApprovals((prev) => prev.filter((a) => a.id !== id));
+    await deleteJobApproval(id);
+  });
+
   const logout = async () => {
     await fetch("/api/logout", { method: "POST" });
     router.replace("/login");
@@ -833,11 +856,13 @@ export default function WorkshopHub() {
           priceHistory={priceHistory} recordPrice={recordPrice}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
+          jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
         />
       ) : (
         <WorkshopMode
           bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
           jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard} updateBooking={updateBooking}
+          jobApprovals={jobApprovals} addJobApproval={addJobApproval} removeJobApproval={removeJobApproval}
         />
       )}
     </div>
@@ -852,6 +877,7 @@ function OfficeMode({
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
   stockBatches, orderStock, deliverStock,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
+  jobCards, jobApprovals, updateJobApproval, removeJobApproval,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -885,7 +911,8 @@ function OfficeMode({
         {tab === "calendar" && (
           <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
             onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)}
-            jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking} />
+            jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
+            jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval} />
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
@@ -1082,7 +1109,7 @@ function TrafficLights({ booking }) {
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
@@ -1102,6 +1129,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <PendingApprovalBanner jobApprovals={jobApprovals} jobCards={jobCards} bookings={bookings} jobTypes={jobTypes} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval} />
       <TwoDayReminderBanner bookings={bookings} updateBooking={updateBooking} />
       <FollowUpBanner bookings={bookings} updateBooking={updateBooking} />
       <ReviewFollowUpBanner bookings={bookings} updateBooking={updateBooking} />
@@ -1241,6 +1269,83 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           })}
         </div>
       </div>
+      </div>
+    </div>
+  );
+}
+
+// Technician-flagged extra work waiting on office to price, mark whether
+// it's in stock, and send the AI-written distance approval report. Nothing
+// reaches the customer until office fills in price and hits send — the
+// technician's job is only to describe what was found.
+function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, updateJobApproval, removeJobApproval }) {
+  const pending = useMemo(() => jobApprovals.filter((a) => a.status === "draft"), [jobApprovals]);
+  const [drafts, setDrafts] = useState({});
+  const [sendingId, setSendingId] = useState(null);
+  const [errorId, setErrorId] = useState(null);
+
+  if (pending.length === 0) return null;
+
+  const setDraft = (id, patch) => setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
+  const send = async (approval) => {
+    const draft = drafts[approval.id] || {};
+    const price = Number(draft.price);
+    if (!price || price <= 0) { setErrorId(approval.id); return; }
+    setErrorId(null);
+    setSendingId(approval.id);
+    try {
+      const res = await fetch("/api/office/send-approval", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvalId: approval.id, price, inStock: !!draft.inStock }),
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || "Failed to send the approval report."); setSendingId(null); return; }
+      // Optimistic — realtime will bring in the server's ai_writeup/status once it lands.
+      updateJobApproval(approval.id, { price, inStock: !!draft.inStock, status: "sent", sentAt: Date.now() });
+    } catch {
+      alert("Failed to send the approval report — check your connection and try again.");
+    }
+    setSendingId(null);
+  };
+
+  return (
+    <div className="wb-panel" style={{ borderColor: "var(--amber)" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
+        <AlertTriangle size={15} /> {pending.length} extra-work request{pending.length !== 1 ? "s" : ""} waiting on a price
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {pending.map((a) => {
+          const card = jobCards.find((c) => c.id === a.jobCardId);
+          const booking = bookings.find((b) => b.id === a.bookingId);
+          const jt = booking && jobTypes.find((j) => j.id === booking.jobTypeId);
+          const draft = drafts[a.id] || {};
+          return (
+            <div key={a.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+                <div>
+                  <strong style={{ fontSize: 13 }}>{card?.customerName || "Unknown customer"}</strong>{" "}
+                  <span style={{ color: "var(--muted)", fontSize: 12 }}>{card?.reg ? `— ${card.reg}` : ""}{jt ? ` · ${jt.name}` : ""}</span>
+                </div>
+                <button onClick={() => { if (confirm("Discard this extra-work request? The technician's note will be deleted.")) removeJobApproval(a.id); }} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 10, whiteSpace: "pre-wrap" }}>{a.description}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+                <input type="number" min="0" step="0.01" placeholder="Price £" className="wb-input" style={{ width: 100 }}
+                  value={draft.price ?? ""} onChange={(e) => setDraft(a.id, { price: e.target.value })} />
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!draft.inStock} onChange={(e) => setDraft(a.id, { inStock: e.target.checked })} />
+                  In stock — can be done while it's in
+                </label>
+                <button className="wb-btn" style={{ padding: "8px 12px", minHeight: 32, marginLeft: "auto" }} disabled={sendingId === a.id} onClick={() => send(a)}>
+                  {sendingId === a.id ? "Sending…" : "Generate & send"}
+                </button>
+              </div>
+              {errorId === a.id && <div style={{ color: "var(--red)", fontSize: 11, marginTop: 6 }}>Enter a price before sending.</div>}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2294,13 +2399,21 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
 // ============================================================
 // WORKSHOP MODE (iPad / technician)
 // ============================================================
-function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard, updateBooking }) {
+function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
   const [openCardId, setOpenCardId] = useState(null);
   const openCard = jobCards.find((c) => c.id === openCardId);
 
   if (openCard) {
     const booking = bookings.find((b) => b.id === openCard.bookingId);
-    return <JobCardDetail card={openCard} booking={booking} jobTypes={jobTypes} parts={parts} onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} updateBooking={updateBooking} />;
+    return (
+      <JobCardDetail
+        card={openCard} booking={booking} jobTypes={jobTypes} parts={parts}
+        onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} updateBooking={updateBooking}
+        jobApprovals={jobApprovals.filter((a) => a.jobCardId === openCard.id)}
+        addJobApproval={(description) => addJobApproval(openCard.id, openCard.bookingId, description)}
+        removeJobApproval={removeJobApproval}
+      />
+    );
   }
 
   return <WorkshopHome bookings={bookings} jobTypes={jobTypes} parts={parts} jobCards={jobCards} onOpenCard={setOpenCardId} onCreateCard={(card) => { upsertJobCard(card); setOpenCardId(card.id); }} />;
@@ -2638,10 +2751,11 @@ function SignatureSection({ card, onUpdate }) {
 }
 
 // ---- Full job card detail ----
-function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updateBooking }) {
+function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
   const locked = card.locked;
   const setField = (field, val) => onUpdate({ [field]: val });
   const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
+  const [newExtraWork, setNewExtraWork] = useState("");
 
   return (
     <div>
@@ -2684,6 +2798,41 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updat
             </div>
           </div>
         )}
+
+        <div className="jc-card">
+          <div className="jc-section-title">Extra work found</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
+            Describe anything found beyond the original job — no price needed here, office will set that and send it on to the customer for approval.
+          </div>
+          {jobApprovals && jobApprovals.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+              {jobApprovals.map((a) => {
+                const statusLabel = { draft: "Waiting on office", sent: "Sent — awaiting customer", approved: "Approved", declined: "Declined" }[a.status];
+                const statusColor = { draft: "var(--muted)", sent: "#ffb84d", approved: "var(--green)", declined: "var(--red)" }[a.status];
+                return (
+                  <div key={a.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: statusColor, textTransform: "uppercase", letterSpacing: "0.04em" }}>{statusLabel}</span>
+                      {a.status === "draft" && (
+                        <button onClick={() => removeJobApproval(a.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{a.description}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <DictateField label="What did you find?" value={newExtraWork} onChange={setNewExtraWork} rows={4} />
+          <button
+            className="jc-btn-sm"
+            style={{ marginTop: 10 }}
+            disabled={!newExtraWork.trim()}
+            onClick={() => { addJobApproval(newExtraWork.trim()); setNewExtraWork(""); }}
+          >
+            <AlertTriangle size={14} /> Flag for office approval
+          </button>
+        </div>
 
         <div className="jc-card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
