@@ -1084,27 +1084,48 @@ function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
   );
 }
 
-// Three small dots tracking a booking through the workshop: red once the
-// vehicle's arrived, orange once the workshop's finished the job, green once
-// the customer's collected it. Dim/outline until each stage is reached.
-function TrafficLights({ booking }) {
-  const lights = [
-    { on: booking.arrived, color: "var(--red)", label: "Arrived" },
-    { on: booking.workshopCompleted, color: "#ffb84d", label: "Workshop completed" },
-    { on: booking.completed, color: "var(--green)", label: "Collected" },
-  ];
+// Big, tap-friendly status buttons tracking a booking through the
+// workshop: red IN once the vehicle's arrived, orange DONE once the
+// workshop's finished the job, green COMP once the customer's collected
+// it. Filled when on, outlined when not — click to toggle either way.
+function TrafficLightButton({ on, color, textOn, label, title, onClick }) {
   return (
-    <div style={{ display: "flex", gap: 5 }} title={lights.filter((l) => l.on).map((l) => l.label).join(", ") || "Not started"}>
-      {lights.map((l) => (
-        <span
-          key={l.label}
-          style={{
-            width: 9, height: 9, borderRadius: "50%",
-            background: l.on ? l.color : "transparent",
-            border: `1.5px solid ${l.on ? l.color : "var(--line)"}`,
-          }}
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        minWidth: 56, minHeight: 40, padding: "8px 10px", borderRadius: 8,
+        fontSize: 13, fontWeight: 800, letterSpacing: "0.03em", cursor: "pointer",
+        border: `2px solid ${color}`, background: on ? color : "transparent", color: on ? textOn : color,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function TrafficLightButtons({ booking, updateBooking, showCollected = true }) {
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      <TrafficLightButton
+        on={booking.arrived} color="var(--red)" textOn="#fff" label="IN"
+        title={booking.arrived ? "Mark as not yet arrived" : "Mark vehicle arrived"}
+        onClick={() => updateBooking(booking.id, booking.arrived ? { arrived: false, arrivedAt: null } : { arrived: true, arrivedAt: Date.now() })}
+      />
+      <TrafficLightButton
+        on={booking.workshopCompleted} color="#ffb84d" textOn="#1a1508" label="DONE"
+        title={booking.workshopCompleted ? "Mark as not yet workshop completed" : "Mark workshop completed — ready for collection, can be invoiced"}
+        onClick={() => updateBooking(booking.id, booking.workshopCompleted ? { workshopCompleted: false, workshopCompletedAt: null } : { workshopCompleted: true, workshopCompletedAt: Date.now() })}
+      />
+      {showCollected && (
+        <TrafficLightButton
+          on={booking.completed} color="var(--green)" textOn="#fff" label="COMP"
+          title={booking.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
+          onClick={() => updateBooking(booking.id, booking.completed
+            ? { completed: false, completedAt: null }
+            : { completed: true, completedAt: Date.now(), followupSent: false })}
         />
-      ))}
+      )}
     </div>
   );
 }
@@ -1182,7 +1203,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                   </div>
-                  <TrafficLights booking={b} />
+                  <TrafficLightButtons booking={b} updateBooking={updateBooking} />
                   {/* Left-aligned, directly under the name — not pushed to the far right edge of
                       the card, which was unreachable one-handed on the mobile/iPad layout. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -1196,38 +1217,6 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       style={{ background: "none", border: "none", color: "#25D366", cursor: "pointer", display: "flex" }}
                     >
                       <MessageCircle size={15} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        const now = !b.arrived;
-                        updateBooking(b.id, now ? { arrived: true, arrivedAt: Date.now() } : { arrived: false, arrivedAt: null });
-                      }}
-                      title={b.arrived ? "Mark as not yet arrived" : "Mark vehicle arrived"}
-                      style={{ background: "none", border: "none", color: b.arrived ? "var(--red)" : "var(--muted)", cursor: "pointer" }}
-                    >
-                      <Car size={13} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        const now = !b.workshopCompleted;
-                        updateBooking(b.id, now ? { workshopCompleted: true, workshopCompletedAt: Date.now() } : { workshopCompleted: false, workshopCompletedAt: null });
-                      }}
-                      title={b.workshopCompleted ? "Mark as not yet workshop completed" : "Mark workshop completed — ready for collection, can be invoiced"}
-                      style={{ background: "none", border: "none", color: b.workshopCompleted ? "#ffb84d" : "var(--muted)", cursor: "pointer" }}
-                    >
-                      <Wrench size={13} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        const nowComplete = !b.completed;
-                        updateBooking(b.id, nowComplete
-                          ? { completed: true, completedAt: Date.now(), followupSent: false }
-                          : { completed: false, completedAt: null });
-                      }}
-                      title={b.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
-                      style={{ background: "none", border: "none", color: b.completed ? "var(--green)" : "var(--muted)", cursor: "pointer" }}
-                    >
-                      <Check size={13} />
                     </button>
                     <button onClick={() => onEditBooking(b)} title="Edit booking" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
@@ -2794,34 +2783,12 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updat
         {booking && (
           <div className="jc-card">
             <div className="jc-section-title">Job progress</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-              <TrafficLights booking={booking} />
+            <div style={{ marginBottom: 12 }}>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>
                 {booking.completed ? "Collected" : booking.workshopCompleted ? "Workshop completed — awaiting collection" : booking.arrived ? "Arrived — in progress" : "Not yet arrived"}
               </span>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-              <button
-                className="jc-btn-sm"
-                onClick={() => updateBooking(booking.id, booking.arrived ? { arrived: false, arrivedAt: null } : { arrived: true, arrivedAt: Date.now() })}
-                style={booking.arrived ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}}
-              >
-                <Car size={14} /> {booking.arrived ? "Undo arrived" : "Mark arrived"}
-              </button>
-              {booking.workshopCompleted ? (
-                <button
-                  className="jc-btn-sm"
-                  onClick={() => updateBooking(booking.id, { workshopCompleted: false, workshopCompletedAt: null })}
-                  style={{ background: "#3a2410", borderColor: "#ffb84d", color: "#ffb84d" }}
-                >
-                  <RotateCcw size={14} /> Undo workshop completed
-                </button>
-              ) : (
-                <button className="jc-btn-sm" onClick={() => updateBooking(booking.id, { workshopCompleted: true, workshopCompletedAt: Date.now() })}>
-                  <Wrench size={14} /> Mark workshop completed
-                </button>
-              )}
-            </div>
+            <TrafficLightButtons booking={booking} updateBooking={updateBooking} showCollected={false} />
           </div>
         )}
 
