@@ -6,7 +6,7 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Unlock, Video,
-  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus,
+  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
@@ -814,6 +814,7 @@ export default function WorkshopHub() {
         table.wb-table { width:100%; border-collapse:collapse; font-size:13px; }
         table.wb-table th { text-align:left; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:0.08em; padding:8px 10px; border-bottom:1px solid var(--line); }
         table.wb-table td { padding:9px 10px; border-bottom:1px solid #2a2d30; }
+        table.wb-table tbody tr:hover { background: var(--panel2); }
         .jc-section-title { font-size:14px; font-weight:800; color:var(--amber2); display:flex; align-items:center; gap:8px; margin-bottom:12px; text-transform:uppercase; letter-spacing:0.04em; }
         .jc-toggle { display:flex; align-items:center; gap:10px; padding:13px 14px; border-radius:8px; border:1px solid var(--line); background: var(--panel2); cursor:pointer; font-size:14px; min-height:48px; }
         .jc-toggle.on { background:#1c2f22; border-color: var(--green); color: var(--green); font-weight:700; }
@@ -900,7 +901,7 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -913,6 +914,16 @@ function OfficeMode({
             onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)}
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
             jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval} />
+        )}
+        {tab === "jobs" && (
+          <JobsTableTab
+            bookings={bookings} jobTypes={jobTypes}
+            onOpenBooking={(b) => {
+              setMonthCursor(new Date(new Date(b.date).getFullYear(), new Date(b.date).getMonth(), 1));
+              setSelectedDay(b.date);
+              setTab("calendar");
+            }}
+          />
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
@@ -1130,6 +1141,16 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true }) {
   );
 }
 
+// The colour/label for whichever traffic-light stage a booking has
+// currently reached — shared by the calendar chip, the day-panel name,
+// and the Jobs table, so they can never fall out of sync with each other.
+function bookingStatus(b) {
+  if (b.completed) return { color: "var(--green)", label: "Collected" };
+  if (b.workshopCompleted) return { color: "#ffb84d", label: "Workshop completed" };
+  if (b.arrived) return { color: "var(--red)", label: "Arrived" };
+  return { color: null, label: "Not started" };
+}
+
 function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
@@ -1176,9 +1197,19 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}>
                 <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 5).map((b) => (
-                  <span key={b.id} className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}>{b.customerName || "Booking"}</span>
-                ))}
+                {dayBk.slice(0, 5).map((b) => {
+                  const st = bookingStatus(b);
+                  return (
+                    <span
+                      key={b.id}
+                      className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}
+                      style={st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : undefined}
+                      title={st.label}
+                    >
+                      {b.customerName || "Booking"}
+                    </span>
+                  );
+                })}
                 {dayBk.length > 5 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 5} more</span>}
               </div>
             );
@@ -1200,7 +1231,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             return (
               <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: bookingStatus(b).color || "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                   </div>
                   <TrafficLightButtons booking={b} updateBooking={updateBooking} />
@@ -1258,6 +1289,57 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           })}
         </div>
       </div>
+      </div>
+    </div>
+  );
+}
+
+// A scannable list of every job and its traffic-light status, for when
+// clicking through the calendar day by day is slower than just wanting to
+// see what's in, what's done, and what's ready to collect. Hides collected
+// jobs by default — those are done and out the door — but they're a tick
+// away.
+function JobsTableTab({ bookings, jobTypes, onOpenBooking }) {
+  const [showCollected, setShowCollected] = useState(false);
+  const jtIndex = useMemo(() => Object.fromEntries(jobTypes.map((j) => [j.id, j.name])), [jobTypes]);
+  const rows = useMemo(() => {
+    return bookings
+      .filter((b) => showCollected || !b.completed)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }, [bookings, showCollected]);
+
+  return (
+    <div className="wb-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Jobs</div>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+          <input type="checkbox" checked={showCollected} onChange={(e) => setShowCollected(e.target.checked)} /> Show collected
+        </label>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="wb-table">
+          <thead>
+            <tr><th>Date</th><th>Customer</th><th>Reg</th><th>Business</th><th>Job type</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {rows.map((b) => {
+              const st = bookingStatus(b);
+              return (
+                <tr key={b.id} onClick={() => onOpenBooking(b)} style={{ cursor: "pointer" }}>
+                  <td>{fmtDate(b.date)}</td>
+                  <td>{b.customerName || "Unnamed"}</td>
+                  <td className="wh-mono">{b.reg || "—"}</td>
+                  <td>{b.business}</td>
+                  <td>{jtIndex[b.jobTypeId] || "—"}</td>
+                  <td><span style={{ color: st.color || "var(--muted)", fontWeight: 700 }}>{st.label}</span></td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No jobs to show.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
