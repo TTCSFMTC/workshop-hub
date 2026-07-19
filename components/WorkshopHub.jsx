@@ -152,6 +152,10 @@ function extractReg(text) {
   const m = text.match(/\b[A-Z]{2}[0-9]{2}\s?[A-Z]{3}\b/i);
   return m ? m[0].toUpperCase().replace(/\s+/g, " ") : "";
 }
+function extractEmail(text) {
+  const m = text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+  return m ? m[0] : "";
+}
 // UK-only: turns "07911 123456" or "+44 7911 123456" into the digits-only,
 // country-code-prefixed form wa.me needs ("447911123456").
 function whatsappNumber(phone) {
@@ -2424,6 +2428,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [pasteText, setPasteText] = useState("");
   const [customerName, setCustomerName] = useState(booking?.customerName || "");
   const [phone, setPhone] = useState(booking?.phone || "");
+  const [email, setEmail] = useState(booking?.email || "");
   const [reg, setReg] = useState(booking?.reg || "");
   const [symptoms, setSymptoms] = useState(booking?.symptoms || "");
   const [business, setBusiness] = useState(booking?.business || BUSINESSES[0]);
@@ -2464,8 +2469,8 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const handlePostcodeChange = (val) => { setPostcode(val); setDistanceMiles(estimateDistanceMiles(settings.workshopPostcode, val)); };
   const withinFreeRadius = typeof distanceMiles === "number" ? distanceMiles <= 150 : null;
   const runParse = () => {
-    const phoneFound = extractPhone(pasteText), regFound = extractReg(pasteText), nameGuess = guessName(pasteText, phoneFound);
-    if (phoneFound) setPhone(phoneFound); if (regFound) setReg(regFound); if (nameGuess) setCustomerName(nameGuess);
+    const phoneFound = extractPhone(pasteText), regFound = extractReg(pasteText), emailFound = extractEmail(pasteText), nameGuess = guessName(pasteText, phoneFound);
+    if (phoneFound) setPhone(phoneFound); if (regFound) setReg(regFound); if (emailFound) setEmail(emailFound); if (nameGuess) setCustomerName(nameGuess);
     setSymptoms(pasteText.trim());
   };
   const canSave = customerName.trim() && date && jobTypeId;
@@ -2486,6 +2491,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Customer name</label><input className="wb-input" value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>
             <div><label className="wb-label">Phone</label><input className="wb-input" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+            <div><label className="wb-label">Email</label><input className="wb-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
             <div><label className="wb-label">Vehicle registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} /></div>
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
             <div>
@@ -2623,7 +2629,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
+            customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
             jobValue,

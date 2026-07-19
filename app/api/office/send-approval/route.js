@@ -28,17 +28,15 @@ export async function POST(request) {
 
   const { data: card, error: e2 } = await supabase.from("job_cards").select("*").eq("id", approval.job_card_id).maybeSingle();
   if (e2 || !card) return NextResponse.json({ error: "Job card not found" }, { status: 404 });
-  if (!card.email) return NextResponse.json({ error: "No email on file for this customer — add one to the job card first" }, { status: 400 });
+
+  const { data: booking, error: e4 } = await supabase.from("bookings").select("job_type_id, business, email").eq("id", approval.booking_id).maybeSingle();
+  if (e4 || !booking) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+  if (!booking.email) return NextResponse.json({ error: "No email on file for this customer — add one to the booking first" }, { status: 400 });
 
   let jobTypeName = null;
-  let business = null;
-  if (approval.booking_id) {
-    const { data: booking } = await supabase.from("bookings").select("job_type_id, business").eq("id", approval.booking_id).maybeSingle();
-    business = booking?.business || null;
-    if (booking?.job_type_id) {
-      const { data: jobType } = await supabase.from("job_types").select("name").eq("id", booking.job_type_id).maybeSingle();
-      jobTypeName = jobType?.name || null;
-    }
+  if (booking.job_type_id) {
+    const { data: jobType } = await supabase.from("job_types").select("name").eq("id", booking.job_type_id).maybeSingle();
+    jobTypeName = jobType?.name || null;
   }
 
   try {
@@ -49,7 +47,7 @@ export async function POST(request) {
 
     const approveUrl = `${request.nextUrl.origin}/approve/${approval.token}`;
     await sendApprovalEmail({
-      to: card.email, business, customerName: card.customer_name, reg: card.reg, vehicleModel: card.model,
+      to: booking.email, business: booking.business, customerName: card.customer_name, reg: card.reg, vehicleModel: card.model,
       writeup, price, inStock: !!inStock, approveUrl,
     });
 
