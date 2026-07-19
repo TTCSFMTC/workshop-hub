@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
-  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Unlock, Video,
-  Camera, User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List,
+  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
@@ -15,6 +15,7 @@ import {
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
   insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
+  insertIntakeConfirmation,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -321,31 +322,44 @@ const DEFAULT_SETTINGS = {
 const STANDARD_TIMING_CHAIN_PRICE = { jobValue: 1495, labourCost: 220 };
 const isTimingChainReplacement = (jt) => jt?.name === "Timing Chain Replacement";
 
-const BLANK_CARD = (booking) => ({
-  id: uid("jc"),
-  bookingId: booking?.id || null,
-  business: booking?.business || BUSINESSES[0],
-  createdAt: Date.now(),
-  dateIn: booking?.date || todayISO(),
-  dateOut: "",
-  technician: "",
-  make: "", model: "", reg: booking?.reg || "", vin: "", transmission: "", drive: "",
-  mileageIn: "", mileageOut: "",
-  customerName: booking?.customerName || "", contact: booking?.phone || "", email: "",
-  jobStatus: { estimateSent: false, customerAuthReceived: false, partsAwaiting: false, vehicleOffRoad: false },
-  authRefNotes: "",
-  symptoms: booking?.symptoms || "",
-  technicianInterpretation: "",
-  preDiagnostic: { preScanCompleted: false, preScanAttached: false, faultCodesRecorded: false, liveDataRecorded: false },
-  diagnosisFindings: "",
-  postDiagnostic: { postScanCompleted: false, postScanAttached: false, noCodesPresent: false },
-  postChecks: { roadTestCompleted: false, warningLightsOff: false, concernResolved: false },
-  videoLog: [],
-  signature: null,
-  signatureName: "",
-  signatureDate: "",
-  locked: false,
-});
+// Vehicle model on a booking is one free-text field (e.g. "Jaguar F Pace")
+// — split it so the job card's separate Make/Model boxes start pre-filled
+// instead of blank. Checked against known multi-word makes first (this is
+// a JLR specialist, so "Land Rover" turning into make "Land" would be a
+// constant annoyance, not a rare edge case) before falling back to a
+// first-word split; still just a starting guess the technician can correct.
+const MULTI_WORD_MAKES = ["Land Rover", "Alfa Romeo", "Aston Martin", "Rolls Royce"];
+const guessMakeModel = (vehicleModel) => {
+  const trimmed = (vehicleModel || "").trim();
+  const knownMake = MULTI_WORD_MAKES.find((m) => trimmed.toLowerCase().startsWith(m.toLowerCase()));
+  if (knownMake) return { make: knownMake, model: trimmed.slice(knownMake.length).trim() };
+  const parts = trimmed.split(/\s+/);
+  return { make: parts[0] || "", model: parts.slice(1).join(" ") };
+};
+
+const BLANK_CARD = (booking) => {
+  const { make, model } = guessMakeModel(booking?.vehicleModel);
+  return {
+    id: uid("jc"),
+    bookingId: booking?.id || null,
+    business: booking?.business || BUSINESSES[0],
+    createdAt: Date.now(),
+    dateIn: booking?.date || todayISO(),
+    dateOut: "",
+    technician: "",
+    make, model, reg: booking?.reg || "",
+    mileageIn: "", mileageOut: "",
+    customerName: booking?.customerName || "", contact: booking?.phone || "",
+    jobStatus: { customerAuthReceived: false },
+    authRefNotes: "",
+    symptoms: booking?.symptoms || "",
+    technicianInterpretation: "",
+    preDiagnostic: { preScanCompleted: false },
+    diagnosisFindings: "",
+    postDiagnostic: { postScanCompleted: false },
+    postChecks: { roadTestCompleted: false },
+  };
+};
 
 // ============================================================
 // Root component
@@ -1115,13 +1129,18 @@ function TrafficLightButton({ on, color, textOn, label, title, onClick }) {
   );
 }
 
-function TrafficLightButtons({ booking, updateBooking, showCollected = true }) {
+function TrafficLightButtons({ booking, updateBooking, showCollected = true, onMarkArrived }) {
   return (
     <div style={{ display: "flex", gap: 8 }}>
       <TrafficLightButton
         on={booking.arrived} color="var(--red)" textOn="#fff" label="IN"
         title={booking.arrived ? "Mark as not yet arrived" : "Mark vehicle arrived"}
-        onClick={() => updateBooking(booking.id, booking.arrived ? { arrived: false, arrivedAt: null } : { arrived: true, arrivedAt: Date.now() })}
+        onClick={() => {
+          // Turning it on goes through the intake confirmation pop-up when
+          // one's supplied (Office side only) — undo stays a plain toggle.
+          if (!booking.arrived && onMarkArrived) { onMarkArrived(booking); return; }
+          updateBooking(booking.id, booking.arrived ? { arrived: false, arrivedAt: null } : { arrived: true, arrivedAt: Date.now() });
+        }}
       />
       <TrafficLightButton
         on={booking.workshopCompleted} color="#ffb84d" textOn="#1a1508" label="DONE"
@@ -1151,6 +1170,102 @@ function bookingStatus(b) {
   return { color: null, label: "Not started" };
 }
 
+// The legal/evidence record captured with the customer present at
+// drop-off — separate from the workshop's own internal job card, which
+// stays purely diagnostic. Office fills this in the moment the "IN"
+// button is pressed, before any work starts.
+function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const [preScanCompleted, setPreScanCompleted] = useState(false);
+  const [videoCompleted, setVideoCompleted] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(false);
+  const [name, setName] = useState(booking.customerName || "");
+  const [saving, setSaving] = useState(false);
+
+  const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
+  const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * ratio; canvas.height = 160 * ratio; ctx.scale(ratio, ratio);
+    ctx.strokeStyle = "#e7e3da"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+  }, []);
+
+  const getPos = (e) => { const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - rect.left, y: p.clientY - rect.top }; };
+  const start = (e) => { e.preventDefault(); drawingRef.current = true; const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+  const move = (e) => { if (!drawingRef.current) return; e.preventDefault(); const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); setHasDrawn(true); };
+  const end = () => { drawingRef.current = false; };
+  const clearSig = () => { const canvas = canvasRef.current; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); setHasDrawn(false); };
+
+  const confirm = async () => {
+    if (!hasDrawn) { alert("Please have the customer sign before confirming."); return; }
+    if (!name.trim()) { alert("Please add the customer's printed name."); return; }
+    setSaving(true);
+    const signature = canvasRef.current.toDataURL("image/png");
+    try {
+      await onConfirm({ preScanCompleted, videoCompleted, signature, signatureName: name.trim() });
+    } catch {
+      alert("Failed to save the intake confirmation — check your connection and try again.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="wb-modal-backdrop">
+      <div className="wb-modal" style={{ maxWidth: 520 }}>
+        <div style={{ padding: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>Vehicle drop-off confirmation</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>Complete this with the customer present, before any work starts.</div>
+
+          <div className="jc-card" style={{ marginBottom: 12 }}>
+            <div className="jc-section-title"><User size={14} /> Customer details</div>
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <div><strong>{booking.customerName || "Unnamed"}</strong></div>
+              {booking.phone && <div>{booking.phone}</div>}
+              {booking.reg && <div className="wh-mono">{booking.reg}</div>}
+              {booking.vehicleModel && <div>{booking.vehicleModel}</div>}
+            </div>
+          </div>
+
+          <div className="jc-card" style={{ marginBottom: 12 }}>
+            <div className="jc-section-title">Symptoms</div>
+            <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{booking.symptoms || "—"}</div>
+          </div>
+
+          <div className="jc-card" style={{ marginBottom: 12 }}>
+            <div className="jc-section-title">Confirmation of work needed</div>
+            <div style={{ fontSize: 13 }}>
+              {jt?.name || "—"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
+            </div>
+            {booking.jobValue ? <div style={{ fontSize: 13, color: "var(--amber2)", marginTop: 4 }} className="wh-mono">£{Number(booking.jobValue).toFixed(2)}</div> : null}
+          </div>
+
+          <div className="jc-card" style={{ marginBottom: 12 }}>
+            <Toggle label="Pre scan completed" on={preScanCompleted} onClick={() => setPreScanCompleted((v) => !v)} />
+            <div style={{ marginTop: 8 }}><Toggle label="Video completed" on={videoCompleted} onClick={() => setVideoCompleted((v) => !v)} /></div>
+          </div>
+
+          <div className="jc-card">
+            <div className="jc-section-title"><PenLine size={14} /> Customer signature</div>
+            <div style={{ marginBottom: 10 }}><label className="jc-label">Customer printed name</label><input className="jc-input" value={name} onChange={(e) => setName(e.target.value)} /></div>
+            <canvas ref={canvasRef} style={{ width: "100%", height: 160, background: "var(--panel2)", border: "1px dashed var(--line)", borderRadius: 10, touchAction: "none" }}
+              onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerLeave={end} />
+            <button className="wb-btn-ghost" style={{ marginTop: 10 }} onClick={clearSig}><RotateCcw size={14} /> Clear</button>
+          </div>
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="wb-btn" disabled={saving} onClick={confirm}>{saving ? "Saving…" : "Confirm arrival"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
@@ -1168,6 +1283,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
   // tapping a tiny customer chip meant scrolling right past it to do
   // anything — this makes it open as a full-screen overlay instead.
   const [mobileDayOpen, setMobileDayOpen] = useState(false);
+  const [intakeBooking, setIntakeBooking] = useState(null);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1234,7 +1350,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <div style={{ fontWeight: 700, fontSize: 13, color: bookingStatus(b).color || "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                   </div>
-                  <TrafficLightButtons booking={b} updateBooking={updateBooking} />
+                  <TrafficLightButtons booking={b} updateBooking={updateBooking} onMarkArrived={setIntakeBooking} />
                   {/* Left-aligned, directly under the name — not pushed to the far right edge of
                       the card, which was unreachable one-handed on the mobile/iPad layout. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -1290,6 +1406,18 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
         </div>
       </div>
       </div>
+      {intakeBooking && (
+        <IntakeConfirmationModal
+          booking={intakeBooking}
+          jobTypes={jobTypes}
+          onClose={() => setIntakeBooking(null)}
+          onConfirm={async ({ preScanCompleted, videoCompleted, signature, signatureName }) => {
+            await insertIntakeConfirmation({ id: uid("ic"), bookingId: intakeBooking.id, preScanCompleted, videoCompleted, signature, signatureName });
+            updateBooking(intakeBooking.id, { arrived: true, arrivedAt: Date.now() });
+            setIntakeBooking(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2699,166 +2827,9 @@ function JobBreakdown({ booking, jobTypes, parts }) {
   );
 }
 
-// ---- Video evidence log ----
-const VIDEO_TYPES = [
-  { key: "intake", label: "Intake (on arrival)" },
-  { key: "issue", label: "Issue highlighted" },
-  { key: "completion", label: "Completion" },
-];
-function VideoLogSection({ card, onUpdate }) {
-  const [type, setType] = useState("intake");
-  const [ref, setRef] = useState("");
-  const [note, setNote] = useState("");
-  const [showOverride, setShowOverride] = useState(false);
-  const [overridePassword, setOverridePassword] = useState("");
-  const [overrideError, setOverrideError] = useState("");
-  const log = card.videoLog || [];
-  const hasIntake = log.some((v) => v.type === "intake");
-  const hasLoggedCompletion = log.some((v) => v.type === "completion");
-  const hasCompletion = hasLoggedCompletion || card.completionVideoOverridden;
-
-  const addEntry = () => {
-    if (!ref.trim()) { alert("Paste the link to the video (Google Drive, Photos, etc.) first."); return; }
-    const entry = { id: uid("vid"), type, ref: ref.trim(), note: note.trim(), at: new Date().toISOString() };
-    onUpdate({ videoLog: [...log, entry] });
-    setRef(""); setNote("");
-  };
-
-  const submitOverride = async () => {
-    setOverrideError("");
-    const res = await fetch("/api/profit-login", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: overridePassword }),
-    });
-    if (res.ok) {
-      onUpdate({ completionVideoOverridden: true });
-      setShowOverride(false); setOverridePassword("");
-    } else {
-      setOverrideError("Wrong password");
-    }
-  };
-
-  return (
-    <div className="jc-card">
-      <div className="jc-section-title"><Video size={16} /> Video evidence log</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-        <div className={`req-banner ${hasIntake ? "ok" : ""}`}>
-          {hasIntake ? <Check size={14} /> : <AlertTriangle size={14} />} Intake video {hasIntake ? "logged" : "required — record on arrival, before any work"}
-        </div>
-        <div className={`req-banner ${hasCompletion ? "ok" : ""}`}>
-          {hasCompletion ? <Check size={14} /> : <AlertTriangle size={14} />}
-          {" "}Completion video {hasLoggedCompletion ? "logged" : card.completionVideoOverridden ? "overridden by owner" : "required before customer sign-off"}
-        </div>
-        {!hasLoggedCompletion && !card.completionVideoOverridden && !showOverride && (
-          <button className="jc-btn-ghost" style={{ alignSelf: "flex-start" }} onClick={() => setShowOverride(true)}><Lock size={12} /> Override (owner only)</button>
-        )}
-        {showOverride && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              type="password" className="jc-input" placeholder="Owner password" value={overridePassword}
-              onChange={(e) => setOverridePassword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitOverride()}
-            />
-            <button className="jc-btn-ghost" onClick={submitOverride}>Confirm</button>
-            <button className="jc-btn-ghost" onClick={() => { setShowOverride(false); setOverridePassword(""); setOverrideError(""); }}>Cancel</button>
-          </div>
-        )}
-        {overrideError && <div style={{ color: "var(--red)", fontSize: 12 }}>{overrideError}</div>}
-      </div>
-
-      {log.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-          {log.map((v) => (
-            <div key={v.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, background: "var(--panel2)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                <span style={{ fontWeight: 700, textTransform: "capitalize" }}>{v.type}</span>
-                <span style={{ color: "var(--muted)" }}>{new Date(v.at).toLocaleString("en-GB")}</span>
-              </div>
-              <a href={v.ref} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--amber2)", wordBreak: "break-all" }}>{v.ref}</a>
-              {v.note && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{v.note}</div>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!card.locked && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <select className="jc-select" value={type} onChange={(e) => setType(e.target.value)}>
-            {VIDEO_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-          </select>
-          <input className="jc-input" placeholder="Paste video link (Drive, Photos, etc.)" value={ref} onChange={(e) => setRef(e.target.value)} />
-          <input className="jc-input" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-          <button className="jc-btn-ghost" onClick={addEntry}><Camera size={14} /> Log video</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Signature ----
-function SignatureSection({ card, onUpdate }) {
-  const canvasRef = useRef(null);
-  const drawingRef = useRef(false);
-  const [hasDrawn, setHasDrawn] = useState(!!card.signature);
-  const [name, setName] = useState(card.signatureName || card.customerName || "");
-  const hasIntake = (card.videoLog || []).some((v) => v.type === "intake");
-  const hasCompletion = (card.videoLog || []).some((v) => v.type === "completion") || card.completionVideoOverridden;
-  const videosReady = hasIntake && hasCompletion;
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = canvas.clientWidth * ratio; canvas.height = 160 * ratio; ctx.scale(ratio, ratio);
-    ctx.strokeStyle = "#e7e3da"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
-    if (card.signature) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, canvas.clientWidth, 160); img.src = card.signature; }
-  }, []);
-
-  const getPos = (e) => { const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - rect.left, y: p.clientY - rect.top }; };
-  const start = (e) => { if (card.locked || !videosReady) return; e.preventDefault(); drawingRef.current = true; const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
-  const move = (e) => { if (!drawingRef.current || card.locked) return; e.preventDefault(); const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); setHasDrawn(true); };
-  const end = () => { drawingRef.current = false; };
-  const clearSig = () => { const canvas = canvasRef.current; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); setHasDrawn(false); onUpdate({ signature: null }); };
-
-  const confirmAndLock = () => {
-    if (!videosReady) { alert("Log both an intake video and a completion video before taking the signature."); return; }
-    if (!hasDrawn) { alert("Please have the customer sign before confirming."); return; }
-    if (!name.trim()) { alert("Please add the customer's printed name."); return; }
-    const dataUrl = canvasRef.current.toDataURL("image/png");
-    onUpdate({ signature: dataUrl, signatureName: name.trim(), signatureDate: new Date().toISOString(), locked: true });
-  };
-  const unlock = () => { if (confirm("Unlock this job card for editing? The signature will be cleared and will need to be re-taken.")) { onUpdate({ locked: false, signature: null, signatureDate: "" }); setHasDrawn(false); } };
-
-  return (
-    <div className="jc-card" style={{ border: "2px solid var(--amber)" }}>
-      <div className="jc-section-title"><PenLine size={16} /> Customer confirmation</div>
-      <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 14 }}>I confirm the findings and condition of my vehicle described above are accurate, and I authorise the work as discussed.</div>
-      {card.locked ? (
-        <div>
-          <div style={{ background: "#fff", borderRadius: 10, padding: 8, marginBottom: 10 }}><img src={card.signature} alt="Customer signature" style={{ width: "100%", height: 160, objectFit: "contain" }} /></div>
-          <div style={{ fontSize: 13, color: "var(--muted)" }}>Signed by <strong style={{ color: "var(--text)" }}>{card.signatureName}</strong> on {new Date(card.signatureDate).toLocaleString("en-GB")}</div>
-          <button className="jc-btn-ghost" style={{ marginTop: 12 }} onClick={unlock}><Unlock size={14} /> Unlock to edit</button>
-        </div>
-      ) : (
-        <div>
-          {!videosReady && <div className="req-banner" style={{ marginBottom: 12 }}><AlertTriangle size={14} /> Log the intake and completion videos above before taking a signature.</div>}
-          <div style={{ marginBottom: 12 }}><label className="jc-label">Customer printed name</label><input className="jc-input" value={name} onChange={(e) => setName(e.target.value)} /></div>
-          <label className="jc-label">Sign here</label>
-          <canvas ref={canvasRef} style={{ width: "100%", height: 160, background: videosReady ? "var(--panel2)" : "#1a1a1a", border: "1px dashed var(--line)", borderRadius: 10, touchAction: "none", opacity: videosReady ? 1 : 0.5 }}
-            onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerLeave={end} />
-          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-            <button className="jc-btn-ghost" onClick={clearSig}><RotateCcw size={14} /> Clear</button>
-            <button className="jc-btn" style={{ flex: 1, justifyContent: "center" }} onClick={confirmAndLock}><Check size={16} /> Confirm & lock job card</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ---- Full job card detail ----
 function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
-  const locked = card.locked;
   const setField = (field, val) => onUpdate({ [field]: val });
   const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
   const [newExtraWork, setNewExtraWork] = useState("");
@@ -2921,77 +2892,57 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updat
         <div className="jc-card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
             <div style={{ fontWeight: 800, fontSize: 20 }} className="wh-mono">{card.reg || "No reg"}</div>
-            {locked && <span className="jc-chip locked"><Lock size={11} style={{ display: "inline", marginRight: 4 }} />Signed & locked</span>}
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-            <div><label className="jc-label">Date in</label><input type="date" className="jc-input" value={card.dateIn} disabled={locked} onChange={(e) => setField("dateIn", e.target.value)} /></div>
-            <div><label className="jc-label">Date out</label><input type="date" className="jc-input" value={card.dateOut} disabled={locked} onChange={(e) => setField("dateOut", e.target.value)} /></div>
-            <div><label className="jc-label">Technician</label><input className="jc-input" value={card.technician} disabled={locked} onChange={(e) => setField("technician", e.target.value)} /></div>
+            <div><label className="jc-label">Date in</label><input type="date" className="jc-input" value={card.dateIn} onChange={(e) => setField("dateIn", e.target.value)} /></div>
+            <div><label className="jc-label">Date out</label><input type="date" className="jc-input" value={card.dateOut} onChange={(e) => setField("dateOut", e.target.value)} /></div>
+            <div><label className="jc-label">Technician</label><input className="jc-input" value={card.technician} onChange={(e) => setField("technician", e.target.value)} /></div>
           </div>
         </div>
 
         <div className="jc-card">
           <div className="jc-section-title"><Car size={16} /> Vehicle details</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Make" value={card.make} disabled={locked} onChange={(v) => setField("make", v)} />
-            <Field label="Model" value={card.model} disabled={locked} onChange={(v) => setField("model", v)} />
-            <Field label="Registration" value={card.reg} disabled={locked} onChange={(v) => setField("reg", v.toUpperCase())} />
-            <Field label="VIN" value={card.vin} disabled={locked} onChange={(v) => setField("vin", v)} />
-            <Field label="Transmission" value={card.transmission} disabled={locked} onChange={(v) => setField("transmission", v)} />
-            <Field label="Drive" value={card.drive} disabled={locked} onChange={(v) => setField("drive", v)} placeholder="2WD / 4WD" />
-            <Field label="Mileage in" value={card.mileageIn} disabled={locked} onChange={(v) => setField("mileageIn", v)} />
-            <Field label="Mileage out" value={card.mileageOut} disabled={locked} onChange={(v) => setField("mileageOut", v)} />
+            <Field label="Make" value={card.make} onChange={(v) => setField("make", v)} />
+            <Field label="Model" value={card.model} onChange={(v) => setField("model", v)} />
+            <Field label="Registration" value={card.reg} onChange={(v) => setField("reg", v.toUpperCase())} />
+            <Field label="Mileage in" value={card.mileageIn} onChange={(v) => setField("mileageIn", v)} />
+            <Field label="Mileage out" value={card.mileageOut} onChange={(v) => setField("mileageOut", v)} />
           </div>
         </div>
 
         <div className="jc-card">
           <div className="jc-section-title"><User size={16} /> Customer details</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <Field label="Name" value={card.customerName} disabled={locked} onChange={(v) => setField("customerName", v)} />
-            <Field label="Contact" value={card.contact} disabled={locked} onChange={(v) => setField("contact", v)} />
-            <Field label="Email" value={card.email} disabled={locked} onChange={(v) => setField("email", v)} />
+            <Field label="Name" value={card.customerName} onChange={(v) => setField("customerName", v)} />
+            <Field label="Contact" value={card.contact} onChange={(v) => setField("contact", v)} />
           </div>
         </div>
 
         <div className="jc-card">
           <div className="jc-section-title">Job status</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Toggle label="Estimate sent" on={card.jobStatus.estimateSent} disabled={locked} onClick={() => setNested("jobStatus", "estimateSent", !card.jobStatus.estimateSent)} />
-            <Toggle label="Customer auth received" on={card.jobStatus.customerAuthReceived} disabled={locked} onClick={() => setNested("jobStatus", "customerAuthReceived", !card.jobStatus.customerAuthReceived)} />
-            <Toggle label="Parts awaiting" on={card.jobStatus.partsAwaiting} disabled={locked} onClick={() => setNested("jobStatus", "partsAwaiting", !card.jobStatus.partsAwaiting)} />
-            <Toggle label="Vehicle off road" on={card.jobStatus.vehicleOffRoad} disabled={locked} onClick={() => setNested("jobStatus", "vehicleOffRoad", !card.jobStatus.vehicleOffRoad)} />
-          </div>
-          <div style={{ marginTop: 12 }}><DictateField label="Auth ref / notes" value={card.authRefNotes} disabled={locked} onChange={(v) => setField("authRefNotes", v)} rows={2} /></div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>The original job was already authorised at booking — this is only for extra work found and approved after drop-off.</div>
+          <Toggle label="Customer authorised additional work" on={card.jobStatus.customerAuthReceived} onClick={() => setNested("jobStatus", "customerAuthReceived", !card.jobStatus.customerAuthReceived)} />
+          <div style={{ marginTop: 12 }}><DictateField label="Auth ref / notes" value={card.authRefNotes} onChange={(v) => setField("authRefNotes", v)} rows={2} /></div>
         </div>
 
-        <div className="jc-card"><div className="jc-section-title">Customer symptoms</div><DictateField value={card.symptoms} disabled={locked} onChange={(v) => setField("symptoms", v)} rows={5} /></div>
-        <div className="jc-card"><div className="jc-section-title">Technician interpretation</div><DictateField value={card.technicianInterpretation} disabled={locked} onChange={(v) => setField("technicianInterpretation", v)} rows={5} /></div>
+        <div className="jc-card"><div className="jc-section-title">Customer symptoms</div><DictateField value={card.symptoms} onChange={(v) => setField("symptoms", v)} rows={5} /></div>
+        <div className="jc-card"><div className="jc-section-title">Technician interpretation</div><DictateField value={card.technicianInterpretation} onChange={(v) => setField("technicianInterpretation", v)} rows={5} /></div>
 
         <div className="jc-card">
           <div className="jc-section-title">Pre-diagnostic checks</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Toggle label="Pre scan completed" on={card.preDiagnostic.preScanCompleted} disabled={locked} onClick={() => setNested("preDiagnostic", "preScanCompleted", !card.preDiagnostic.preScanCompleted)} />
-            <Toggle label="Pre scan attached" on={card.preDiagnostic.preScanAttached} disabled={locked} onClick={() => setNested("preDiagnostic", "preScanAttached", !card.preDiagnostic.preScanAttached)} />
-            <Toggle label="Fault codes recorded" on={card.preDiagnostic.faultCodesRecorded} disabled={locked} onClick={() => setNested("preDiagnostic", "faultCodesRecorded", !card.preDiagnostic.faultCodesRecorded)} />
-            <Toggle label="Live data recorded" on={card.preDiagnostic.liveDataRecorded} disabled={locked} onClick={() => setNested("preDiagnostic", "liveDataRecorded", !card.preDiagnostic.liveDataRecorded)} />
-          </div>
+          <Toggle label="Pre scan completed & emailed" on={card.preDiagnostic.preScanCompleted} onClick={() => setNested("preDiagnostic", "preScanCompleted", !card.preDiagnostic.preScanCompleted)} />
         </div>
 
-        <div className="jc-card"><div className="jc-section-title">Diagnosis & findings</div><DictateField value={card.diagnosisFindings} disabled={locked} onChange={(v) => setField("diagnosisFindings", v)} rows={6} /></div>
+        <div className="jc-card"><div className="jc-section-title">Diagnosis & findings</div><DictateField value={card.diagnosisFindings} onChange={(v) => setField("diagnosisFindings", v)} rows={6} /></div>
 
         <div className="jc-card">
           <div className="jc-section-title">Post-repair checks</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-            <Toggle label="Post scan completed" on={card.postDiagnostic.postScanCompleted} disabled={locked} onClick={() => setNested("postDiagnostic", "postScanCompleted", !card.postDiagnostic.postScanCompleted)} />
-            <Toggle label="No codes present" on={card.postDiagnostic.noCodesPresent} disabled={locked} onClick={() => setNested("postDiagnostic", "noCodesPresent", !card.postDiagnostic.noCodesPresent)} />
-            <Toggle label="Road test completed" on={card.postChecks.roadTestCompleted} disabled={locked} onClick={() => setNested("postChecks", "roadTestCompleted", !card.postChecks.roadTestCompleted)} />
-            <Toggle label="Warning lights off" on={card.postChecks.warningLightsOff} disabled={locked} onClick={() => setNested("postChecks", "warningLightsOff", !card.postChecks.warningLightsOff)} />
-            <Toggle label="Concern resolved" on={card.postChecks.concernResolved} disabled={locked} onClick={() => setNested("postChecks", "concernResolved", !card.postChecks.concernResolved)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Toggle label="Post scan completed" on={card.postDiagnostic.postScanCompleted} onClick={() => setNested("postDiagnostic", "postScanCompleted", !card.postDiagnostic.postScanCompleted)} />
+            <Toggle label="Road test completed" on={card.postChecks.roadTestCompleted} onClick={() => setNested("postChecks", "roadTestCompleted", !card.postChecks.roadTestCompleted)} />
           </div>
         </div>
-
-        <VideoLogSection card={card} onUpdate={onUpdate} />
-        <SignatureSection card={card} onUpdate={onUpdate} />
       </div>
     </div>
   );
