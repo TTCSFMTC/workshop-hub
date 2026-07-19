@@ -1293,6 +1293,15 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
       if (!res.ok) { alert(data.error || "Failed to send the approval report."); setSendingId(null); return; }
       // Optimistic — realtime will bring in the server's ai_writeup/status once it lands.
       updateJobApproval(approval.id, { price, inStock: !!draft.inStock, status: "sent", sentAt: Date.now() });
+
+      // A brand-new sending domain is more likely to land in spam, so also
+      // nudge the customer over WhatsApp to go check their email.
+      const card = jobCards.find((c) => c.id === approval.jobCardId);
+      const booking = bookings.find((b) => b.id === approval.bookingId);
+      if (booking?.phone) {
+        const msg = `Hi ${firstName(card?.customerName || booking.customerName)}, we've found some extra work needed on your ${card?.model || booking.vehicleModel || "vehicle"} while carrying out the booked job. We've just emailed you the details along with a link to approve or decline — could you take a look when you get a chance?`;
+        window.open(whatsappLink(booking.phone, msg), "_blank");
+      }
     } catch {
       alert("Failed to send the approval report — check your connection and try again.");
     }
