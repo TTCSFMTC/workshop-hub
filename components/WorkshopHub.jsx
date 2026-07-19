@@ -1500,9 +1500,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
     const body = encodeURIComponent(`Hi,\n\nCould you quote to collect and return a customer vehicle for us?\n\nCustomer: ${booking.customerName || ""}\nVehicle registration: ${booking.reg || ""}\nPickup postcode: ${booking.postcode || ""}\nApprox distance: ${booking.distanceMiles || "?"} miles\nJob date: ${booking.date}\nJob type: ${jt?.name || ""}\n\nPlease treat this vehicle with care — it's the customer's own car.\n\nThanks,\nThe Timing Chain Specialists`);
     window.open(`mailto:${recipients}?subject=${subject}&body=${body}`, "_blank");
   };
-  const requestTransportQuote = (checked) => {
-    updateBooking(booking.id, { transportRequired: checked });
-    if (!checked) return;
+  const messageTransport = () => {
     if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
     window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking)), "_blank");
   };
@@ -1552,8 +1550,36 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
           )}
           {needsQuote && <button className="wb-btn-ghost" onClick={draftQuoteEmail}><Mail size={12} /> Draft transport quote request</button>}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
-            <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => requestTransportQuote(e.target.checked)} /> Transport required
+            <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => updateBooking(booking.id, { transportRequired: e.target.checked })} /> Transport required
           </label>
+          {booking.transportRequired && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, background: "var(--panel2)", borderRadius: 6, padding: 8 }}>
+              <button className="wb-btn-ghost" onClick={messageTransport}>
+                <MessageCircle size={12} /> Message {settings.transportContactName || "transport"} for price & availability
+              </button>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 11, color: booking.transportConfirmed === true ? "var(--green)" : booking.transportConfirmed === false ? "var(--red)" : "var(--muted)" }}>
+                  {booking.transportConfirmed === true ? "Confirmed" : booking.transportConfirmed === false ? "Declined" : "Awaiting reply"}
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    className="wb-btn-ghost"
+                    style={{ padding: "6px 10px", minHeight: "auto", ...(booking.transportConfirmed === true ? { borderColor: "var(--green)", color: "var(--green)" } : {}) }}
+                    onClick={() => updateBooking(booking.id, { transportConfirmed: true })}
+                  >
+                    Confirmed
+                  </button>
+                  <button
+                    className="wb-btn-ghost"
+                    style={{ padding: "6px 10px", minHeight: "auto", ...(booking.transportConfirmed === false ? { borderColor: "var(--red)", color: "var(--red)" } : {}) }}
+                    onClick={() => updateBooking(booking.id, { transportConfirmed: false })}
+                  >
+                    Declined
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {booking.workshopCompleted && (
             booking.zohoInvoiceId ? (
               <a href={booking.zohoInvoiceUrl} target="_blank" rel="noopener noreferrer" className="wb-btn-ghost" style={{ textDecoration: "none", textAlign: "center", color: "var(--green)" }}>
