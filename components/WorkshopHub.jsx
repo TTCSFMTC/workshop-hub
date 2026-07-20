@@ -12,7 +12,8 @@ import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
-  setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
+  setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
+  upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
@@ -423,6 +424,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_job_types", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_extra_parts", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
+      subscribeTable("booking_bom_qty_overrides", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("job_approvals", async () => setJobApprovals(await fetchJobApprovals())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
@@ -513,6 +515,7 @@ export default function WorkshopHub() {
     const extraIds = newBooking.extraJobTypeIds || [];
     const extraParts = newBooking.extraParts || [];
     const jobTypePrices = newBooking.jobTypePrices || [];
+    const bomQtyOverrides = newBooking.bomQtyOverrides || [];
 
     setBookings((prev) => [...prev, newBooking]);
 
@@ -523,6 +526,7 @@ export default function WorkshopHub() {
       ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
       ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
       ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
+      ...bomQtyOverrides.map((l) => setBookingBomQtyOverride(newBooking.id, l.partId, l.qty)),
     ]);
 
     const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
@@ -560,9 +564,9 @@ export default function WorkshopHub() {
     const before = bookings.find((b) => b.id === id);
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
-    // bookings-table patch never includes extraJobTypeIds/extraParts/jobTypePrices
-    // — those live in their own junction tables, reconciled separately below.
-    const { extraJobTypeIds, extraParts, jobTypePrices, ...rowPatch } = patch;
+    // bookings-table patch never includes extraJobTypeIds/extraParts/jobTypePrices/
+    // bomQtyOverrides — those live in their own junction tables, reconciled separately below.
+    const { extraJobTypeIds, extraParts, jobTypePrices, bomQtyOverrides, ...rowPatch } = patch;
 
     // Stock is only taken out (or given back) at the workshop-completed
     // transition, not at booking time — see addBooking. Three cases:
@@ -592,7 +596,7 @@ export default function WorkshopHub() {
           working = applyBatchUpdates(working, updates);
         }
         setStockBatches(working);
-      } else if (before.workshopCompleted && ("jobTypeId" in patch || "extraJobTypeIds" in patch || "extraParts" in patch)) {
+      } else if (before.workshopCompleted && ("jobTypeId" in patch || "extraJobTypeIds" in patch || "extraParts" in patch || "bomQtyOverrides" in patch)) {
         const beforeBom = fullBookingBom(before, jobTypes);
         const afterBom = fullBookingBom({ ...before, ...patch }, jobTypes);
         const allPartIds = new Set([...beforeBom.map((l) => l.partId), ...afterBom.map((l) => l.partId)]);
@@ -628,6 +632,11 @@ export default function WorkshopHub() {
       const beforePrices = before?.jobTypePrices || [];
       const removed = beforePrices.filter((l) => !jobTypePrices.some((n) => n.jobTypeId === l.jobTypeId));
       jobs.push(...jobTypePrices.map((l) => setBookingJobTypePrice(id, l.jobTypeId, l.price)), ...removed.map((l) => removeBookingJobTypePrice(id, l.jobTypeId)));
+    }
+    if (bomQtyOverrides) {
+      const beforeOverrides = before?.bomQtyOverrides || [];
+      const removed = beforeOverrides.filter((l) => !bomQtyOverrides.some((n) => n.partId === l.partId));
+      jobs.push(...bomQtyOverrides.map((l) => setBookingBomQtyOverride(id, l.partId, l.qty)), ...removed.map((l) => removeBookingBomQtyOverride(id, l.partId)));
     }
     await Promise.all(jobs.filter(Boolean));
 
@@ -1732,11 +1741,15 @@ function combinedBom(jobTypeIds, jobTypes) {
   return Object.entries(qtyByPart).map(([partId, qty]) => ({ partId, qty }));
 }
 // Full recipe for a booking: main + extra job types, plus any one-off extra
-// parts added straight from Stock (folded into the same part if it overlaps).
+// parts added straight from Stock (folded into the same part if it overlaps),
+// then any per-booking quantity overrides win outright — a part whose real
+// quantity varies by vehicle (e.g. Followers: some cars take 3, some 6)
+// shouldn't be stuck at the job type's fixed template default.
 function fullBookingBom(booking, jobTypes) {
   const qtyByPart = Object.fromEntries(combinedBom(bookingJobTypeIds(booking), jobTypes).map((l) => [l.partId, l.qty]));
   (booking.extraParts || []).forEach((l) => { qtyByPart[l.partId] = (qtyByPart[l.partId] || 0) + l.qty; });
-  return Object.entries(qtyByPart).map(([partId, qty]) => ({ partId, qty }));
+  (booking.bomQtyOverrides || []).forEach((l) => { qtyByPart[l.partId] = l.qty; });
+  return Object.entries(qtyByPart).filter((l) => l[1] > 0).map(([partId, qty]) => ({ partId, qty }));
 }
 function partsCostForBooking(booking, jobTypes, parts) {
   return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
@@ -2475,6 +2488,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || jobTypes[0]?.id || "");
   const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [extraParts, setExtraParts] = useState(booking?.extraParts || []);
+  const [bomQtyOverrides, setBomQtyOverrides] = useState(booking?.bomQtyOverrides || []);
   const [vehicleModel, setVehicleModel] = useState(booking?.vehicleModel || "");
   const [date, setDate] = useState(booking?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
@@ -2505,6 +2519,18 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   }, [jobTypeId]);
   const allJobTypeIds = [jobTypeId, ...extraJobTypeIds].filter(Boolean);
   const jobValue = allJobTypeIds.reduce((sum, id) => sum + (jobTypePrices[id] || 0), 0);
+  // The job types' own default BOM lines — the quantity a technician can
+  // override per booking below, for parts that genuinely vary by vehicle
+  // (e.g. Followers: some cars take 3, some take 6) rather than being fixed
+  // like a gasket or filter.
+  const jobTypeBomLines = useMemo(() => combinedBom(allJobTypeIds, jobTypes), [jobTypeId, extraJobTypeIds.join(","), jobTypes]);
+  const overrideQty = (partId) => bomQtyOverrides.find((l) => l.partId === partId)?.qty;
+  const setOverrideQty = (partId, qty, defaultQty) => {
+    setBomQtyOverrides((prev) => {
+      const withoutThis = prev.filter((l) => l.partId !== partId);
+      return qty === defaultQty ? withoutThis : [...withoutThis, { partId, qty }];
+    });
+  };
   const isTCS = business === "Timing Chain Specialists";
   const handlePostcodeChange = (val) => { setPostcode(val); setDistanceMiles(estimateDistanceMiles(settings.workshopPostcode, val)); };
   const withinFreeRadius = typeof distanceMiles === "number" ? distanceMiles <= 150 : null;
@@ -2580,6 +2606,25 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
               {jobTypes.filter((jt) => jt.id !== jobTypeId && !extraJobTypeIds.includes(jt.id)).map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
             </select>
           </div>
+          {jobTypeBomLines.length > 0 && (
+            <div>
+              <label className="wb-label">Confirm quantities (adjust for parts that vary per vehicle, e.g. Followers)</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {jobTypeBomLines.map((l) => {
+                  const qty = overrideQty(l.partId) ?? l.qty;
+                  return (
+                    <div key={l.partId} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ flex: 1, fontSize: 13 }}>{partsIndex[l.partId] || l.partId}</span>
+                      <input
+                        type="number" step="0.1" min="0" className="wb-input" style={{ width: 70 }} value={qty}
+                        onChange={(e) => setOverrideQty(l.partId, parseFloat(e.target.value) || 0, l.qty)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <div>
             <label className="wb-label">Pricing</label>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2661,7 +2706,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, padding: 10 }}>
               <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>This will use:</div>
               <div className="wh-mono" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 2 }}>
-                {fullBookingBom({ jobTypeId, extraJobTypeIds, extraParts }, jobTypes).map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                {fullBookingBom({ jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides }, jobTypes).map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
               </div>
             </div>
           )}
@@ -2669,7 +2714,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, date, days, vehicleModel,
+            customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
             jobValue,
