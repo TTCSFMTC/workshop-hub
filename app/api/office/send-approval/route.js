@@ -40,14 +40,15 @@ export async function POST(request) {
   }
 
   try {
+    const vehicleModel = [card.make, card.model].filter(Boolean).join(" ");
     const writeup = await generateApprovalWriteup({
-      vehicleReg: card.reg, vehicleModel: card.model, jobTypeName,
+      vehicleReg: card.reg, vehicleModel, jobTypeName,
       rawNotes: approval.description, price, inStock: !!inStock,
     });
 
     const approveUrl = `${request.nextUrl.origin}/approve/${approval.token}`;
     await sendApprovalEmail({
-      to: booking.email, business: booking.business, customerName: card.customer_name, reg: card.reg, vehicleModel: card.model,
+      to: booking.email, business: booking.business, customerName: card.customer_name, reg: card.reg, vehicleModel,
       writeup, price, inStock: !!inStock, approveUrl,
     });
 

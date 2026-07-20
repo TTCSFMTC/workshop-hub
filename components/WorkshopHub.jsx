@@ -15,7 +15,6 @@ import {
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
   insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
-  insertIntakeConfirmation,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -1186,14 +1185,15 @@ function bookingStatus(b) {
 // drop-off — separate from the workshop's own internal job card, which
 // stays purely diagnostic. Office fills this in the moment the "IN"
 // button is pressed, before any work starts.
-function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
+function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirmed }) {
   const canvasRef = useRef(null);
   const drawingRef = useRef(false);
   const [preScanCompleted, setPreScanCompleted] = useState(false);
-  const [videoCompleted, setVideoCompleted] = useState(false);
+  const [videoFile, setVideoFile] = useState(null);
   const [hasDrawn, setHasDrawn] = useState(false);
   const [name, setName] = useState(booking.customerName || "");
   const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
 
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
   const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
@@ -1213,17 +1213,46 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
   const end = () => { drawingRef.current = false; };
   const clearSig = () => { const canvas = canvasRef.current; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); setHasDrawn(false); };
 
+  // Uploads straight from the browser to the Drive session URL our server
+  // handed back — the video's bytes never pass through our own API route.
+  const uploadVideo = async () => {
+    setStatus("Uploading video…");
+    const sessionRes = await fetch("/api/office/intake-video-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: `${booking.reg || booking.customerName || "vehicle"} - drop-off video.${(videoFile.name.split(".").pop() || "mp4")}`, mimeType: videoFile.type || "video/mp4" }),
+    });
+    const sessionData = await sessionRes.json();
+    if (!sessionRes.ok) throw new Error(sessionData.error || "Failed to start video upload");
+
+    const putRes = await fetch(sessionData.uploadUrl, { method: "PUT", headers: { "Content-Type": videoFile.type || "video/mp4" }, body: videoFile });
+    const putData = await putRes.json();
+    if (!putRes.ok || !putData.id) throw new Error("Video upload failed");
+    return putData.id;
+  };
+
   const confirm = async () => {
     if (!hasDrawn) { alert("Please have the customer sign before confirming."); return; }
     if (!name.trim()) { alert("Please add the customer's printed name."); return; }
     setSaving(true);
-    const signature = canvasRef.current.toDataURL("image/png");
+    setStatus("");
     try {
-      await onConfirm({ preScanCompleted, videoCompleted, signature, signatureName: name.trim() });
-    } catch {
-      alert("Failed to save the intake confirmation — check your connection and try again.");
+      const videoFileId = videoFile ? await uploadVideo() : null;
+      setStatus("Saving confirmation…");
+      const signatureDataUrl = canvasRef.current.toDataURL("image/png");
+      const res = await fetch("/api/office/intake-confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: booking.id, preScanCompleted, signatureName: name.trim(), signatureDataUrl, videoFileId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save the intake confirmation");
+      onConfirmed();
+    } catch (e) {
+      alert(e.message || "Failed to save the intake confirmation — check your connection and try again.");
     }
     setSaving(false);
+    setStatus("");
   };
 
   return (
@@ -1238,6 +1267,7 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
             <div style={{ fontSize: 13, lineHeight: 1.6 }}>
               <div><strong>{booking.customerName || "Unnamed"}</strong></div>
               {booking.phone && <div>{booking.phone}</div>}
+              {booking.email && <div>{booking.email}</div>}
               {booking.reg && <div className="wh-mono">{booking.reg}</div>}
               {booking.vehicleModel && <div>{booking.vehicleModel}</div>}
             </div>
@@ -1258,7 +1288,11 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
 
           <div className="jc-card" style={{ marginBottom: 12 }}>
             <Toggle label="Pre scan completed" on={preScanCompleted} onClick={() => setPreScanCompleted((v) => !v)} />
-            <div style={{ marginTop: 8 }}><Toggle label="Video completed" on={videoCompleted} onClick={() => setVideoCompleted((v) => !v)} /></div>
+            <div style={{ marginTop: 12 }}>
+              <label className="jc-label">Drop-off video (optional)</label>
+              <input type="file" accept="video/*" className="jc-input" onChange={(e) => setVideoFile(e.target.files?.[0] || null)} />
+              {videoFile && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{videoFile.name}</div>}
+            </div>
           </div>
 
           <div className="jc-card">
@@ -1269,8 +1303,9 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirm }) {
             <button className="wb-btn-ghost" style={{ marginTop: 10 }} onClick={clearSig}><RotateCcw size={14} /> Clear</button>
           </div>
         </div>
-        <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
+        <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
+          {status && <span style={{ fontSize: 12, color: "var(--muted)", marginRight: "auto" }}>{status}</span>}
+          <button className="wb-btn-ghost" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="wb-btn" disabled={saving} onClick={confirm}>{saving ? "Saving…" : "Confirm arrival"}</button>
         </div>
       </div>
@@ -1423,11 +1458,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           booking={intakeBooking}
           jobTypes={jobTypes}
           onClose={() => setIntakeBooking(null)}
-          onConfirm={async ({ preScanCompleted, videoCompleted, signature, signatureName }) => {
-            await insertIntakeConfirmation({ id: uid("ic"), bookingId: intakeBooking.id, preScanCompleted, videoCompleted, signature, signatureName });
-            updateBooking(intakeBooking.id, { arrived: true, arrivedAt: Date.now() });
-            setIntakeBooking(null);
-          }}
+          onConfirmed={() => setIntakeBooking(null)}
         />
       )}
     </div>
@@ -1521,7 +1552,8 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
       const card = jobCards.find((c) => c.id === approval.jobCardId);
       const booking = bookings.find((b) => b.id === approval.bookingId);
       if (booking?.phone) {
-        const msg = `Hi ${firstName(card?.customerName || booking.customerName)}, we've found some extra work needed on your ${card?.model || booking.vehicleModel || "vehicle"} while carrying out the booked job. We've just emailed you the details along with a link to approve or decline — could you take a look when you get a chance?`;
+        const cardVehicle = [card?.make, card?.model].filter(Boolean).join(" ");
+        const msg = `Hi ${firstName(card?.customerName || booking.customerName)}, we've found some extra work needed on your ${cardVehicle || booking.vehicleModel || "vehicle"} while carrying out the booked job. We've just emailed you the details along with a link to approve or decline — could you take a look when you get a chance?`;
         window.open(whatsappLink(booking.phone, msg), "_blank");
       }
     } catch {
