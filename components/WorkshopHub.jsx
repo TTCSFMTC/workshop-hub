@@ -6,13 +6,13 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
-  setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow,
+  setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
@@ -761,6 +761,14 @@ export default function WorkshopHub() {
     await updateJobCardRow(id, patch);
   });
 
+  // For customers who cancel after a job card's already been started —
+  // deletes the technician's work record only. The underlying booking (if
+  // any) is untouched; office can cancel/delete that separately.
+  const removeJobCard = (id) => withSaveState(async () => {
+    setJobCards((prev) => prev.filter((c) => c.id !== id));
+    await deleteJobCardRow(id);
+  });
+
   // Technician flags extra work found during diagnosis — raw notes only,
   // no price, nothing sent to the customer yet. Office reviews it (see the
   // pending-approvals banner), sets a price, and sends it on.
@@ -883,7 +891,7 @@ export default function WorkshopHub() {
       ) : (
         <WorkshopMode
           bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
-          jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard} updateBooking={updateBooking}
+          jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard} removeJobCard={removeJobCard} updateBooking={updateBooking}
           jobApprovals={jobApprovals} addJobApproval={addJobApproval} removeJobApproval={removeJobApproval}
         />
       )}
@@ -2679,7 +2687,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
 // ============================================================
 // WORKSHOP MODE (iPad / technician)
 // ============================================================
-function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
+function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJobCard, updateJobCard, removeJobCard, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
   const [openCardId, setOpenCardId] = useState(null);
   const openCard = jobCards.find((c) => c.id === openCardId);
 
@@ -2689,6 +2697,7 @@ function WorkshopMode({ bookings, jobTypes, parts, settings, jobCards, upsertJob
       <JobCardDetail
         card={openCard} booking={booking} jobTypes={jobTypes} parts={parts}
         onUpdate={(patch) => updateJobCard(openCard.id, patch)} onBack={() => setOpenCardId(null)} updateBooking={updateBooking}
+        onDelete={() => { removeJobCard(openCard.id); setOpenCardId(null); }}
         jobApprovals={jobApprovals.filter((a) => a.jobCardId === openCard.id)}
         addJobApproval={(description) => addJobApproval(openCard.id, openCard.bookingId, description)}
         removeJobApproval={removeJobApproval}
@@ -2875,15 +2884,39 @@ function JobBreakdown({ booking, jobTypes, parts }) {
 
 
 // ---- Full job card detail ----
-function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
+function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDelete, updateBooking, jobApprovals, addJobApproval, removeJobApproval }) {
   const setField = (field, val) => onUpdate({ [field]: val });
   const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
   const [newExtraWork, setNewExtraWork] = useState("");
+  const [writeupState, setWriteupState] = useState({ generating: false, pdfUrl: null, error: null });
+
+  const generateTechnicalWriteup = async () => {
+    setWriteupState({ generating: true, pdfUrl: null, error: null });
+    try {
+      const res = await fetch("/api/office/technical-writeup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobCardId: card.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate the write-up");
+      setWriteupState({ generating: false, pdfUrl: data.pdfUrl, error: null });
+    } catch (e) {
+      setWriteupState({ generating: false, pdfUrl: null, error: e.message || "Failed to generate the write-up" });
+    }
+  };
 
   return (
     <div>
-      <div className="wh-topbar" style={{ position: "static" }}>
+      <div className="wh-topbar" style={{ position: "static", justifyContent: "space-between" }}>
         <button className="jc-btn-ghost" onClick={onBack}><ArrowLeft size={16} /> Back to search</button>
+        <button
+          className="jc-btn-ghost"
+          style={{ color: "var(--red)" }}
+          onClick={() => { if (confirm(`Delete this job card for ${card.customerName || card.reg || "this customer"}? This can't be undone — use this for cancelled customers only.`)) onDelete(); }}
+        >
+          <Trash2 size={16} /> Delete job card
+        </button>
       </div>
       <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto" }}>
         <JobBreakdown booking={booking} jobTypes={jobTypes} parts={parts} />
@@ -2981,6 +3014,22 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, updat
         </div>
 
         <div className="jc-card"><div className="jc-section-title">Diagnosis & findings</div><DictateField value={card.diagnosisFindings} onChange={(v) => setField("diagnosisFindings", v)} rows={6} /></div>
+
+        <div className="jc-card">
+          <div className="jc-section-title">Technical write-up (warranty / legal)</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
+            AI-tightened version of the technician interpretation and diagnosis findings above — keeps the technical detail, doesn't simplify anything. Saved as a PDF to the shared Drive folder.
+          </div>
+          <button className="jc-btn-sm" disabled={writeupState.generating} onClick={generateTechnicalWriteup}>
+            <FileText size={14} /> {writeupState.generating ? "Generating…" : "Generate technical write-up (PDF)"}
+          </button>
+          {writeupState.pdfUrl && (
+            <div style={{ marginTop: 10, fontSize: 13 }}>
+              <a href={writeupState.pdfUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber)" }}>Open the generated PDF</a>
+            </div>
+          )}
+          {writeupState.error && <div style={{ marginTop: 10, fontSize: 12, color: "var(--red)" }}>{writeupState.error}</div>}
+        </div>
 
         <div className="jc-card">
           <div className="jc-section-title">Post-repair checks</div>
