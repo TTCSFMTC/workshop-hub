@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabaseClient";
+import { sendApprovalResponseNotification } from "@/lib/resend";
 
 // Public, unauthenticated route — the random token itself is what scopes
 // access to exactly one approval record, same pattern as a password-reset
@@ -36,7 +37,7 @@ export async function POST(request, { params }) {
   if (!signatureName?.trim()) return NextResponse.json({ error: "Printed name is required" }, { status: 400 });
   if (decision === "approved" && !signatureDataUrl) return NextResponse.json({ error: "Signature is required to approve" }, { status: 400 });
 
-  const { data: approval, error: e1 } = await supabase.from("job_approvals").select("id, status").eq("token", token).maybeSingle();
+  const { data: approval, error: e1 } = await supabase.from("job_approvals").select("id, status, job_card_id, price").eq("token", token).maybeSingle();
   if (e1 || !approval) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (approval.status !== "sent") return NextResponse.json({ error: "This request has already been responded to" }, { status: 409 });
 
@@ -47,6 +48,19 @@ export async function POST(request, { params }) {
     customer_signature_name: signatureName.trim(),
   }).eq("id", approval.id);
   if (e2) return NextResponse.json({ error: "Failed to save your response" }, { status: 500 });
+
+  const { data: card } = await supabase.from("job_cards").select("reg, make, model, customer_name, business").eq("id", approval.job_card_id).maybeSingle();
+  try {
+    await sendApprovalResponseNotification({
+      business: card?.business, customerName: card?.customer_name, reg: card?.reg,
+      vehicleModel: [card?.make, card?.model].filter(Boolean).join(" "),
+      decision, price: approval.price, signatureName: signatureName.trim(),
+    });
+  } catch (e) {
+    // The customer's decision is already saved — a notification failure
+    // shouldn't turn into an error for the customer, just get logged.
+    console.error("approval response notification failed", e);
+  }
 
   return NextResponse.json({ ok: true });
 }
