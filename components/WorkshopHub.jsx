@@ -2141,6 +2141,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                       return (
                         <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
                           <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
+                          {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
                           <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
                           {b.dueDate && (
                             <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
@@ -2161,14 +2162,15 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
                   <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
+                  <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Ordered from" value={orderAmounts[r.id]?.supplier || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], supplier: e.target.value } }))} />
                   <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
                   <button
                     className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
                     onClick={() => {
                       const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
                       if (!qty || qty <= 0 || !price || price < 0) return;
-                      orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null);
-                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "" } }));
+                      orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null, orderAmounts[r.id]?.supplier?.trim() || null);
+                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "", supplier: "" } }));
                     }}
                   >Order</button>
                 </div>
