@@ -173,7 +173,15 @@ function whatsappLink(phone, message) {
 // The record of the agreed price lives in this message, so it's only ever
 // sendable once a job value has been entered — callers must check
 // booking.jobValue before opening this link.
+//
+// Timing Chain Specialists customers don't drop the car off with us in
+// person — a collection driver handles that end, and we won't be there to
+// take the locking wheel nut from them directly — so the closing line has
+// to be different from Warrington 4x4's "see you at 9:30am" version.
 function confirmationMessage(b) {
+  const closing = b.business === "Timing Chain Specialists"
+    ? "As your vehicle will be collected rather than dropped off with us in person, please make sure your locking wheel nut is left in the centre cupholder ready for the driver. We'll of course keep in touch with you throughout the work."
+    : "We'll be there to greet you on the day — please bring your locking wheel nut (not just the key) with you, and aim to arrive around 9:30am.";
   return `Hi ${firstName(b.customerName)},
 
 Many thanks for sending all that through, and for reading through our terms and conditions.
@@ -184,7 +192,7 @@ We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
 Between now and then, if anything changes or comes up, please just let us know.
 
-We'll be there to greet you on the day — please bring your locking wheel nut (not just the key) with you, and aim to arrive around 9:30am.
+${closing}
 
 Many thanks,
 ${b.business}`;
