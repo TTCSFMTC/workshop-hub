@@ -199,9 +199,12 @@ ${b.business}`;
 }
 
 function reminderMessage(b) {
+  const reminder = b.business === "Timing Chain Specialists"
+    ? "just a reminder, please make sure your locking wheel nut is left in the centre cupholder ready for our collection driver."
+    : "just a reminder, please bring your locking wheel nut. We'll meet you in reception at 9:30.";
   return `Hello ${firstName(b.customerName)},
 
-I hope you are well, just checking in before we finalise the details — just a reminder, please bring your locking wheel nut. We'll meet you in reception at 9:30. Just let us know if anything has changed since we booked you in.`;
+I hope you are well, just checking in before we finalise the details — ${reminder} Just let us know if anything has changed since we booked you in.`;
 }
 
 function transportPriceRequestMessage(b, contactName) {
