@@ -2136,6 +2136,13 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
               <td style={{ fontWeight: 600 }}>
                 {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
                 <button onClick={() => renamePart(r)} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
+                <a
+                  href={`https://octanedistribution.com/search.cfm?q=${encodeURIComponent(r.partNumber || r.name)}`}
+                  target="_blank" rel="noreferrer" title="Search on Octane Distribution"
+                  style={{ color: "var(--muted)", marginLeft: 6, verticalAlign: "middle", display: "inline-flex" }}
+                >
+                  <Truck size={12} />
+                </a>
               </td>
               <td>
                 <input
