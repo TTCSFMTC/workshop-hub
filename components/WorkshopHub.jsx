@@ -2245,6 +2245,9 @@ function PartsPriceModal({ parts, onClose }) {
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [octaneStatus, setOctaneStatus] = useState("idle"); // idle | loading | done | error
+  const [octaneResults, setOctaneResults] = useState([]);
+  const [octaneError, setOctaneError] = useState("");
 
   const selectExisting = (id) => {
     setSelectedPartId(id);
@@ -2260,20 +2263,33 @@ function PartsPriceModal({ parts, onClose }) {
     setStatus("loading");
     setErrorMsg("");
     setResult(null);
-    try {
-      const res = await fetch("/api/parts-price", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ partNumber, description }),
-      });
+    setOctaneStatus("loading");
+    setOctaneError("");
+    setOctaneResults([]);
+
+    const euSearch = fetch("/api/parts-price", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ partNumber, description }),
+    }).then(async (res) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Lookup failed");
       setResult(data);
       setStatus("done");
-    } catch (e) {
-      setErrorMsg(e.message);
-      setStatus("error");
-    }
+    }).catch((e) => { setErrorMsg(e.message); setStatus("error"); });
+
+    const octaneSearch = fetch("/api/office/octane-price", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: partNumber.trim() || description }),
+    }).then(async (res) => {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lookup failed");
+      setOctaneResults(data.results);
+      setOctaneStatus("done");
+    }).catch((e) => { setOctaneError(e.message); setOctaneStatus("error"); });
+
+    await Promise.all([euSearch, octaneSearch]);
   };
 
   return (
@@ -2299,6 +2315,28 @@ function PartsPriceModal({ parts, onClose }) {
               {status === "loading" ? "Searching…" : "Search"}
             </button>
           </div>
+
+          {octaneStatus !== "idle" && (
+            <div style={{ border: "1px solid var(--amber)", borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--amber2)", marginBottom: 6 }}>Your Octane trade price</div>
+              {octaneStatus === "loading" && <div style={{ color: "var(--muted)", fontSize: 12 }}>Checking your trade account…</div>}
+              {octaneStatus === "error" && <div style={{ color: "var(--red)", fontSize: 12 }}>{octaneError}</div>}
+              {octaneStatus === "done" && octaneResults.length === 0 && (
+                <div style={{ color: "var(--muted)", fontSize: 12 }}>No matching results on Octane.</div>
+              )}
+              {octaneStatus === "done" && octaneResults.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {octaneResults.map((r, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 13 }}>
+                      <span>{r.name} <span style={{ color: "var(--muted)" }}>({r.partNumber})</span></span>
+                      <span style={{ fontWeight: 700 }}>£{r.price.toFixed(2)} {!r.inStock && <span style={{ color: "var(--muted)", fontWeight: 400 }}>(out of stock)</span>}</span>
+                    </div>
+                  ))}
+                  <a href={`https://octanedistribution.com/search.cfm?q=${encodeURIComponent(partNumber.trim() || description)}`} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--amber)" }}>Open on Octane</a>
+                </div>
+              )}
+            </div>
+          )}
 
           {status === "loading" && (
             <div style={{ color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "12px 0" }}>
