@@ -873,7 +873,6 @@ export default function WorkshopHub() {
         .wb-day.today .wb-daynum { color: var(--amber2); }
         .wb-daynum { font-size:11px; color:var(--muted); font-weight:600; }
         .wb-chip, .jc-chip { font-size:10px; background:#2b2410; color:var(--amber2); border-radius:3px; padding:1px 5px; margin-top:3px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .wb-chip.tcs, .jc-chip.tcs { background:#0f2a24; color:#6fd6b8; }
         .wb-badge-low { background:#3a1210; color:var(--red); border:1px solid #5a2320; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-badge-ok { background:#10281a; color:var(--green); border:1px solid #1f4530; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:flex-start; justify-content:center; padding:30px 14px; z-index:50; overflow-y:auto; }
