@@ -19,6 +19,6 @@ export async function POST(request) {
     return NextResponse.json({ ok: true, results });
   } catch (e) {
     console.error("octane-price failed", e);
-    return NextResponse.json({ error: "Octane price lookup failed — check server logs" }, { status: 500 });
+    return NextResponse.json({ error: "Octane price lookup failed — check server logs", detail: e.message }, { status: 500 });
   }
 }
