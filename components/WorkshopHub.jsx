@@ -2890,7 +2890,6 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
   // this field and only one recognition session can run at a time.
   const [listeningLang, setListeningLang] = useState(null);
   const recogRef = useRef(null);
-  const baseValueRef = useRef(value);
   const supported = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
   const toggleDictate = (lang) => {
@@ -2904,8 +2903,14 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
     if (!SR) return;
     const recog = new SR();
     recog.lang = lang; recog.continuous = true; recog.interimResults = true;
-    baseValueRef.current = value ? value + " " : "";
-    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; onChange(baseValueRef.current + t); };
+    // Captured once per session in this closure, not a shared ref — a
+    // recognition session that delivers its final result slightly late
+    // (e.g. mic auto-stopped on a pause, then dictation was restarted)
+    // must keep prepending onto the base it actually started from, not
+    // whatever base a newer session has since moved on to. A shared ref
+    // here was re-appending already-saved text on every restart.
+    const sessionBase = value ? value + " " : "";
+    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; onChange(sessionBase + t); };
     recog.onerror = () => setListeningLang(null);
     recog.onend = () => setListeningLang(null);
     try { recog.start(); recogRef.current = recog; setListeningLang(lang); } catch (e) { setListeningLang(null); }
