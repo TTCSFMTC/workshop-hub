@@ -4,7 +4,7 @@ import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { supabase } from "@/lib/supabaseClient";
 import { generateTechnicalWriteup } from "@/lib/anthropic";
 import { generateTechnicalWriteupPdf } from "@/lib/intakePdf";
-import { uploadFileAndShare } from "@/lib/googleDrive";
+import { uploadFileAndShare, deleteFile } from "@/lib/googleDrive";
 
 async function requireSession() {
   const cookieStore = await cookies();
@@ -16,7 +16,12 @@ async function requireSession() {
 // folder — for warranty companies or legal review. Deliberately does not
 // simplify or soften anything (see lib/anthropic.js), unlike the customer
 // approval write-up, and isn't emailed anywhere automatically — office
-// downloads the link and sends it wherever the claim needs it to go.
+// finds the link on the job card and sends it wherever the claim needs it
+// to go.
+//
+// Called automatically (debounced) whenever those two fields are edited —
+// see the useEffect in JobCardDetail — so this always replaces the
+// previous Drive file rather than accumulating a new one per edit.
 export async function POST(request) {
   if (!(await requireSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -46,11 +51,18 @@ export async function POST(request) {
     const pdfBytes = await generateTechnicalWriteupPdf({
       customerName: card.customer_name, reg: card.reg, vehicleModel, jobTypeName, writeup, generatedAt,
     });
-    const pdfUrl = await uploadFileAndShare({
+    const { id: fileId, url: pdfUrl } = await uploadFileAndShare({
       name: `${card.reg || card.customer_name || "vehicle"} - technical write-up.pdf`,
       mimeType: "application/pdf",
       buffer: Buffer.from(pdfBytes),
     });
+
+    if (card.technical_writeup_drive_file_id) await deleteFile(card.technical_writeup_drive_file_id);
+
+    const { error: e2 } = await supabase.from("job_cards").update({
+      technical_writeup_url: pdfUrl, technical_writeup_drive_file_id: fileId, technical_writeup_updated_at: generatedAt,
+    }).eq("id", card.id);
+    if (e2) throw e2;
 
     return NextResponse.json({ ok: true, pdfUrl });
   } catch (e) {

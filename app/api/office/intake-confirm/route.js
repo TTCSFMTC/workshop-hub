@@ -41,7 +41,7 @@ export async function POST(request) {
       vehicleModel: booking.vehicle_model, symptoms: booking.symptoms, workConfirmed: jobTypeName, price: booking.job_value,
       preScanCompleted: !!preScanCompleted, signatureName, signatureDataUrl, confirmedAt,
     });
-    const pdfUrl = await uploadFileAndShare({
+    const { url: pdfUrl } = await uploadFileAndShare({
       name: `${booking.reg || booking.customer_name || "confirmation"} - drop-off confirmation.pdf`,
       mimeType: "application/pdf",
       buffer: Buffer.from(pdfBytes),

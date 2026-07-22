@@ -2973,23 +2973,45 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
   const setField = (field, val) => onUpdate({ [field]: val });
   const setNested = (group, field, val) => onUpdate({ [group]: { ...card[group], [field]: val } });
   const [newExtraWork, setNewExtraWork] = useState("");
-  const [writeupState, setWriteupState] = useState({ generating: false, pdfUrl: null, error: null });
+  const [writeupGenerating, setWriteupGenerating] = useState(false);
+  const [writeupError, setWriteupError] = useState(null);
+  const writeupTimerRef = useRef(null);
+  // Seeded with whatever's already in the two fields when the card is
+  // opened, so reopening an unchanged card never re-triggers a generation
+  // — only edits made from this point on will move the content away from
+  // this snapshot and start the debounce.
+  const writeupLastSentRef = useRef(`${card.technicianInterpretation || ""}|${card.diagnosisFindings || ""}`);
 
-  const generateTechnicalWriteup = async () => {
-    setWriteupState({ generating: true, pdfUrl: null, error: null });
-    try {
-      const res = await fetch("/api/office/technical-writeup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobCardId: card.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate the write-up");
-      setWriteupState({ generating: false, pdfUrl: data.pdfUrl, error: null });
-    } catch (e) {
-      setWriteupState({ generating: false, pdfUrl: null, error: e.message || "Failed to generate the write-up" });
-    }
-  };
+  // Auto-regenerates the technical write-up ~8s after the technician stops
+  // editing either field — long enough to not fire mid-dictation (which
+  // saves on every interim speech result) or between quick edits, short
+  // enough that the write-up is ready well before anyone goes looking for it.
+  useEffect(() => {
+    const content = `${card.technicianInterpretation || ""}|${card.diagnosisFindings || ""}`;
+    if (!card.technicianInterpretation?.trim() && !card.diagnosisFindings?.trim()) return;
+    if (content === writeupLastSentRef.current) return;
+
+    if (writeupTimerRef.current) clearTimeout(writeupTimerRef.current);
+    writeupTimerRef.current = setTimeout(async () => {
+      writeupLastSentRef.current = content;
+      setWriteupGenerating(true);
+      setWriteupError(null);
+      try {
+        const res = await fetch("/api/office/technical-writeup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobCardId: card.id }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to generate the write-up");
+      } catch (e) {
+        setWriteupError(e.message || "Failed to auto-generate the technical write-up");
+      }
+      setWriteupGenerating(false);
+    }, 8000);
+
+    return () => clearTimeout(writeupTimerRef.current);
+  }, [card.id, card.technicianInterpretation, card.diagnosisFindings]);
 
   return (
     <div>
@@ -3102,18 +3124,18 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
 
         <div className="jc-card">
           <div className="jc-section-title">Technical write-up (warranty / legal)</div>
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
-            AI-tightened version of the technician interpretation and diagnosis findings above — keeps the technical detail, doesn't simplify anything. Saved as a PDF to the shared Drive folder.
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
+            AI-tightened version of the technician interpretation and diagnosis findings above — keeps the technical detail, doesn't simplify anything. Auto-generates as a PDF to the shared Drive folder shortly after you stop editing either field.
           </div>
-          <button className="jc-btn-sm" disabled={writeupState.generating} onClick={generateTechnicalWriteup}>
-            <FileText size={14} /> {writeupState.generating ? "Generating…" : "Generate technical write-up (PDF)"}
-          </button>
-          {writeupState.pdfUrl && (
-            <div style={{ marginTop: 10, fontSize: 13 }}>
-              <a href={writeupState.pdfUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber)" }}>Open the generated PDF</a>
+          {writeupGenerating && <div style={{ fontSize: 12, color: "var(--amber2)" }}>Generating…</div>}
+          {!writeupGenerating && card.technicalWriteupUrl && (
+            <div style={{ fontSize: 13 }}>
+              <a href={card.technicalWriteupUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber)" }}>Open the current PDF</a>
+              {card.technicalWriteupUpdatedAt && <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 11 }}>Updated {new Date(card.technicalWriteupUpdatedAt).toLocaleString("en-GB")}</span>}
             </div>
           )}
-          {writeupState.error && <div style={{ marginTop: 10, fontSize: 12, color: "var(--red)" }}>{writeupState.error}</div>}
+          {!writeupGenerating && !card.technicalWriteupUrl && <div style={{ fontSize: 12, color: "var(--muted)" }}>Nothing generated yet — add some notes above.</div>}
+          {writeupError && <div style={{ marginTop: 10, fontSize: 12, color: "var(--red)" }}>{writeupError}</div>}
         </div>
 
         <div className="jc-card">
