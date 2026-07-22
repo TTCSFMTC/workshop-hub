@@ -220,6 +220,24 @@ function workshopCompletedMessage(b) {
   return `Great news ${firstName(b.customerName)}, your vehicle has been completed! It's ready for collection whenever's convenient for you — just let us know if you have any questions.`;
 }
 
+// Sent the moment COMP is ticked — thanks the customer, flags that a brief
+// settling-in period (coolant/EML light as residual air clears) is normal
+// after major repairs, and asks for a review. Separate from the automated
+// 2-day/4-day follow-up nudges, which still run afterward for anyone who
+// doesn't respond to this one.
+function collectionThankYouMessage(b) {
+  const link = REVIEW_LINKS[b.business] || "";
+  return `Thank you for choosing ${b.business}! We really appreciate the trust you've placed in us.
+
+After major repairs it's common to see a brief settling-in period — you might notice a coolant or engine management light as residual air works through the system. This is usually normal, but do let us know if you're ever concerned.
+
+We'd recommend servicing every 12 months or 8,000 miles, whichever comes first.
+
+If you were happy with the service, we'd really appreciate a quick Google review: ${link}
+
+Thanks again for your support!`;
+}
+
 // Bookings due a 2-days-before reminder: within the next 2 days, originally
 // booked with more than 2 days' notice (short-notice bookings never had a
 // meaningful "2 days before" window), and not already reminded.
@@ -1190,9 +1208,13 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
         <TrafficLightButton
           on={booking.completed} color="var(--green)" textOn="#fff" label="COMP"
           title={booking.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
-          onClick={() => updateBooking(booking.id, booking.completed
-            ? { completed: false, completedAt: null }
-            : { completed: true, completedAt: Date.now(), followupSent: false })}
+          onClick={() => {
+            const turningOn = !booking.completed;
+            updateBooking(booking.id, turningOn
+              ? { completed: true, completedAt: Date.now(), followupSent: false }
+              : { completed: false, completedAt: null });
+            if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, collectionThankYouMessage(booking)), "_blank");
+          }}
         />
       )}
     </div>
