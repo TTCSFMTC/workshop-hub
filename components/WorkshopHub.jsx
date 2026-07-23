@@ -2172,13 +2172,16 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                 />
               </td>
               <td className="wh-mono">
-                {r.stock}
-                {r.committed > 0 && (
-                  <div style={{ fontSize: 10, fontWeight: 400, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "var(--muted)", whiteSpace: "nowrap" }}>
-                    {r.availableAfterUpcoming < 0 && <AlertTriangle size={9} style={{ display: "inline", marginRight: 2 }} />}
-                    {r.availableAfterUpcoming} after {r.committed} booked
+                {r.committed > 0 ? (
+                  <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "nowrap" }}>
+                    <div>Stock: {r.stock}</div>
+                    <div>Booked: {r.committed}</div>
+                    <div style={{ fontWeight: 700, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "inherit" }}>
+                      {r.availableAfterUpcoming < 0 && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
+                      Remaining: {r.availableAfterUpcoming}
+                    </div>
                   </div>
-                )}
+                ) : r.stock}
               </td>
               <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
               <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
