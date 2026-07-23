@@ -499,7 +499,11 @@ export default function WorkshopHub() {
   const partCommittedToUpcoming = useMemo(() => {
     const committed = {};
     bookings.forEach((b) => {
-      if (b.workshopCompleted) return;
+      // A collected booking is done regardless of whether workshopCompleted
+      // ever got ticked on the way there — some older/imported bookings went
+      // straight to completed without it, and counting those as still-
+      // pending demand would double-count parts that were already used.
+      if (b.workshopCompleted || b.completed) return;
       fullBookingBom(b, jobTypes).forEach((l) => { committed[l.partId] = (committed[l.partId] || 0) + l.qty; });
     });
     return committed;
