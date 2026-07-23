@@ -489,11 +489,28 @@ export default function WorkshopHub() {
     return weekly;
   }, [bookings, jobTypes, parts]);
 
+  // What's already spoken for by jobs that are booked in but not yet
+  // workshop completed — stock isn't actually deducted until completion
+  // (see addBooking/updateBooking below), so physical stock alone can look
+  // fine while every unit of it is already earmarked for work that's
+  // already on the diary. This is what actually answers "do I have enough
+  // for what I've already booked in", separate from the historical
+  // usage-rate reorder alert above.
+  const partCommittedToUpcoming = useMemo(() => {
+    const committed = {};
+    bookings.forEach((b) => {
+      if (b.workshopCompleted) return;
+      fullBookingBom(b, jobTypes).forEach((l) => { committed[l.partId] = (committed[l.partId] || 0) + l.qty; });
+    });
+    return committed;
+  }, [bookings, jobTypes]);
+
   const stockRows = useMemo(() => parts.map((p) => {
     const weekly = partUsageWeekly[p.id] || 0;
     const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
-    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS };
-  }), [parts, partUsageWeekly]);
+    const committed = partCommittedToUpcoming[p.id] || 0;
+    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, availableAfterUpcoming: p.stock - committed };
+  }), [parts, partUsageWeekly, partCommittedToUpcoming]);
   const lowStockItems = stockRows.filter((r) => r.needsOrder);
 
   // Pops up whenever a part crosses into "needs reorder" — lives at this
@@ -2150,7 +2167,15 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                   onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
                 />
               </td>
-              <td className="wh-mono">{r.stock}</td>
+              <td className="wh-mono">
+                {r.stock}
+                {r.committed > 0 && (
+                  <div style={{ fontSize: 10, fontWeight: 400, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "var(--muted)", whiteSpace: "nowrap" }}>
+                    {r.availableAfterUpcoming < 0 && <AlertTriangle size={9} style={{ display: "inline", marginRight: 2 }} />}
+                    {r.availableAfterUpcoming} after {r.committed} booked
+                  </div>
+                )}
+              </td>
               <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
               <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
               <td>
