@@ -509,12 +509,22 @@ export default function WorkshopHub() {
     return committed;
   }, [bookings, jobTypes]);
 
+  // Stock already ordered from a supplier but not yet delivered — still
+  // counts toward covering upcoming bookings even though it's not
+  // physically here yet, so it shouldn't be left out of "remaining".
+  const partOnOrder = useMemo(() => {
+    const onOrder = {};
+    stockBatches.filter((b) => b.status === "ordered").forEach((b) => { onOrder[b.partId] = (onOrder[b.partId] || 0) + b.qtyRemaining; });
+    return onOrder;
+  }, [stockBatches]);
+
   const stockRows = useMemo(() => parts.map((p) => {
     const weekly = partUsageWeekly[p.id] || 0;
     const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
     const committed = partCommittedToUpcoming[p.id] || 0;
-    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, availableAfterUpcoming: p.stock - committed };
-  }), [parts, partUsageWeekly, partCommittedToUpcoming]);
+    const onOrder = partOnOrder[p.id] || 0;
+    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, onOrder, availableAfterUpcoming: p.stock + onOrder - committed };
+  }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder]);
   const lowStockItems = stockRows.filter((r) => r.needsOrder);
 
   // Pops up whenever a part crosses into "needs reorder" — lives at this
@@ -2175,6 +2185,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                 {r.committed > 0 ? (
                   <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "nowrap" }}>
                     <div>Stock: {r.stock}</div>
+                    {r.onOrder > 0 && <div>On order: {r.onOrder}</div>}
                     <div>Booked: {r.committed}</div>
                     <div style={{ fontWeight: 700, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "inherit" }}>
                       {r.availableAfterUpcoming < 0 && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
