@@ -14,7 +14,7 @@ import {
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
-  insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered,
+  insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
 } from "@/lib/data";
@@ -750,6 +750,15 @@ export default function WorkshopHub() {
     await Promise.all([markStockBatchDelivered(batchId, deliveredAt), insertPriceHistory(historyEntry)]);
   });
 
+  // A supplier confirms an order then cancels it at the last minute often
+  // enough that this needs to be a one-click undo — the order never
+  // physically arrived, so there's no stock or FIFO price queue to unwind,
+  // just the pending batch record itself.
+  const cancelOrder = (batchId) => withSaveState(async () => {
+    setStockBatches((prev) => prev.filter((b) => b.id !== batchId));
+    await deleteStockBatch(batchId);
+  });
+
   const updatePartField = (partId, patch) => withSaveState(async () => {
     setRawParts((prev) => prev.map((p) => (p.id === partId ? { ...p, ...patch } : p)));
     await updatePart(partId, patch);
@@ -950,7 +959,7 @@ export default function WorkshopHub() {
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
-          stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock}
+          stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
           priceHistory={priceHistory} recordPrice={recordPrice}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
@@ -973,7 +982,7 @@ export default function WorkshopHub() {
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
-  stockBatches, orderStock, deliverStock,
+  stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
 }) {
@@ -1024,7 +1033,7 @@ function OfficeMode({
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
-            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock}
+            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} />
         )}
         {tab === "jobtypes" && (
@@ -2114,7 +2123,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, priceHistory, recordPrice }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
@@ -2223,6 +2232,12 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                           )}
                           <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
                             <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
+                          </button>
+                          <button
+                            className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
+                            onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
+                          >
+                            <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
                           </button>
                         </div>
                       );
