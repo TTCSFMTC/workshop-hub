@@ -1924,6 +1924,17 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
                   </button>
                 </div>
               </div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", borderTop: "1px solid var(--line)", paddingTop: 6 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!booking.transportCollected} onChange={(e) => updateBooking(booking.id, { transportCollected: e.target.checked })} /> Collected
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!booking.transportDelivered} onChange={(e) => updateBooking(booking.id, { transportDelivered: e.target.checked })} /> Delivered
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!booking.transportCustomerPaid} onChange={(e) => updateBooking(booking.id, { transportCustomerPaid: e.target.checked })} /> Customer paid
+                </label>
+              </div>
             </div>
           )}
           {booking.workshopCompleted && (
