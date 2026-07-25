@@ -3181,7 +3181,20 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
         </div>
 
         <div className="jc-card">
-          <div className="jc-section-title"><Car size={16} /> Vehicle details</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div className="jc-section-title" style={{ marginBottom: 0 }}><Car size={16} /> Vehicle details</div>
+            {booking && (
+              <button
+                className="jc-btn-sm"
+                onClick={() => {
+                  const { make, model } = guessMakeModel(booking.vehicleModel);
+                  onUpdate({ make, model, reg: booking.reg || card.reg });
+                }}
+              >
+                Pull from booking
+              </button>
+            )}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Make" value={card.make} onChange={(v) => setField("make", v)} />
             <Field label="Model" value={card.model} onChange={(v) => setField("model", v)} />
