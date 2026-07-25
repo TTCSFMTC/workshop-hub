@@ -2965,8 +2965,34 @@ function WorkshopHome({ bookings, jobTypes, parts, jobCards, onOpenCard, onCreat
   );
 }
 
+// Job cards auto-save on every keystroke, with no debounce, straight to
+// Supabase — fine for one field on one card, but with several technicians
+// each on a different job card at once, a fast typist fires overlapping
+// writes for the same field that can land out of order, and the table-wide
+// realtime subscription (any job card's change refetches the whole table)
+// can then pull back a stale value and visibly wipe out what was just typed.
+// This buffers keystrokes locally and only pushes upstream (and to Supabase)
+// once typing pauses, so there's one write per pause instead of one per
+// character — and ignores incoming prop updates while a write is still
+// pending, so a stale realtime refetch can't stomp on unsaved local edits.
+function useDebouncedField(value, onChange, delay = 600) {
+  const [local, setLocal] = useState(value || "");
+  const timerRef = useRef(null);
+  const pendingRef = useRef(false);
+  useEffect(() => { if (!pendingRef.current) setLocal(value || ""); }, [value]);
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  const setValue = (v) => {
+    setLocal(v);
+    pendingRef.current = true;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => { pendingRef.current = false; onChange(v); }, delay);
+  };
+  return [local, setValue];
+}
+
 function Field({ label, value, onChange, disabled, placeholder }) {
-  return <div><label className="jc-label">{label}</label><input className="jc-input" value={value || ""} disabled={disabled} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>;
+  const [local, setLocal] = useDebouncedField(value, onChange);
+  return <div><label className="jc-label">{label}</label><input className="jc-input" value={local} disabled={disabled} placeholder={placeholder} onChange={(e) => setLocal(e.target.value)} /></div>;
 }
 
 function Toggle({ label, on, onClick, disabled }) {
@@ -2985,6 +3011,11 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
   const [listeningLang, setListeningLang] = useState(null);
   const recogRef = useRef(null);
   const supported = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  // Continuous speech recognition fires onresult many times a second while
+  // someone's actually speaking — without debouncing that's many Supabase
+  // writes a second for one field, the exact overlapping-write problem this
+  // hook exists to avoid, so dictation runs through it the same as typing.
+  const [local, setLocal] = useDebouncedField(value, onChange);
 
   const toggleDictate = (lang) => {
     if (disabled) return;
@@ -3002,9 +3033,11 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
     // (e.g. mic auto-stopped on a pause, then dictation was restarted)
     // must keep prepending onto the base it actually started from, not
     // whatever base a newer session has since moved on to. A shared ref
-    // here was re-appending already-saved text on every restart.
-    const sessionBase = value ? value + " " : "";
-    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; onChange(sessionBase + t); };
+    // here was re-appending already-saved text on every restart. Builds on
+    // `local` (what's actually on screen right now), not the upstream
+    // `value` prop, which may still be a debounce-cycle behind.
+    const sessionBase = local ? local + " " : "";
+    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; setLocal(sessionBase + t); };
     recog.onerror = () => setListeningLang(null);
     recog.onend = () => setListeningLang(null);
     try { recog.start(); recogRef.current = recog; setListeningLang(lang); } catch (e) { setListeningLang(null); }
@@ -3025,7 +3058,7 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
           </div>
         )}
       </div>
-      <textarea className="jc-textarea" rows={rows} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} placeholder="Tap here, then use your keyboard's dictation button to speak this in…" style={disabled ? { opacity: 0.6 } : {}} />
+      <textarea className="jc-textarea" rows={rows} value={local} disabled={disabled} onChange={(e) => setLocal(e.target.value)} placeholder="Tap here, then use your keyboard's dictation button to speak this in…" style={disabled ? { opacity: 0.6 } : {}} />
     </div>
   );
 }
@@ -3176,7 +3209,7 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
             <div><label className="jc-label">Date in</label><input type="date" className="jc-input" value={card.dateIn} onChange={(e) => setField("dateIn", e.target.value)} /></div>
             <div><label className="jc-label">Date out</label><input type="date" className="jc-input" value={card.dateOut} onChange={(e) => setField("dateOut", e.target.value)} /></div>
-            <div><label className="jc-label">Technician</label><input className="jc-input" value={card.technician} onChange={(e) => setField("technician", e.target.value)} /></div>
+            <Field label="Technician" value={card.technician} onChange={(v) => setField("technician", v)} />
           </div>
         </div>
 
