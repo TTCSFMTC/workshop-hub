@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight,
+  Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer,
@@ -2488,6 +2488,11 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, upda
   const addJobTypeClick = () => { const name = prompt("New job type name:"); if (!name) return; addJobType(name); };
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
   const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
+  // Collapsed by default — with a dozen-plus job types each showing their
+  // full parts list, the tab was one long scroll of stuff that's already
+  // set up and rarely needs touching. Expand just the one you're editing.
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggle = (id) => setExpanded((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -2495,51 +2500,64 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, upda
         <button className="wb-btn-ghost" onClick={addPartClick}><Plus size={13} /> New part</button>
         <button className="wb-btn" onClick={addJobTypeClick}><Plus size={13} /> New job type</button>
       </div>
-      {jobTypes.map((jt) => (
+      {jobTypes.map((jt) => {
+        const open = expanded.has(jt.id);
+        return (
         <div key={jt.id} className="wb-panel">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{jt.name}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 11, color: "var(--muted)" }}>Google Calendar colour</span>
-              <div style={{ display: "flex", gap: 5 }}>
-                {CALENDAR_COLORS.map((c) => (
-                  <button
-                    key={c.id}
-                    title={c.name}
-                    onClick={() => updateJobTypeColor(jt.id, c.id)}
-                    style={{
-                      width: 18, height: 18, borderRadius: "50%", background: c.hex, cursor: "pointer",
-                      border: jt.color === c.id ? "2px solid var(--text)" : "1px solid var(--line)", padding: 0,
-                    }}
-                  />
-                ))}
-              </div>
-              <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: open ? 10 : 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggle(jt.id)}>
+              <ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{jt.name}</div>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>({jt.bom.length} part{jt.bom.length === 1 ? "" : "s"})</span>
             </div>
+            {open && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Google Calendar colour</span>
+                <div style={{ display: "flex", gap: 5 }}>
+                  {CALENDAR_COLORS.map((c) => (
+                    <button
+                      key={c.id}
+                      title={c.name}
+                      onClick={() => updateJobTypeColor(jt.id, c.id)}
+                      style={{
+                        width: 18, height: 18, borderRadius: "50%", background: c.hex, cursor: "pointer",
+                        border: jt.color === c.id ? "2px solid var(--text)" : "1px solid var(--line)", padding: 0,
+                      }}
+                    />
+                  ))}
+                </div>
+                <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+              </div>
+            )}
           </div>
-          <table className="wb-table">
-            <thead><tr><th>Part</th><th style={{ width: 120 }}>Qty per job</th><th style={{ width: 40 }}></th></tr></thead>
-            <tbody>
-              {jt.bom.map((l) => {
-                const part = parts.find((p) => p.id === l.partId);
-                return (
-                  <tr key={l.partId}>
-                    <td>{part?.name || l.partId} <span style={{ color: "var(--muted)" }}>({part?.unit})</span></td>
-                    <td><input type="number" step="0.1" className="wb-input" value={l.qty} onChange={(e) => updateBomQty(jt.id, l.partId, parseFloat(e.target.value) || 0)} /></td>
-                    <td><button onClick={() => removeBomLine(jt.id, l.partId)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 10 }}>
-            <select className="wb-select" style={{ maxWidth: 280 }} onChange={(e) => { addBomLine(jt.id, e.target.value); e.target.value = ""; }} defaultValue="">
-              <option value="" disabled>+ add part to this job…</option>
-              {parts.filter((p) => !jt.bom.some((l) => l.partId === p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
+          {open && (
+            <>
+              <table className="wb-table">
+                <thead><tr><th>Part</th><th style={{ width: 120 }}>Qty per job</th><th style={{ width: 40 }}></th></tr></thead>
+                <tbody>
+                  {jt.bom.map((l) => {
+                    const part = parts.find((p) => p.id === l.partId);
+                    return (
+                      <tr key={l.partId}>
+                        <td>{part?.name || l.partId} <span style={{ color: "var(--muted)" }}>({part?.unit})</span></td>
+                        <td><input type="number" step="0.1" className="wb-input" value={l.qty} onChange={(e) => updateBomQty(jt.id, l.partId, parseFloat(e.target.value) || 0)} /></td>
+                        <td><button onClick={() => removeBomLine(jt.id, l.partId)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 10 }}>
+                <select className="wb-select" style={{ maxWidth: 280 }} onChange={(e) => { addBomLine(jt.id, e.target.value); e.target.value = ""; }} defaultValue="">
+                  <option value="" disabled>+ add part to this job…</option>
+                  {parts.filter((p) => !jt.bom.some((l) => l.partId === p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            </>
+          )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
