@@ -2139,6 +2139,8 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggle = (id) => setExpanded((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const pendingByPart = useMemo(() => {
     const map = {};
     stockBatches.filter((b) => b.status === "ordered").forEach((b) => { map[b.partId] = map[b.partId] || []; map[b.partId].push(b); });
@@ -2180,26 +2182,25 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
       </div>
       <div style={{ overflowX: "auto" }}>
       <table className="wb-table">
-        <thead><tr><th>Part</th><th>Part no.</th><th>Physical stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th><th>On order / due in</th><th>Order stock</th><th>Correct</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Part</th><th>Physical stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th></tr></thead>
         <tbody>
-          {stockRows.map((r) => (
-            <tr key={r.id}>
+          {stockRows.map((r) => {
+            const open = expanded.has(r.id);
+            return (
+            <React.Fragment key={r.id}>
+            <tr style={{ cursor: "pointer" }} onClick={() => toggle(r.id)}>
+              <td style={{ width: 20 }}><ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s" }} /></td>
               <td style={{ fontWeight: 600 }}>
                 {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
-                <button onClick={() => renamePart(r)} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
+                <button onClick={(e) => { e.stopPropagation(); renamePart(r); }} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
                 <a
                   href={`https://octanedistribution.com/search.cfm?q=${encodeURIComponent(r.partNumber || r.name)}`}
                   target="_blank" rel="noreferrer" title="Search on Octane Distribution"
+                  onClick={(e) => e.stopPropagation()}
                   style={{ color: "var(--muted)", marginLeft: 6, verticalAlign: "middle", display: "inline-flex" }}
                 >
                   <Truck size={12} />
                 </a>
-              </td>
-              <td>
-                <input
-                  type="text" className="wb-input" style={{ width: 110 }} placeholder="e.g. LR073816" value={r.partNumber || ""}
-                  onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
-                />
               </td>
               <td className="wh-mono">
                 {r.committed > 0 ? (
@@ -2219,72 +2220,94 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span className="wh-mono">£{(r.costPrice ?? 0).toFixed(2)}</span>
-                  <button onClick={() => setHistoryPart(r)} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); setHistoryPart(r); }} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
                 </div>
               </td>
               <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
-              <td>
-                {(pendingByPart[r.id] || []).length === 0 ? (
-                  <span style={{ color: "var(--muted)" }}>—</span>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {pendingByPart[r.id].map((b) => {
-                      const overdue = b.dueDate && b.dueDate < todayISO();
-                      return (
-                        <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
-                          <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
-                          {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
-                          <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
-                          {b.dueDate && (
-                            <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
-                              {overdue && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
-                              due {fmtDate(b.dueDate)}
-                            </span>
-                          )}
-                          <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
-                            <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
-                          </button>
-                          <button
-                            className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
-                            onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
-                          >
-                            <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </td>
-              <td>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
-                  <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
-                  <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Ordered from" value={orderAmounts[r.id]?.supplier || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], supplier: e.target.value } }))} />
-                  <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
-                  <button
-                    className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
-                    onClick={() => {
-                      const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
-                      if (!qty || qty <= 0 || !price || price < 0) return;
-                      orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null, orderAmounts[r.id]?.supplier?.trim() || null);
-                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "", supplier: "" } }));
-                    }}
-                  >Order</button>
-                </div>
-              </td>
-              <td>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
-                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
-                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
-                </div>
-              </td>
-              <td>
-                <button onClick={() => deletePartClick(r)} title="Delete part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
-              </td>
             </tr>
-          ))}
+            {open && (
+              <tr>
+                <td></td>
+                <td colSpan={6}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 20, padding: "10px 0" }}>
+                    <div>
+                      <div className="jc-label" style={{ marginBottom: 4 }}>Part no.</div>
+                      <input
+                        type="text" className="wb-input" style={{ width: 110 }} placeholder="e.g. LR073816" value={r.partNumber || ""}
+                        onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <div className="jc-label" style={{ marginBottom: 4 }}>On order / due in</div>
+                      {(pendingByPart[r.id] || []).length === 0 ? (
+                        <span style={{ color: "var(--muted)" }}>—</span>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {pendingByPart[r.id].map((b) => {
+                            const overdue = b.dueDate && b.dueDate < todayISO();
+                            return (
+                              <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
+                                <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
+                                {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
+                                <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
+                                {b.dueDate && (
+                                  <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
+                                    {overdue && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
+                                    due {fmtDate(b.dueDate)}
+                                  </span>
+                                )}
+                                <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
+                                  <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
+                                </button>
+                                <button
+                                  className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
+                                  onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
+                                >
+                                  <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="jc-label" style={{ marginBottom: 4 }}>Order stock</div>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
+                        <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
+                        <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Ordered from" value={orderAmounts[r.id]?.supplier || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], supplier: e.target.value } }))} />
+                        <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
+                        <button
+                          className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
+                          onClick={() => {
+                            const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
+                            if (!qty || qty <= 0 || !price || price < 0) return;
+                            orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null, orderAmounts[r.id]?.supplier?.trim() || null);
+                            setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "", supplier: "" } }));
+                          }}
+                        >Order</button>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="jc-label" style={{ marginBottom: 4 }}>Correct</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
+                        <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
+                        <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="jc-label" style={{ marginBottom: 4 }}>&nbsp;</div>
+                      <button onClick={() => deletePartClick(r)} title="Delete part" className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, color: "var(--red)" }}><X size={14} style={{ display: "inline", marginRight: 4 }} />Delete part</button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            )}
+            </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
       </div>
