@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, insertBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, insertBrand, deleteBrand, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -816,6 +816,14 @@ export default function WorkshopHub() {
     await insertBrand(brand);
   });
 
+  const removeBrandFn = (brandId) => withSaveState(async () => {
+    setBrands((prev) => prev.filter((b) => b.id !== brandId));
+    // DB has job_types.brand_id on delete set null, so this mirrors that
+    // locally rather than waiting on a realtime refetch to catch up.
+    setJobTypes((prev) => prev.map((j) => (j.brandId === brandId ? { ...j, brandId: null } : j)));
+    await deleteBrand(brandId);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -970,7 +978,7 @@ export default function WorkshopHub() {
           addPart={addPart} removePart={removePart} updatePartField={updatePartField}
           addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
-          brands={brands} addBrand={addBrandFn} updateJobTypeBrand={updateJobTypeBrandFn}
+          brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} updateJobTypeBrand={updateJobTypeBrandFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1000,7 +1008,7 @@ function OfficeMode({
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, updateJobTypeBrand,
+  brands, addBrand, removeBrand, updateJobTypeBrand,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1050,7 +1058,7 @@ function OfficeMode({
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
-            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} />
+            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} />
         )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
@@ -2281,7 +2289,7 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
 
 const STOCK_UNASSIGNED = "__unassigned__";
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand, removeBrand }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
@@ -2347,6 +2355,14 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   }, [brands, jobTypes, stockRows]);
 
   const addBrandClick = () => { const name = prompt("New brand name:"); if (!name || !name.trim()) return; addBrand(name.trim()); };
+  const removeBrandClick = (section) => {
+    const taggedJobTypes = jobTypes.filter((jt) => jt.brandId === section.id);
+    const warning = taggedJobTypes.length
+      ? `${taggedJobTypes.length} job type${taggedJobTypes.length === 1 ? "" : "s"} (${taggedJobTypes.map((jt) => jt.name).join(", ")}) ${taggedJobTypes.length === 1 ? "is" : "are"} tagged "${section.name}" — deleting it will set ${taggedJobTypes.length === 1 ? "that job type" : "those job types"} back to no brand, not delete them. `
+      : "";
+    if (!confirm(`${warning}Delete brand "${section.name}"?`)) return;
+    removeBrand(section.id);
+  };
 
   const rowProps = { pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, deletePartClick };
 
@@ -2364,10 +2380,15 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
           const brandOpen = expandedBrands.has(section.id);
           return (
             <div key={section.id} className="wb-panel" style={{ padding: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleBrand(section.id)}>
-                <ChevronDown size={14} style={{ transform: brandOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{section.name}</div>
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>({rows.length} part{rows.length === 1 ? "" : "s"})</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleBrand(section.id)}>
+                  <ChevronDown size={14} style={{ transform: brandOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{section.name}</div>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>({rows.length} part{rows.length === 1 ? "" : "s"})</span>
+                </div>
+                {section.id !== STOCK_UNASSIGNED && (
+                  <button onClick={() => removeBrandClick(section)} title="Delete brand" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+                )}
               </div>
               {brandOpen && (
                 rows.length === 0 ? (
