@@ -29,16 +29,19 @@ const REORDER_WEEKS = 1;
 
 // Which thermostat housing a model takes — lets the booking form pick the
 // right stock part automatically instead of staff having to remember which
-// of the two look-alike parts fits which model.
+// of the two look-alike parts fits which model. Keyed on the Model field
+// alone (not "Make Model") so it still matches once Make became its own
+// dropdown driven by the brands list — Land Rover's brand entry is spelled
+// "Landrover" there, which would never match a "Land Rover ..." string.
 const THERMOSTAT_MODEL_MAP = {
   "Range Rover Evoque": "p_thermostat_housing_a",
-  "Land Rover Discovery Sport": "p_thermostat_housing_a",
-  "Jaguar E-Pace": "p_thermostat_housing_a",
+  "Discovery Sport": "p_thermostat_housing_a",
+  "E-Pace": "p_thermostat_housing_a",
   "Range Rover Velar": "p_thermostat_housing_b",
-  "Jaguar F-Pace": "p_thermostat_housing_b",
-  "Jaguar XE": "p_thermostat_housing_b",
-  "Jaguar XF": "p_thermostat_housing_b",
-  "Land Rover Discovery 5": "p_thermostat_housing_b",
+  "F-Pace": "p_thermostat_housing_b",
+  "XE": "p_thermostat_housing_b",
+  "XF": "p_thermostat_housing_b",
+  "Discovery 5": "p_thermostat_housing_b",
 };
 const VEHICLE_MODELS = Object.keys(THERMOSTAT_MODEL_MAP);
 const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -789,8 +792,8 @@ export default function WorkshopHub() {
     await deletePart(partId);
   });
 
-  const addJobTypeFn = (name) => withSaveState(async () => {
-    const jobType = { id: uid("jt"), name, bom: [] };
+  const addJobTypeFn = (name, brandId) => withSaveState(async () => {
+    const jobType = { id: uid("jt"), name, bom: [], brandId: brandId || null };
     setJobTypes((prev) => [...prev, jobType]);
     await insertJobType(jobType);
   });
@@ -1074,7 +1077,7 @@ function OfficeMode({
       </div>
       {(showNewBooking || editingBooking) && (
         <NewBookingModal
-          jobTypes={jobTypes} parts={parts} settings={settings} defaultDate={selectedDay} booking={editingBooking}
+          jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking}
           onClose={() => { setShowNewBooking(false); setEditingBooking(null); }}
           onSave={(b) => {
             if (editingBooking) {
@@ -2612,7 +2615,8 @@ function PriceHistoryModal({ part, history, recordPrice, onClose }) {
 }
 
 function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand }) {
-  const addJobTypeClick = () => { const name = prompt("New job type name:"); if (!name) return; addJobType(name); };
+  const [showNewJobType, setShowNewJobType] = useState(false);
+  const addJobTypeClick = () => setShowNewJobType(true);
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
   const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
   // Collapsed by default — with a dozen-plus job types each showing their
@@ -2696,6 +2700,43 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, upda
         </div>
         );
       })}
+      {showNewJobType && (
+        <NewJobTypeModal
+          brands={brands}
+          onClose={() => setShowNewJobType(false)}
+          onCreate={(name, brandId) => { addJobType(name, brandId); setShowNewJobType(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewJobTypeModal({ brands, onClose, onCreate }) {
+  const [name, setName] = useState("");
+  const [brandId, setBrandId] = useState("");
+  const create = () => { if (!name.trim()) return; onCreate(name.trim(), brandId || null); };
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>New job type</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label className="wb-label">Name</label>
+            <input className="wb-input" autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") create(); }} placeholder="e.g. Nissan Qashqai Cambelt Kit" />
+          </div>
+          <div>
+            <label className="wb-label">Brand</label>
+            <select className="wb-select" value={brandId} onChange={(e) => setBrandId(e.target.value)}>
+              <option value="">No brand</option>
+              {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+          <button className="wb-btn" disabled={!name.trim()} style={!name.trim() ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={create}>Create job type</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2743,7 +2784,7 @@ function SettingsTab({ settings, updateSettingsField }) {
   );
 }
 
-function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onClose, onSave }) {
+function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, onClose, onSave }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const [pasteText, setPasteText] = useState("");
   const [customerName, setCustomerName] = useState(booking?.customerName || "");
@@ -2756,7 +2797,19 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
   const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [extraParts, setExtraParts] = useState(booking?.extraParts || []);
   const [bomQtyOverrides, setBomQtyOverrides] = useState(booking?.bomQtyOverrides || []);
-  const [vehicleModel, setVehicleModel] = useState(booking?.vehicleModel || "");
+  // Make/model used to be one free-text field; split into a Make dropdown
+  // (driven by the brands list, so it grows as new makes are taken on) and
+  // a free-text Model, then recombined into the same "Make Model" string
+  // the rest of the app already expects (thermostat lookup, job card
+  // auto-fill via guessMakeModel) — no schema change needed. A make from an
+  // existing booking that doesn't match a current brand name exactly (e.g.
+  // spacing) falls back to "Other" with the original text preserved.
+  const guessedVehicle = useMemo(() => guessMakeModel(booking?.vehicleModel), [booking?.vehicleModel]);
+  const matchedBrand = brands.find((b) => b.name.replace(/\s+/g, "").toLowerCase() === guessedVehicle.make.replace(/\s+/g, "").toLowerCase());
+  const [vehicleMake, setVehicleMake] = useState(matchedBrand ? matchedBrand.name : guessedVehicle.make ? "Other" : "");
+  const [vehicleMakeOther, setVehicleMakeOther] = useState(matchedBrand ? "" : guessedVehicle.make);
+  const [vehicleModelText, setVehicleModelText] = useState(guessedVehicle.model);
+  const vehicleModel = [vehicleMake === "Other" ? vehicleMakeOther.trim() : vehicleMake, vehicleModelText.trim()].filter(Boolean).join(" ").trim();
   const [date, setDate] = useState(booking?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
   const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
@@ -2828,12 +2881,23 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
             <div><label className="wb-label">Vehicle registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} /></div>
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
             <div>
-              <label className="wb-label">Vehicle model (for thermostat housing etc.)</label>
-              <select className="wb-select" value={vehicleModel} onChange={(e) => setVehicleModel(e.target.value)}>
+              <label className="wb-label">Make</label>
+              <select className="wb-select" value={vehicleMake} onChange={(e) => setVehicleMake(e.target.value)}>
                 <option value="">Not set</option>
-                {VEHICLE_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                {brands.map((b) => <option key={b.id} value={b.name}>{b.name}</option>)}
                 <option value="Other">Other / not listed</option>
               </select>
+              {vehicleMake === "Other" && (
+                <input className="wb-input" style={{ marginTop: 6 }} placeholder="Make" value={vehicleMakeOther} onChange={(e) => setVehicleMakeOther(e.target.value)} />
+              )}
+            </div>
+            <div>
+              <label className="wb-label">Model</label>
+              <input className="wb-input" list="vehicle-model-suggestions" placeholder="e.g. Discovery Sport" value={vehicleModelText} onChange={(e) => setVehicleModelText(e.target.value)} />
+              <datalist id="vehicle-model-suggestions">
+                {VEHICLE_MODELS.map((m) => <option key={m} value={m} />)}
+              </datalist>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>Range Rover Evoque/Velar, Discovery Sport/5, E-Pace/F-Pace/XE/XF auto-pick the right thermostat housing below.</div>
             </div>
           </div>
           <div><label className="wb-label">Symptoms / notes</label><textarea className="wb-textarea" rows={3} value={symptoms} onChange={(e) => setSymptoms(e.target.value)} /></div>
@@ -2934,7 +2998,7 @@ function NewBookingModal({ jobTypes, parts, settings, defaultDate, booking, onCl
               className="wb-select" value=""
               onChange={(e) => {
                 if (e.target.value === "__thermostat__") {
-                  const partId = THERMOSTAT_MODEL_MAP[vehicleModel];
+                  const partId = THERMOSTAT_MODEL_MAP[vehicleModelText.trim()];
                   if (!partId) { alert("Set the vehicle model above first, so the correct thermostat housing can be picked."); return; }
                   if (!extraParts.some((l) => l.partId === partId)) setExtraParts((prev) => [...prev, { partId, qty: 1 }]);
                   return;
