@@ -9,8 +9,8 @@ import {
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomLine, removeBomLine,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, insertBrand, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -412,6 +412,7 @@ export default function WorkshopHub() {
   const [jobApprovals, setJobApprovals] = useState([]);
   const [priceHistory, setPriceHistory] = useState([]);
   const [stockBatches, setStockBatches] = useState([]);
+  const [brands, setBrands] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -434,6 +435,7 @@ export default function WorkshopHub() {
         setJobApprovals(d.jobApprovals);
         setPriceHistory(d.priceHistory);
         setStockBatches(d.stockBatches);
+        setBrands(d.brands);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -458,6 +460,7 @@ export default function WorkshopHub() {
       subscribeTable("job_approvals", async () => setJobApprovals(await fetchJobApprovals())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
       subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
+      subscribeTable("brands", async () => setBrands(await fetchBrands())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -802,6 +805,17 @@ export default function WorkshopHub() {
     await updateJobTypeColor(jtId, color);
   });
 
+  const updateJobTypeBrandFn = (jtId, brandId) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, brandId } : j)));
+    await updateJobTypeBrand(jtId, brandId);
+  });
+
+  const addBrandFn = (name) => withSaveState(async () => {
+    const brand = { id: uid("brand"), name };
+    setBrands((prev) => [...prev, brand]);
+    await insertBrand(brand);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -956,6 +970,7 @@ export default function WorkshopHub() {
           addPart={addPart} removePart={removePart} updatePartField={updatePartField}
           addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
+          brands={brands} addBrand={addBrandFn} updateJobTypeBrand={updateJobTypeBrandFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -985,6 +1000,7 @@ function OfficeMode({
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
+  brands, addBrand, updateJobTypeBrand,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1034,11 +1050,12 @@ function OfficeMode({
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
-            priceHistory={priceHistory} recordPrice={recordPrice} />
+            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} />
         )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
-            updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine} />
+            updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
+            brands={brands} updateJobTypeBrand={updateJobTypeBrand} />
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
@@ -2134,13 +2151,148 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice }) {
+// One collapsible row for a part — pulled out of StockTab because a part
+// with job types in more than one brand now renders once per brand section
+// it belongs to (per the "show it under every brand that uses it" choice),
+// so this markup needs to be instantiable more than once per part.
+function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, deletePartClick }) {
+  return (
+    <React.Fragment>
+      <tr style={{ cursor: "pointer" }} onClick={() => onToggle(r.id)}>
+        <td style={{ width: 20 }}><ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s" }} /></td>
+        <td style={{ fontWeight: 600 }}>
+          {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
+          <button onClick={(e) => { e.stopPropagation(); renamePart(r); }} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
+          <a
+            href={`https://octanedistribution.com/search.cfm?q=${encodeURIComponent(r.partNumber || r.name)}`}
+            target="_blank" rel="noreferrer" title="Search on Octane Distribution"
+            onClick={(e) => e.stopPropagation()}
+            style={{ color: "var(--muted)", marginLeft: 6, verticalAlign: "middle", display: "inline-flex" }}
+          >
+            <Truck size={12} />
+          </a>
+        </td>
+        <td className="wh-mono">
+          {r.committed > 0 ? (
+            <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "nowrap" }}>
+              <div>Stock: {r.stock}</div>
+              {r.onOrder > 0 && <div>On order: {r.onOrder}</div>}
+              <div>Booked: {r.committed}</div>
+              <div style={{ fontWeight: 700, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "inherit" }}>
+                {r.availableAfterUpcoming < 0 && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
+                Remaining: {r.availableAfterUpcoming}
+              </div>
+            </div>
+          ) : r.stock}
+        </td>
+        <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
+        <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
+        <td>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="wh-mono">£{(r.costPrice ?? 0).toFixed(2)}</span>
+            <button onClick={(e) => { e.stopPropagation(); setHistoryPart(r); }} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
+          </div>
+        </td>
+        <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
+      </tr>
+      {open && (
+        <tr>
+          <td></td>
+          <td colSpan={6}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 20, padding: "10px 0" }}>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>Part no.</div>
+                <input
+                  type="text" className="wb-input" style={{ width: 110 }} placeholder="e.g. LR073816" value={r.partNumber || ""}
+                  onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
+                />
+              </div>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>On order / due in</div>
+                {(pendingByPart[r.id] || []).length === 0 ? (
+                  <span style={{ color: "var(--muted)" }}>—</span>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {pendingByPart[r.id].map((b) => {
+                      const overdue = b.dueDate && b.dueDate < todayISO();
+                      return (
+                        <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
+                          <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
+                          {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
+                          <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
+                          {b.dueDate && (
+                            <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
+                              {overdue && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
+                              due {fmtDate(b.dueDate)}
+                            </span>
+                          )}
+                          <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
+                            <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
+                          </button>
+                          <button
+                            className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
+                            onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
+                          >
+                            <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>Order stock</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
+                  <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
+                  <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Ordered from" value={orderAmounts[r.id]?.supplier || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], supplier: e.target.value } }))} />
+                  <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
+                  <button
+                    className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
+                    onClick={() => {
+                      const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
+                      if (!qty || qty <= 0 || !price || price < 0) return;
+                      orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null, orderAmounts[r.id]?.supplier?.trim() || null);
+                      setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "", supplier: "" } }));
+                    }}
+                  >Order</button>
+                </div>
+              </div>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>Correct</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
+                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
+                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
+                </div>
+              </div>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>&nbsp;</div>
+                <button onClick={() => deletePartClick(r)} title="Delete part" className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, color: "var(--red)" }}><X size={14} style={{ display: "inline", marginRight: 4 }} />Delete part</button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
+  );
+}
+
+const STOCK_UNASSIGNED = "__unassigned__";
+
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
-  const [expanded, setExpanded] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(() => new Set()); // per-part rows, shared across brand sections
+  // Sections start collapsed too, same reasoning as Job Types and the
+  // per-part rows above — several brands' worth of parts at once was right
+  // back to being a wall of tables.
+  const [expandedBrands, setExpandedBrands] = useState(() => new Set());
   const toggle = (id) => setExpanded((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggleBrand = (id) => setExpandedBrands((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const pendingByPart = useMemo(() => {
     const map = {};
     stockBatches.filter((b) => b.status === "ordered").forEach((b) => { map[b.partId] = map[b.partId] || []; map[b.partId].push(b); });
@@ -2172,6 +2324,32 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
     XLSX.writeFile(workbook, `price-history-${todayISO()}.xlsx`);
   };
 
+  // A part shows up under every brand whose job type(s) use it (a generic
+  // oil filter used on both a Ford and a Nissan job appears in both
+  // sections) — and anything not yet tied to a branded job type (or not on
+  // any job type's recipe at all) falls into "Unassigned / other" so it's
+  // never invisible while brands are still being set up.
+  const sections = useMemo(() => {
+    const partIdsByBrand = {};
+    const usedPartIds = new Set();
+    jobTypes.forEach((jt) => {
+      const key = jt.brandId || STOCK_UNASSIGNED;
+      jt.bom.forEach((l) => {
+        usedPartIds.add(l.partId);
+        (partIdsByBrand[key] || (partIdsByBrand[key] = new Set())).add(l.partId);
+      });
+    });
+    const unassigned = new Set(partIdsByBrand[STOCK_UNASSIGNED] || []);
+    stockRows.forEach((r) => { if (!usedPartIds.has(r.id)) unassigned.add(r.id); });
+    const list = brands.map((b) => ({ id: b.id, name: b.name, partIds: partIdsByBrand[b.id] || new Set() }));
+    list.push({ id: STOCK_UNASSIGNED, name: "Unassigned / other", partIds: unassigned });
+    return list;
+  }, [brands, jobTypes, stockRows]);
+
+  const addBrandClick = () => { const name = prompt("New brand name:"); if (!name || !name.trim()) return; addBrand(name.trim()); };
+
+  const rowProps = { pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, deletePartClick };
+
   return (
     <div className="wb-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
@@ -2180,136 +2358,41 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
       </div>
-      <div style={{ overflowX: "auto" }}>
-      <table className="wb-table">
-        <thead><tr><th></th><th>Part</th><th>Physical stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th></tr></thead>
-        <tbody>
-          {stockRows.map((r) => {
-            const open = expanded.has(r.id);
-            return (
-            <React.Fragment key={r.id}>
-            <tr style={{ cursor: "pointer" }} onClick={() => toggle(r.id)}>
-              <td style={{ width: 20 }}><ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s" }} /></td>
-              <td style={{ fontWeight: 600 }}>
-                {r.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>({r.unit})</span>
-                <button onClick={(e) => { e.stopPropagation(); renamePart(r); }} title="Rename part" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", marginLeft: 6, verticalAlign: "middle" }}><PenLine size={12} /></button>
-                <a
-                  href={`https://octanedistribution.com/search.cfm?q=${encodeURIComponent(r.partNumber || r.name)}`}
-                  target="_blank" rel="noreferrer" title="Search on Octane Distribution"
-                  onClick={(e) => e.stopPropagation()}
-                  style={{ color: "var(--muted)", marginLeft: 6, verticalAlign: "middle", display: "inline-flex" }}
-                >
-                  <Truck size={12} />
-                </a>
-              </td>
-              <td className="wh-mono">
-                {r.committed > 0 ? (
-                  <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: "nowrap" }}>
-                    <div>Stock: {r.stock}</div>
-                    {r.onOrder > 0 && <div>On order: {r.onOrder}</div>}
-                    <div>Booked: {r.committed}</div>
-                    <div style={{ fontWeight: 700, color: r.availableAfterUpcoming < 0 ? "var(--red)" : "inherit" }}>
-                      {r.availableAfterUpcoming < 0 && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
-                      Remaining: {r.availableAfterUpcoming}
-                    </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {sections.map((section) => {
+          const rows = stockRows.filter((r) => section.partIds.has(r.id));
+          const brandOpen = expandedBrands.has(section.id);
+          return (
+            <div key={section.id} className="wb-panel" style={{ padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleBrand(section.id)}>
+                <ChevronDown size={14} style={{ transform: brandOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{section.name}</div>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>({rows.length} part{rows.length === 1 ? "" : "s"})</span>
+              </div>
+              {brandOpen && (
+                rows.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--muted)", padding: "10px 0 2px" }}>
+                    No job types tagged with this brand yet — set a job type's brand on the Job Types tab.
                   </div>
-                ) : r.stock}
-              </td>
-              <td className="wh-mono">{r.weekly ? r.weekly.toFixed(1) : "0.0"}</td>
-              <td className="wh-mono">{r.weeksLeft === Infinity ? "—" : r.weeksLeft.toFixed(1)}</td>
-              <td>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span className="wh-mono">£{(r.costPrice ?? 0).toFixed(2)}</span>
-                  <button onClick={(e) => { e.stopPropagation(); setHistoryPart(r); }} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
-                </div>
-              </td>
-              <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
-            </tr>
-            {open && (
-              <tr>
-                <td></td>
-                <td colSpan={6}>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 20, padding: "10px 0" }}>
-                    <div>
-                      <div className="jc-label" style={{ marginBottom: 4 }}>Part no.</div>
-                      <input
-                        type="text" className="wb-input" style={{ width: 110 }} placeholder="e.g. LR073816" value={r.partNumber || ""}
-                        onChange={(e) => updatePartField(r.id, { partNumber: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <div className="jc-label" style={{ marginBottom: 4 }}>On order / due in</div>
-                      {(pendingByPart[r.id] || []).length === 0 ? (
-                        <span style={{ color: "var(--muted)" }}>—</span>
-                      ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {pendingByPart[r.id].map((b) => {
-                            const overdue = b.dueDate && b.dueDate < todayISO();
-                            return (
-                              <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
-                                <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
-                                {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
-                                <span style={{ color: "var(--muted)" }}>({daysAgo(b.orderedAt)}d ago)</span>
-                                {b.dueDate && (
-                                  <span style={overdue ? { color: "var(--red)", fontWeight: 700 } : { color: "var(--muted)" }}>
-                                    {overdue && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
-                                    due {fmtDate(b.dueDate)}
-                                  </span>
-                                )}
-                                <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
-                                  <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
-                                </button>
-                                <button
-                                  className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
-                                  onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
-                                >
-                                  <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <div className="jc-label" style={{ marginBottom: 4 }}>Order stock</div>
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        <input type="number" className="wb-input" style={{ width: 55 }} placeholder="qty" value={orderAmounts[r.id]?.qty || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], qty: e.target.value } }))} />
-                        <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} placeholder="£ price" value={orderAmounts[r.id]?.price || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], price: e.target.value } }))} />
-                        <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Ordered from" value={orderAmounts[r.id]?.supplier || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], supplier: e.target.value } }))} />
-                        <input type="date" className="wb-input" style={{ width: 130 }} title="Due date" value={orderAmounts[r.id]?.dueDate || ""} onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.id]: { ...prev[r.id], dueDate: e.target.value } }))} />
-                        <button
-                          className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
-                          onClick={() => {
-                            const qty = parseFloat(orderAmounts[r.id]?.qty), price = parseFloat(orderAmounts[r.id]?.price);
-                            if (!qty || qty <= 0 || !price || price < 0) return;
-                            orderStock(r.id, qty, price, orderAmounts[r.id]?.dueDate || null, orderAmounts[r.id]?.supplier?.trim() || null);
-                            setOrderAmounts((prev) => ({ ...prev, [r.id]: { qty: "", price: "", dueDate: "", supplier: "" } }));
-                          }}
-                        >Order</button>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="jc-label" style={{ marginBottom: 4 }}>Correct</div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
-                        <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
-                        <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="jc-label" style={{ marginBottom: 4 }}>&nbsp;</div>
-                      <button onClick={() => deletePartClick(r)} title="Delete part" className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, color: "var(--red)" }}><X size={14} style={{ display: "inline", marginRight: 4 }} />Delete part</button>
-                    </div>
+                ) : (
+                  <div style={{ overflowX: "auto", marginTop: 10 }}>
+                    <table className="wb-table">
+                      <thead><tr><th></th><th>Part</th><th>Physical stock</th><th>Weekly usage</th><th>Weeks cover</th><th>Cost price</th><th>Status</th></tr></thead>
+                      <tbody>
+                        {rows.map((r) => (
+                          <StockPartRow key={`${section.id}-${r.id}`} r={r} open={expanded.has(r.id)} onToggle={toggle} {...rowProps} />
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                </td>
-              </tr>
-            )}
-            </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                )
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <button className="wb-btn" onClick={addBrandClick}><Plus size={13} /> Add brand</button>
       </div>
       {historyPart && (
         <PriceHistoryModal
@@ -2507,7 +2590,7 @@ function PriceHistoryModal({ part, history, recordPrice, onClose }) {
   );
 }
 
-function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine }) {
+function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand }) {
   const addJobTypeClick = () => { const name = prompt("New job type name:"); if (!name) return; addJobType(name); };
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
   const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
@@ -2532,9 +2615,20 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, upda
               <ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
               <div style={{ fontWeight: 700, fontSize: 14 }}>{jt.name}</div>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>({jt.bom.length} part{jt.bom.length === 1 ? "" : "s"})</span>
+              {!open && jt.brandId && (
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>· {brands.find((b) => b.id === jt.brandId)?.name || ""}</span>
+              )}
             </div>
             {open && (
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Brand</span>
+                <select
+                  className="wb-select" style={{ maxWidth: 150 }} value={jt.brandId || ""}
+                  onChange={(e) => updateJobTypeBrand(jt.id, e.target.value || null)}
+                >
+                  <option value="">No brand</option>
+                  {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>Google Calendar colour</span>
                 <div style={{ display: "flex", gap: 5 }}>
                   {CALENDAR_COLORS.map((c) => (
