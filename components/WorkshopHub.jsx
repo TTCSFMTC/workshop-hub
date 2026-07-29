@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, deleteJobType, insertBrand, deleteBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -832,6 +832,11 @@ export default function WorkshopHub() {
     await deleteBrand(brandId);
   });
 
+  const renameBrandFn = (brandId, name) => withSaveState(async () => {
+    setBrands((prev) => prev.map((b) => (b.id === brandId ? { ...b, name } : b)));
+    await renameBrand(brandId, name);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -986,7 +991,7 @@ export default function WorkshopHub() {
           addPart={addPart} removePart={removePart} updatePartField={updatePartField}
           addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
-          brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
+          brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1016,7 +1021,7 @@ function OfficeMode({
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, removeBrand, updateJobTypeBrand, removeJobType,
+  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1066,7 +1071,7 @@ function OfficeMode({
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
-            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} />
+            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand} />
         )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
@@ -2297,7 +2302,7 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
 
 const STOCK_UNASSIGNED = "__unassigned__";
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand, removeBrand }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
@@ -2363,6 +2368,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   }, [brands, jobTypes, stockRows]);
 
   const addBrandClick = () => { const name = prompt("New brand name:"); if (!name || !name.trim()) return; addBrand(name.trim()); };
+  const renameBrandClick = (section) => { const name = prompt("Rename brand:", section.name); if (!name || !name.trim()) return; renameBrand(section.id, name.trim()); };
   const removeBrandClick = (section) => {
     const taggedJobTypes = jobTypes.filter((jt) => jt.brandId === section.id);
     const warning = taggedJobTypes.length
@@ -2395,7 +2401,10 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>({rows.length} part{rows.length === 1 ? "" : "s"})</span>
                 </div>
                 {section.id !== STOCK_UNASSIGNED && (
-                  <button onClick={() => removeBrandClick(section)} title="Delete brand" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => renameBrandClick(section)} title="Rename brand" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
+                    <button onClick={() => removeBrandClick(section)} title="Delete brand" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+                  </div>
                 )}
               </div>
               {brandOpen && (
