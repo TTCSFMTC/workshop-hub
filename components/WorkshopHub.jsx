@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, insertBrand, deleteBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, deleteJobType, insertBrand, deleteBrand, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -813,6 +813,11 @@ export default function WorkshopHub() {
     await updateJobTypeBrand(jtId, brandId);
   });
 
+  const removeJobTypeFn = (jtId) => withSaveState(async () => {
+    setJobTypes((prev) => prev.filter((j) => j.id !== jtId));
+    await deleteJobType(jtId);
+  });
+
   const addBrandFn = (name) => withSaveState(async () => {
     const brand = { id: uid("brand"), name };
     setBrands((prev) => [...prev, brand]);
@@ -981,7 +986,7 @@ export default function WorkshopHub() {
           addPart={addPart} removePart={removePart} updatePartField={updatePartField}
           addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
-          brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} updateJobTypeBrand={updateJobTypeBrandFn}
+          brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1011,7 +1016,7 @@ function OfficeMode({
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, removeBrand, updateJobTypeBrand,
+  brands, addBrand, removeBrand, updateJobTypeBrand, removeJobType,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1064,9 +1069,9 @@ function OfficeMode({
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} />
         )}
         {tab === "jobtypes" && (
-          <JobTypesTab jobTypes={jobTypes} parts={parts} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
+          <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
-            brands={brands} updateJobTypeBrand={updateJobTypeBrand} />
+            brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType} />
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
@@ -2614,10 +2619,25 @@ function PriceHistoryModal({ part, history, recordPrice, onClose }) {
   );
 }
 
-function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand }) {
+function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand, removeJobType }) {
   const [showNewJobType, setShowNewJobType] = useState(false);
   const addJobTypeClick = () => setShowNewJobType(true);
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
+  // Unlike a part or a brand, a job type is directly wired into bookings —
+  // bookings.job_type_id is "on delete set null", so deleting one still in
+  // use would silently wipe which job was actually done off real customer
+  // records. That's not a "warn and let them proceed" situation like
+  // deleting a part; it's a hard block until nothing references it anymore.
+  const removeJobTypeClick = (jt) => {
+    const mainCount = bookings.filter((b) => b.jobTypeId === jt.id).length;
+    const extraCount = bookings.filter((b) => (b.extraJobTypeIds || []).includes(jt.id)).length;
+    if (mainCount + extraCount > 0) {
+      alert(`Can't delete "${jt.name}" — it's used on ${mainCount + extraCount} booking${mainCount + extraCount === 1 ? "" : "s"} (${mainCount} as the main job${extraCount ? `, ${extraCount} as an extra job` : ""}). Rename it instead if you want to retire it, or remove it from those bookings first.`);
+      return;
+    }
+    if (!confirm(`Delete "${jt.name}"${jt.bom.length ? ` and its ${jt.bom.length}-part recipe` : ""}? This can't be undone.`)) return;
+    removeJobType(jt.id);
+  };
   const addPartClick = () => { const name = prompt("New part name:"); if (!name) return; const unit = prompt("Unit (each / litre / kit):", "each") || "each"; addPart(name, unit); };
   // Collapsed by default — with a dozen-plus job types each showing their
   // full parts list, the tab was one long scroll of stuff that's already
@@ -2669,6 +2689,7 @@ function JobTypesTab({ jobTypes, parts, addPart, addJobType, renameJobType, upda
                   ))}
                 </div>
                 <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
+                <button onClick={() => removeJobTypeClick(jt)} title="Delete job type" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
               </div>
             )}
           </div>
