@@ -189,7 +189,7 @@ function confirmationMessage(b) {
 
 Many thanks for sending all that through, and for reading through our terms and conditions.
 
-I can confirm your vehicle is booked in on ${fmtDate(b.date)} for approximately ${b.days || 1} day(s) — that's just an estimate, and we'll keep you updated throughout.
+I can confirm your vehicle${b.reg ? ` (${b.reg})` : ""} is booked in on ${fmtDate(b.date)} for approximately ${b.days || 1} day(s) — that's just an estimate, and we'll keep you updated throughout.
 
 We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
@@ -361,6 +361,24 @@ const DEFAULT_SETTINGS = {
 // bookings of this type that were never priced.
 const STANDARD_TIMING_CHAIN_PRICE = { jobValue: 1495, labourCost: 220 };
 const isTimingChainReplacement = (jt) => jt?.name === "Timing Chain Replacement";
+
+// "Days in for" defaults per the shop's own standard turnaround for a few
+// well-known job types — saves re-typing it (and mistyping it) on every
+// booking. Brand-driven rather than matched on job type name alone, since
+// names are free text staff can phrase however they like; only falls back
+// to a name check where brand alone would be too broad (e.g. every Ford
+// job isn't a 2-day wet belt). Returns null (no default) for anything else,
+// so an unmatched job type just leaves "Days in for" as whatever it was.
+function defaultDaysForJobType(jt, brands) {
+  if (!jt) return null;
+  const brandName = brands.find((b) => b.id === jt.brandId)?.name || "";
+  const name = (jt.name || "").toLowerCase();
+  if ((brandName === "Landrover" || brandName === "Jaguar" || brandName === "JLR") && name.includes("timing chain")) return 3;
+  if (brandName === "Ford" && name.includes("wet belt")) return 2;
+  if (brandName === "Nissan") return 2;
+  if (brandName === "Peugeot" && name.includes("pure tech")) return 2;
+  return null;
+}
 
 // Vehicle model on a booking is one free-text field (e.g. "Jaguar F Pace")
 // — split it so the job card's separate Make/Model boxes start pre-filled
@@ -974,6 +992,7 @@ export default function WorkshopHub() {
           .print-job-cards, .print-job-cards * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-job-card, .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
         }
@@ -1156,25 +1175,25 @@ function JobCardBody({ booking, jobTypes }) {
   ].filter(([, value]) => value);
 
   return (
-    <div style={{ padding: 32, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2 }}>{booking.business}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.08em", color: "#555", marginBottom: 20 }}>JOB CARD</div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 20 }}>
+    <div style={{ padding: 20, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+      <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 2 }}>{booking.business}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", color: "#555", marginBottom: 12 }}>JOB CARD</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 12 }}>
         <tbody>
           {rows.map(([label, value]) => (
             <tr key={label}>
-              <td style={{ padding: "6px 12px 6px 0", fontWeight: 700, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
-              <td style={{ padding: "6px 0", borderBottom: "1px solid #ccc" }}>{value}</td>
+              <td style={{ padding: "3px 10px 3px 0", fontWeight: 700, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
+              <td style={{ padding: "3px 0", borderBottom: "1px solid #ccc" }}>{value}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Customer notes</div>
-      <div style={{ border: "1px solid #000", borderRadius: 4, padding: 10, minHeight: 90, fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 20 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Customer notes</div>
+      <div style={{ border: "1px solid #000", borderRadius: 4, padding: 6, minHeight: 50, fontSize: 11, whiteSpace: "pre-wrap", marginBottom: 12 }}>
         {booking.symptoms || "—"}
       </div>
-      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Comments</div>
-      <div style={{ border: "1px solid #000", borderRadius: 4, minHeight: 220 }} />
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Comments</div>
+      <div style={{ border: "1px solid #000", borderRadius: 4, minHeight: 110 }} />
     </div>
   );
 }
@@ -1533,12 +1552,19 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => {
                   const st = bookingStatus(b);
+                  // The drop-off day (a multi-day booking's first day) is
+                  // marked purple regardless of status, so a glance at the
+                  // month view shows what's coming in that day — every
+                  // later day of the same booking falls back to the normal
+                  // status colour (or plain amber if not started yet).
+                  const isDropOffDay = iso === b.date;
+                  const chipColor = isDropOffDay ? "#8e24aa" : st.color;
                   return (
                     <span
                       key={b.id}
                       className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}
-                      style={st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : undefined}
-                      title={st.label}
+                      style={chipColor ? { color: chipColor, background: "transparent", border: `1px solid ${chipColor}` } : undefined}
+                      title={isDropOffDay ? "Drop-off day" : st.label}
                     >
                       {b.customerName || "Booking"}
                     </span>
@@ -2911,6 +2937,10 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const vehicleModel = [vehicleMake === "Other" ? vehicleMakeOther.trim() : vehicleMake, vehicleModelText.trim()].filter(Boolean).join(" ").trim();
   const [date, setDate] = useState(booking?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
+  // Once staff manually type a days figure, the auto-default below stops
+  // touching it — otherwise picking a second job type after correcting the
+  // first would silently overwrite their correction.
+  const [daysTouched, setDaysTouched] = useState(false);
   const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
   const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || "");
   const [postcode, setPostcode] = useState(booking?.postcode || "");
@@ -2935,6 +2965,13 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   useEffect(() => {
     if (booking) return;
     setJobTypePrices((prev) => (jobTypeId in prev ? prev : { ...prev, [jobTypeId]: priceForNewJobType(jobTypeId) }));
+  }, [jobTypeId]);
+  // Same idea, for how many days the job normally takes — see
+  // defaultDaysForJobType above for which brand/job combos this covers.
+  useEffect(() => {
+    if (booking || daysTouched) return;
+    const def = defaultDaysForJobType(jobTypes.find((j) => j.id === jobTypeId), brands);
+    if (def) setDays(def);
   }, [jobTypeId]);
   const allJobTypeIds = [jobTypeId, ...extraJobTypeIds].filter(Boolean);
   const jobValue = allJobTypeIds.reduce((sum, id) => sum + (jobTypePrices[id] || 0), 0);
@@ -3003,7 +3040,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => { setJobTypeId(e.target.value); setExtraJobTypeIds((prev) => prev.filter((x) => x !== e.target.value)); }}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
             <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div><label className="wb-label">Days in for</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))} /></div>
+            <div><label className="wb-label">Days in for</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => { setDaysTouched(true); setDays(Math.max(1, parseInt(e.target.value) || 1)); }} /></div>
           </div>
           <div>
             <label className="wb-label">Extra jobs (e.g. Turbo — a whole additional job type on top of the main one)</label>
