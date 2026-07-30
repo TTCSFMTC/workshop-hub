@@ -386,6 +386,7 @@ const BLANK_CARD = (booking) => {
     createdAt: Date.now(),
     dateIn: booking?.date || todayISO(),
     dateOut: "",
+    requiredBy: "",
     technician: "",
     make, model, reg: booking?.reg || "",
     mileageIn: "", mileageOut: "",
@@ -966,10 +967,15 @@ export default function WorkshopHub() {
         .req-banner { background:#241512; border:1px solid #4a2420; color: var(--red); border-radius:8px; padding:10px 12px; font-size:12px; display:flex; align-items:center; gap:8px; }
         .req-banner.ok { background:#10281a; border-color:#1f4530; color: var(--green); }
         .print-job-card { display: none; }
+        .print-job-cards { display: none; }
         @media print {
           body * { visibility: hidden; }
-          .print-job-card, .print-job-card * { visibility: visible; }
+          .print-job-card, .print-job-card *,
+          .print-job-cards, .print-job-cards * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-job-card-page { page-break-after: always; break-after: page; }
+          .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
         }
       `}</style>
 
@@ -1029,6 +1035,7 @@ function OfficeMode({
   const [showNewBooking, setShowNewBooking] = useState(false);
   const [editingBooking, setEditingBooking] = useState(null);
   const [printJob, setPrintJob] = useState(null);
+  const [printJobs, setPrintJobs] = useState(null);
 
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
@@ -1040,6 +1047,17 @@ function OfficeMode({
     window.addEventListener("afterprint", clear);
     return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
   }, [printJob]);
+
+  // Same pattern, for reprinting several job cards at once from the Jobs
+  // tab (e.g. every car currently in) — one physical stack in one go
+  // instead of opening and printing each booking one at a time.
+  useEffect(() => {
+    if (!printJobs || printJobs.length === 0) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintJobs(null);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printJobs]);
 
   return (
     <div>
@@ -1066,6 +1084,7 @@ function OfficeMode({
               setSelectedDay(b.date);
               setTab("calendar");
             }}
+            onPrintSelected={setPrintJobs}
           />
         )}
         {tab === "stock" && (
@@ -1101,6 +1120,7 @@ function OfficeMode({
         />
       )}
       {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} />}
+      {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} />}
       {showReorderAlert && pendingReorder.length > 0 && (
         <ReorderAlertModal
           items={pendingReorder}
@@ -1120,7 +1140,7 @@ function OfficeMode({
 // can go straight into a physical pile at reception — techs work through the
 // pile one job card at a time. Plain black-on-white regardless of the app's
 // dark theme, since it's meant for a printer, not a screen.
-function JobCardPrintout({ booking, jobTypes }) {
+function JobCardBody({ booking, jobTypes }) {
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
   const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
   const jobTypeLabel = [jt?.name, ...extraJts.map((e) => e.name)].filter(Boolean).join(" + ");
@@ -1136,27 +1156,51 @@ function JobCardPrintout({ booking, jobTypes }) {
   ].filter(([, value]) => value);
 
   return (
-    <div className="print-job-card">
-      <div style={{ padding: 32, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2 }}>{booking.business}</div>
-        <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.08em", color: "#555", marginBottom: 20 }}>JOB CARD</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 20 }}>
-          <tbody>
-            {rows.map(([label, value]) => (
-              <tr key={label}>
-                <td style={{ padding: "6px 12px 6px 0", fontWeight: 700, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
-                <td style={{ padding: "6px 0", borderBottom: "1px solid #ccc" }}>{value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Customer notes</div>
-        <div style={{ border: "1px solid #000", borderRadius: 4, padding: 10, minHeight: 90, fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 20 }}>
-          {booking.symptoms || "—"}
-        </div>
-        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Comments</div>
-        <div style={{ border: "1px solid #000", borderRadius: 4, minHeight: 220 }} />
+    <div style={{ padding: 32, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 2 }}>{booking.business}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.08em", color: "#555", marginBottom: 20 }}>JOB CARD</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14, marginBottom: 20 }}>
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <td style={{ padding: "6px 12px 6px 0", fontWeight: 700, verticalAlign: "top", whiteSpace: "nowrap" }}>{label}</td>
+              <td style={{ padding: "6px 0", borderBottom: "1px solid #ccc" }}>{value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Customer notes</div>
+      <div style={{ border: "1px solid #000", borderRadius: 4, padding: 10, minHeight: 90, fontSize: 13, whiteSpace: "pre-wrap", marginBottom: 20 }}>
+        {booking.symptoms || "—"}
       </div>
+      <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Comments</div>
+      <div style={{ border: "1px solid #000", borderRadius: 4, minHeight: 220 }} />
+    </div>
+  );
+}
+
+function JobCardPrintout({ booking, jobTypes }) {
+  return (
+    <div className="print-job-card">
+      <JobCardBody booking={booking} jobTypes={jobTypes} />
+    </div>
+  );
+}
+
+// Bulk version for the Jobs tab — print a stack of job cards (e.g. every
+// car currently in) in one go. Each booking gets its own page: unlike the
+// single-card case above, these can't all sit at position:absolute;top:0
+// or they'd print stacked on top of each other, so this uses a separate
+// container that lays its children out normally and breaks the page after
+// each one instead.
+function JobCardsPrintout({ bookings, jobTypes }) {
+  return (
+    <div className="print-job-cards">
+      {bookings.map((b) => (
+        <div key={b.id} className="print-job-card-page">
+          <JobCardBody booking={b} jobTypes={jobTypes} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -1598,33 +1642,58 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
 // see what's in, what's done, and what's ready to collect. Hides collected
 // jobs by default — those are done and out the door — but they're a tick
 // away.
-function JobsTableTab({ bookings, jobTypes, onOpenBooking }) {
+function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected }) {
   const [showCollected, setShowCollected] = useState(false);
+  // Which rows are ticked for a bulk reprint — e.g. tick every car
+  // currently "Arrived" top to bottom, then print the lot in one go
+  // instead of opening and printing each booking one at a time.
+  const [selected, setSelected] = useState(() => new Set());
   const jtIndex = useMemo(() => Object.fromEntries(jobTypes.map((j) => [j.id, j.name])), [jobTypes]);
   const rows = useMemo(() => {
     return bookings
       .filter((b) => showCollected || !b.completed)
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }, [bookings, showCollected]);
+  const allVisibleSelected = rows.length > 0 && rows.every((b) => selected.has(b.id));
+  const toggleRow = (id) => setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggleAllVisible = () => setSelected((prev) => {
+    if (allVisibleSelected) return new Set();
+    return new Set(rows.map((b) => b.id));
+  });
+  const printSelected = () => {
+    const chosen = rows.filter((b) => selected.has(b.id));
+    if (chosen.length === 0) return;
+    onPrintSelected(chosen);
+    setSelected(new Set());
+  };
 
   return (
     <div className="wb-panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 15 }}>Jobs</div>
-        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-          <input type="checkbox" checked={showCollected} onChange={(e) => setShowCollected(e.target.checked)} /> Show collected
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={showCollected} onChange={(e) => setShowCollected(e.target.checked)} /> Show collected
+          </label>
+          <button className="wb-btn" disabled={selected.size === 0} style={selected.size === 0 ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={printSelected}>
+            <Printer size={13} /> Print selected{selected.size > 0 ? ` (${selected.size})` : ""}
+          </button>
+        </div>
       </div>
       <div style={{ overflowX: "auto" }}>
         <table className="wb-table">
           <thead>
-            <tr><th>Date</th><th>Customer</th><th>Reg</th><th>Business</th><th>Job type</th><th>Status</th></tr>
+            <tr>
+              <th style={{ width: 30 }}><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} /></th>
+              <th>Date</th><th>Customer</th><th>Reg</th><th>Business</th><th>Job type</th><th>Status</th>
+            </tr>
           </thead>
           <tbody>
             {rows.map((b) => {
               const st = bookingStatus(b);
               return (
                 <tr key={b.id} onClick={() => onOpenBooking(b)} style={{ cursor: "pointer" }}>
+                  <td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selected.has(b.id)} onChange={() => toggleRow(b.id)} /></td>
                   <td>{fmtDate(b.date)}</td>
                   <td>{b.customerName || "Unnamed"}</td>
                   <td className="wh-mono">{b.reg || "—"}</td>
@@ -1635,7 +1704,7 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking }) {
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No jobs to show.</td></tr>
+              <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No jobs to show.</td></tr>
             )}
           </tbody>
         </table>
@@ -3124,7 +3193,14 @@ function WorkshopHome({ bookings, jobTypes, parts, jobCards, onOpenCard, onCreat
     return bookings.filter((b) => (b.reg || "").toLowerCase().replace(/\s+/g, "").includes(q)).sort((a, b) => (a.date < b.date ? 1 : -1));
   }, [bookings, query]);
 
-  const recentCards = jobCards.slice(0, 6);
+  // Cards with a "required by" date float to the top, soonest first, so the
+  // workshop can see what needs picking up next rather than just whatever
+  // was last touched — everything else keeps falling back to recency.
+  const recentCards = useMemo(() => {
+    const withDue = jobCards.filter((c) => c.requiredBy).sort((a, b) => (a.requiredBy < b.requiredBy ? -1 : a.requiredBy > b.requiredBy ? 1 : 0));
+    const withoutDue = jobCards.filter((c) => !c.requiredBy);
+    return [...withDue, ...withoutDue].slice(0, 6);
+  }, [jobCards]);
 
   const pickUpJob = (booking) => {
     const existing = jobCards.find((c) => c.bookingId === booking.id);
@@ -3186,7 +3262,17 @@ function WorkshopHome({ bookings, jobTypes, parts, jobCards, onOpenCard, onCreat
                     <div style={{ fontWeight: 700 }} className="wh-mono">{c.reg || "No reg"}</div>
                     <div style={{ fontSize: 13, color: "var(--muted)" }}>{c.customerName}</div>
                   </div>
-                  {c.locked && <span className="jc-chip locked"><Lock size={10} style={{ display: "inline", marginRight: 3 }} />signed</span>}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                    {c.locked && <span className="jc-chip locked"><Lock size={10} style={{ display: "inline", marginRight: 3 }} />signed</span>}
+                    {c.requiredBy && (
+                      <span
+                        className="jc-chip"
+                        style={c.requiredBy < todayISO() ? { background: "#241512", color: "var(--red)" } : c.requiredBy === todayISO() ? { background: "#241d10", color: "var(--amber2)" } : {}}
+                      >
+                        Due {fmtDate(c.requiredBy)}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -3438,9 +3524,10 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
             <div style={{ fontWeight: 800, fontSize: 20 }} className="wh-mono">{card.reg || "No reg"}</div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div><label className="jc-label">Date in</label><input type="date" className="jc-input" value={card.dateIn} onChange={(e) => setField("dateIn", e.target.value)} /></div>
             <div><label className="jc-label">Date out</label><input type="date" className="jc-input" value={card.dateOut} onChange={(e) => setField("dateOut", e.target.value)} /></div>
+            <div><label className="jc-label">Required by</label><input type="date" className="jc-input" value={card.requiredBy || ""} onChange={(e) => setField("requiredBy", e.target.value)} /></div>
             <Field label="Technician" value={card.technician} onChange={(v) => setField("technician", v)} />
           </div>
         </div>
