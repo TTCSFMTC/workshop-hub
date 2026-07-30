@@ -1170,9 +1170,15 @@ function JobCardBody({ booking, jobTypes }) {
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
   const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
   const jobTypeLabel = [jt?.name, ...extraJts.map((e) => e.name)].filter(Boolean).join(" + ");
+  // The customer's requested-by date is the last day of the booked-in
+  // span, not a separate field — a job entered as 3 days from Mon is
+  // wanted back by Wed, so this is computed from date+days rather than
+  // needing office to type it in a second time.
+  const requiredByDate = booking.date ? addDaysISO(booking.date, (booking.days || 1) - 1) : "";
   const rows = [
     ["Business", booking.business],
     ["Booking date", booking.date ? fmtDate(booking.date) : ""],
+    ["Required by", requiredByDate ? fmtDate(requiredByDate) : ""],
     ["Customer name", booking.customerName],
     ["Address", booking.pickupAddress],
     ["Phone", booking.phone],
