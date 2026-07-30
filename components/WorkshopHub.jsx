@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -832,6 +832,11 @@ export default function WorkshopHub() {
     await updateJobTypeBrand(jtId, brandId);
   });
 
+  const updateJobTypeStandardPriceFn = (jtId, price) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, standardPrice: price } : j)));
+    await updateJobTypeStandardPrice(jtId, price);
+  });
+
   const removeJobTypeFn = (jtId) => withSaveState(async () => {
     setJobTypes((prev) => prev.filter((j) => j.id !== jtId));
     await deleteJobType(jtId);
@@ -992,7 +997,7 @@ export default function WorkshopHub() {
           .print-job-cards, .print-job-cards * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
-          .print-job-card, .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
+          .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
         }
@@ -1017,6 +1022,7 @@ export default function WorkshopHub() {
           addJobType={addJobTypeFn} renameJobType={renameJobTypeFn} updateJobTypeColor={updateJobTypeColorFn}
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
           brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
+          updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1046,7 +1052,7 @@ function OfficeMode({
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType,
+  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1114,7 +1120,8 @@ function OfficeMode({
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
-            brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType} />
+            brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType}
+            updateJobTypeStandardPrice={updateJobTypeStandardPrice} />
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
@@ -1552,18 +1559,19 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => {
                   const st = bookingStatus(b);
-                  // The drop-off day (a multi-day booking's first day) is
-                  // marked purple regardless of status, so a glance at the
-                  // month view shows what's coming in that day — every
-                  // later day of the same booking falls back to the normal
-                  // status colour (or plain amber if not started yet).
+                  // The drop-off day (a multi-day booking's first day) gets
+                  // a bright blue border on top of the normal status/yellow
+                  // colouring, so a glance at the month view shows what's
+                  // coming in that day without losing the status colour.
                   const isDropOffDay = iso === b.date;
-                  const chipColor = isDropOffDay ? "#8e24aa" : st.color;
                   return (
                     <span
                       key={b.id}
                       className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}
-                      style={chipColor ? { color: chipColor, background: "transparent", border: `1px solid ${chipColor}` } : undefined}
+                      style={{
+                        ...(st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : {}),
+                        ...(isDropOffDay ? { border: "2px solid #2979ff" } : {}),
+                      }}
                       title={isDropOffDay ? "Drop-off day" : st.label}
                     >
                       {b.customerName || "Booking"}
@@ -2723,7 +2731,7 @@ function PriceHistoryModal({ part, history, recordPrice, onClose }) {
   );
 }
 
-function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand, removeJobType }) {
+function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice }) {
   const [showNewJobType, setShowNewJobType] = useState(false);
   const addJobTypeClick = () => setShowNewJobType(true);
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
@@ -2767,9 +2775,12 @@ function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJob
               {!open && jt.brandId && (
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>· {brands.find((b) => b.id === jt.brandId)?.name || ""}</span>
               )}
+              {!open && jt.standardPrice != null && (
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>· £{jt.standardPrice.toFixed(2)}</span>
+              )}
             </div>
             {open && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>Brand</span>
                 <select
                   className="wb-select" style={{ maxWidth: 150 }} value={jt.brandId || ""}
@@ -2778,6 +2789,12 @@ function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJob
                   <option value="">No brand</option>
                   {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>Standard price £</span>
+                <input
+                  type="number" step="0.01" className="wb-input" style={{ width: 90 }} placeholder="varies"
+                  value={jt.standardPrice ?? ""}
+                  onChange={(e) => updateJobTypeStandardPrice(jt.id, e.target.value === "" ? null : parseFloat(e.target.value) || 0)}
+                />
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>Google Calendar colour</span>
                 <div style={{ display: "flex", gap: 5 }}>
                   {CALENDAR_COLORS.map((c) => (
@@ -2954,12 +2971,15 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
     if (booking) return { [booking.jobTypeId]: booking.jobValue || 0 };
     return {};
   });
-  // Pre-fills the standard Timing Chain Replacement price the moment that job
-  // type is picked (main or extra) on a new booking — preserves whatever was
-  // already typed for a job type if it's picked again, and never touches an
-  // existing booking's already-agreed prices when editing.
+  // Pre-fills a job type's standard price (set on the Job Types tab) the
+  // moment that job type is picked (main or extra) on a new booking —
+  // preserves whatever was already typed for a job type if it's picked
+  // again, and never touches an existing booking's already-agreed prices
+  // when editing. Falls back to the legacy Timing Chain Replacement price
+  // for that one job type if it hasn't been given a standard price yet.
   const priceForNewJobType = (id) => {
     const jt = jobTypes.find((j) => j.id === id);
+    if (jt?.standardPrice != null) return jt.standardPrice;
     return isTimingChainReplacement(jt) ? STANDARD_TIMING_CHAIN_PRICE.jobValue : 0;
   };
   useEffect(() => {
