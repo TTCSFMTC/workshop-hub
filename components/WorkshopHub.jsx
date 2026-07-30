@@ -1871,12 +1871,13 @@ function computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegi
   return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost };
 }
 
+// Job value/labour/parts cost and profit used to be visible here — this is
+// now pricing entry and transport/invoicing only. Profit stays visible in
+// one place, the password-gated Profitability tab, rather than to anyone
+// scanning a booking on the calendar.
 function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking }) {
   const [open, setOpen] = useState(false);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
-  const partsCost = useMemo(() => partsCostForBooking(booking, jobTypes, parts), [booking, jobTypes, parts]);
-  const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
-  const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
   const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
   const draftQuoteEmail = () => {
     const recipients = (settings.transportCompanies || []).map((c) => c.email).filter(Boolean).join(",");
@@ -1918,8 +1919,8 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
   return (
     <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
-        <div style={{ fontSize: 10, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}><PoundSterling size={10} /> Job value & profit</div>
-        <div className="wh-mono" style={{ fontSize: 11, color: profit >= 0 ? "var(--green)" : "var(--red)" }}>{jobValue ? `£${profit.toFixed(2)} profit` : "not set"}</div>
+        <div style={{ fontSize: 10, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}><PoundSterling size={10} /> Job pricing</div>
+        <ChevronDown size={12} style={{ color: "var(--muted)", transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s" }} />
       </div>
       {open && (
         <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1928,7 +1929,6 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
             <div><label className="wb-label">Labour £</label><input type="number" className="wb-input" value={booking.labourCost || ""} onChange={(e) => updateBooking(booking.id, { labourCost: parseFloat(e.target.value) || 0 })} /></div>
             <div><label className="wb-label">Transport £</label><input type="number" className="wb-input" value={booking.transportCost || ""} onChange={(e) => updateBooking(booking.id, { transportCost: parseFloat(e.target.value) || 0 })} /></div>
           </div>
-          <div className="wh-mono" style={{ fontSize: 11, color: "var(--muted)" }}>Parts cost: £{partsCost.toFixed(2)}{settings.vatRegistered ? ` · VAT: £${vat.toFixed(2)}` : ""}</div>
           {isTimingChainReplacement(jt) && !booking.jobValue && (
             <button className="wb-btn-ghost" onClick={() => updateBooking(booking.id, STANDARD_TIMING_CHAIN_PRICE)}>Use standard timing chain pricing</button>
           )}
