@@ -2195,6 +2195,37 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
     profit: acc.profit + m.totals.profit,
   }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, profit: 0 });
 
+  // How many of each job type have actually been completed — counting the
+  // main job AND every extra job type on the booking (a Timing Chain +
+  // Turbo booking counts once for each), not just the main one like the
+  // month tables above. All-time, across every month.
+  const jobTypeBreakdown = useMemo(() => {
+    const counts = {};
+    months.monthList.forEach((m) => {
+      m.rows.forEach((r) => {
+        const ids = [r.booking.jobTypeId, ...(r.booking.extraJobTypeIds || [])].filter(Boolean);
+        ids.forEach((id) => {
+          const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
+          counts[name] = (counts[name] || 0) + 1;
+        });
+      });
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [months, jobTypes]);
+
+  // Running total for the current calendar month — every booking dated
+  // this month regardless of price/collected status, so it reads as "what's
+  // in the diary so far" for tracking against a monthly budget or forecast,
+  // not just the (necessarily lagging) completed-and-collected total above.
+  const thisMonth = useMemo(() => {
+    const key = todayISO().slice(0, 7);
+    const rows = bookings.filter((b) => b.date && b.date.slice(0, 7) === key);
+    const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+    const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
+    const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+    return { label, count: rows.length, jobValue, unpriced };
+  }, [bookings]);
+
   const exportExcel = () => {
     const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Profit"]];
     months.monthList.forEach((m) => {
@@ -2227,6 +2258,34 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
           </div>
         )}
       </div>
+
+      <div className="wb-panel">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{thisMonth.label} so far</div>
+          <div className="wh-mono" style={{ fontSize: 13 }}>
+            {thisMonth.count} job{thisMonth.count !== 1 ? "s" : ""} booked in · £{thisMonth.jobValue.toFixed(2)} quoted
+          </div>
+        </div>
+        {thisMonth.unpriced > 0 && (
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+            {thisMonth.unpriced} of those {thisMonth.unpriced === 1 ? "hasn't" : "haven't"} had a price entered yet, so the total above will climb as they're priced.
+          </div>
+        )}
+      </div>
+
+      {jobTypeBreakdown.length > 0 && (
+        <div className="wb-panel">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Job types completed (all-time)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+            {jobTypeBreakdown.map(([name, count]) => (
+              <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+                <span>{name}</span>
+                <span className="wh-mono" style={{ fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {months.monthList.length === 0 && (
         <div className="wb-panel" style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "30px 0" }}>
