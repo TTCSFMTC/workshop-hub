@@ -2577,6 +2577,10 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
               </div>
               <div>
                 <div className="jc-label" style={{ marginBottom: 4 }}>&nbsp;</div>
+                <button onClick={() => setHistoryPart(r)} className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}><History size={14} style={{ display: "inline", marginRight: 4 }} />Price history</button>
+              </div>
+              <div>
+                <div className="jc-label" style={{ marginBottom: 4 }}>&nbsp;</div>
                 <button onClick={() => deletePartClick(r)} title="Delete part" className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, color: "var(--red)" }}><X size={14} style={{ display: "inline", marginRight: 4 }} />Delete part</button>
               </div>
             </div>
