@@ -6,11 +6,12 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
+  insertHoliday, deleteHoliday,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -436,6 +437,7 @@ export default function WorkshopHub() {
   const [priceHistory, setPriceHistory] = useState([]);
   const [stockBatches, setStockBatches] = useState([]);
   const [brands, setBrands] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -459,6 +461,7 @@ export default function WorkshopHub() {
         setPriceHistory(d.priceHistory);
         setStockBatches(d.stockBatches);
         setBrands(d.brands);
+        setHolidays(d.holidays);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -484,6 +487,7 @@ export default function WorkshopHub() {
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
       subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
       subscribeTable("brands", async () => setBrands(await fetchBrands())),
+      subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -862,6 +866,17 @@ export default function WorkshopHub() {
     await renameBrand(brandId, name);
   });
 
+  const addHolidayFn = (name, dateFrom, dateTo) => withSaveState(async () => {
+    const holiday = { id: uid("hol"), name, dateFrom, dateTo };
+    setHolidays((prev) => [...prev, holiday]);
+    await insertHoliday(holiday);
+  });
+
+  const removeHolidayFn = (holidayId) => withSaveState(async () => {
+    setHolidays((prev) => prev.filter((h) => h.id !== holidayId));
+    await deleteHoliday(holidayId);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -1024,6 +1039,7 @@ export default function WorkshopHub() {
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
           brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
+          holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1054,6 +1070,7 @@ function OfficeMode({
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
+  holidays, addHoliday, removeHoliday,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1097,7 +1114,7 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1109,7 +1126,8 @@ function OfficeMode({
           <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
             onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)} onPrintJob={setPrintJob}
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
-            jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval} />
+            jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
+            holidays={holidays} />
         )}
         {tab === "jobs" && (
           <JobsTableTab
@@ -1128,6 +1146,9 @@ function OfficeMode({
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
             brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType}
             updateJobTypeStandardPrice={updateJobTypeStandardPrice} />
+        )}
+        {tab === "holidays" && (
+          <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
@@ -1575,7 +1596,7 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirmed }) {
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
@@ -1619,8 +1640,16 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
             const dayBk = bookingsByDay[iso] || [];
             const isToday = iso === todayISO();
+            // Red surround for any day someone's off — a quick visual check
+            // before booking a job in, not tied to any particular booking.
+            const onHoliday = (holidays || []).filter((h) => iso >= h.dateFrom && iso <= h.dateTo);
             return (
-              <div key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`} onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}>
+              <div
+                key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`}
+                onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}
+                style={onHoliday.length > 0 ? { border: "2px solid var(--red)" } : undefined}
+                title={onHoliday.length > 0 ? `Holiday: ${onHoliday.map((h) => h.name).join(", ")}` : undefined}
+              >
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => {
                   const st = bookingStatus(b);
@@ -3066,6 +3095,54 @@ function NewJobTypeModal({ brands, onClose, onCreate }) {
           </div>
           <button className="wb-btn" disabled={!name.trim()} style={!name.trim() ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={create}>Create job type</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
+  const [name, setName] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const add = () => {
+    if (!name.trim() || !from || !to) return;
+    addHoliday(name.trim(), from, to < from ? from : to);
+    setName(""); setFrom(""); setTo("");
+  };
+
+  const sorted = [...holidays].sort((a, b) => (a.dateFrom < b.dateFrom ? -1 : 1));
+
+  return (
+    <div className="wb-panel">
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+        <Sun size={16} color="var(--amber)" /> Holidays
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
+        <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /></div>
+        <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
+          <Plus size={13} /> Add holiday
+        </button>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="wb-table">
+          <thead><tr><th>Name</th><th>From</th><th>To</th><th></th></tr></thead>
+          <tbody>
+            {sorted.map((h) => (
+              <tr key={h.id}>
+                <td style={{ fontWeight: 600 }}>{h.name}</td>
+                <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
+                <td className="wh-mono">{fmtDate(h.dateTo)}</td>
+                <td><button onClick={() => removeHoliday(h.id)} title="Delete holiday" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
+              </tr>
+            ))}
+            {sorted.length === 0 && (
+              <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No holidays booked in yet.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
