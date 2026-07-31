@@ -1114,7 +1114,7 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1140,6 +1140,9 @@ function OfficeMode({
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand} />
+        )}
+        {tab === "suppliers" && (
+          <SuppliersTab priceHistory={priceHistory} parts={parts} />
         )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
@@ -2656,6 +2659,60 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
 }
 
 const STOCK_UNASSIGNED = "__unassigned__";
+
+// Every recorded purchase, part first — pulled straight from price
+// history rather than a new table, since every delivered stock order
+// already logs itself there (deliverStock, above) alongside anything
+// manually logged via the Price history modal, so this is already the
+// complete, de-duplicated purchase record with no separate log to keep.
+function SuppliersTab({ priceHistory, parts }) {
+  const [search, setSearch] = useState("");
+  const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
+
+  const rows = useMemo(() => {
+    return priceHistory
+      .map((h) => ({ ...h, part: partsIndex[h.partId] }))
+      .filter((h) => h.part)
+      .sort((a, b) => {
+        if (a.part.name !== b.part.name) return a.part.name < b.part.name ? -1 : 1;
+        return a.recordedAt < b.recordedAt ? 1 : -1;
+      });
+  }, [priceHistory, partsIndex]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.part.name.toLowerCase().includes(q) || (r.supplier || "").toLowerCase().includes(q));
+  }, [rows, search]);
+
+  return (
+    <div className="wb-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Truck size={16} color="var(--amber)" /> Suppliers</div>
+        <input className="wb-input" style={{ maxWidth: 240 }} placeholder="Search part or supplier…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="wb-table">
+          <thead><tr><th>Part</th><th>Supplier</th><th>Qty</th><th>Price</th><th>Date</th></tr></thead>
+          <tbody>
+            {filtered.map((r) => (
+              <tr key={r.id}>
+                <td style={{ fontWeight: 600 }}>{r.part.name}</td>
+                <td>{r.supplier || "—"}</td>
+                <td className="wh-mono">{r.qty ?? "—"}</td>
+                <td className="wh-mono">£{r.price.toFixed(2)}</td>
+                <td className="wh-mono">{new Date(r.recordedAt).toLocaleDateString("en-GB")}</td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No purchases recorded yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
