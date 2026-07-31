@@ -1151,6 +1151,9 @@ function OfficeMode({
         <ReorderAlertModal
           items={pendingReorder}
           priceHistory={priceHistory}
+          stockBatches={stockBatches}
+          orderStock={orderStock}
+          deliverStock={deliverStock}
           onClose={() => setShowReorderAlert(false)}
           onDismiss={() => {
             setDismissedReorderIds((prev) => new Set([...prev, ...pendingReorder.map((r) => r.id)]));
@@ -1241,9 +1244,10 @@ function JobCardsPrintout({ bookings, jobTypes }) {
 // 12-month low from that part's price history, and offers to copy a ready
 // -made summary to paste to Claude in chat for a live price comparison —
 // there's no search API wired into the app itself, so this is the bridge.
-function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
+function ReorderAlertModal({ items, priceHistory, stockBatches, orderStock, deliverStock, onClose, onDismiss }) {
   const [copiedId, setCopiedId] = useState(null);
   const yearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
 
   const rows = items.map((item) => {
     const history = priceHistory.filter((h) => h.partId === item.id).sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : 1));
@@ -1258,6 +1262,18 @@ function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
     };
   });
 
+  // What's already been ordered for each of these parts, so the alert
+  // doesn't nag about something that's already on its way — and a
+  // "Received" button right here to log it arriving without going to the
+  // Stock tab. Once it's marked received, physical stock goes up and this
+  // part drops off the low-stock list on its own (or shrinks the shortfall
+  // if only some of it just arrived).
+  const pendingByPart = useMemo(() => {
+    const map = {};
+    stockBatches.filter((b) => b.status === "ordered").forEach((b) => { (map[b.partId] = map[b.partId] || []).push(b); });
+    return map;
+  }, [stockBatches]);
+
   const copyDetails = async (r) => {
     const text = `Check current prices for: ${r.item.name}${r.item.partNumber ? ` (part number ${r.item.partNumber})` : ""}, last ordered ${r.lastOrderQty ?? "?"} @ £${r.lastPrice.toFixed(2)}${r.lowest12mo !== null ? `, 12-month low £${r.lowest12mo.toFixed(2)}` : ""}.`;
     try {
@@ -1271,6 +1287,14 @@ function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
     }
   };
 
+  const placeOrder = (r) => {
+    const qty = parseFloat(orderAmounts[r.item.id]?.qty);
+    const price = parseFloat(orderAmounts[r.item.id]?.price) || r.lastPrice;
+    if (!qty || qty <= 0 || !price || price < 0) return;
+    orderStock(r.item.id, qty, price, null, null);
+    setOrderAmounts((prev) => ({ ...prev, [r.item.id]: { qty: "", price: "" } }));
+  };
+
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
       <div className="wb-modal" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
@@ -1280,28 +1304,57 @@ function ReorderAlertModal({ items, priceHistory, onClose, onDismiss }) {
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
         </div>
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ overflowX: "auto" }}>
-            <table className="wb-table">
-              <thead><tr><th>Product</th><th>Part no.</th><th>Last order qty</th><th>Last price</th><th>12-mo low</th><th></th></tr></thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.item.id}>
-                    <td style={{ fontWeight: 600 }}>{r.item.name}</td>
-                    <td>{r.item.partNumber || "—"}</td>
-                    <td className="wh-mono">{r.lastOrderQty ?? "—"}</td>
-                    <td className="wh-mono">£{r.lastPrice.toFixed(2)}</td>
-                    <td className="wh-mono">{r.lowest12mo !== null ? `£${r.lowest12mo.toFixed(2)}` : "—"}</td>
-                    <td>
-                      <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: 32, whiteSpace: "nowrap" }} onClick={() => copyDetails(r)}>
-                        {copiedId === r.item.id ? "Copied ✓" : "Search for a better price?"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map((r) => {
+            const pending = pendingByPart[r.item.id] || [];
+            return (
+              <div key={r.item.id} className="wb-panel" style={{ padding: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{r.item.name}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                      {r.item.partNumber ? `${r.item.partNumber} · ` : ""}Last ordered {r.lastOrderQty ?? "?"} @ £{r.lastPrice.toFixed(2)}{r.lowest12mo !== null ? ` · 12-mo low £${r.lowest12mo.toFixed(2)}` : ""}
+                    </div>
+                  </div>
+                  <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: 30, whiteSpace: "nowrap" }} onClick={() => copyDetails(r)}>
+                    {copiedId === r.item.id ? "Copied ✓" : "Search for a better price?"}
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 10, fontSize: 11, color: "var(--muted)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  {pending.length > 0 ? "Already on order" : "Nothing on order yet"}
+                </div>
+                {pending.length > 0 && (
+                  <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {pending.map((b) => (
+                      <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+                        <span className="wh-mono">{b.qtyRemaining} @ £{b.price.toFixed(2)}</span>
+                        {b.supplier && <span style={{ color: "var(--muted)" }}>from {b.supplier}</span>}
+                        <button className="wb-btn-ghost" style={{ padding: "4px 10px", minHeight: 28, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
+                          <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Received
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>Order</span>
+                  <input
+                    type="number" className="wb-input" style={{ width: 60 }} placeholder="qty"
+                    value={orderAmounts[r.item.id]?.qty || ""}
+                    onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.item.id]: { ...prev[r.item.id], qty: e.target.value } }))}
+                  />
+                  <input
+                    type="number" step="0.01" className="wb-input" style={{ width: 80 }} placeholder={`£${r.lastPrice.toFixed(2)}`}
+                    value={orderAmounts[r.item.id]?.price || ""}
+                    onChange={(e) => setOrderAmounts((prev) => ({ ...prev, [r.item.id]: { ...prev[r.item.id], price: e.target.value } }))}
+                  />
+                  <button className="wb-btn-ghost" style={{ padding: "6px 12px", minHeight: 30 }} onClick={() => placeOrder(r)}>Order</button>
+                </div>
+              </div>
+            );
+          })}
           <div style={{ fontSize: 11, color: "var(--muted)" }}>
             "Search for a better price?" copies the part's details — paste them to Claude in chat to get a live comparison across suppliers.
           </div>
