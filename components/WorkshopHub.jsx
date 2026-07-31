@@ -6,7 +6,7 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages,
@@ -1713,16 +1713,19 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
             const dayBk = bookingsByDay[iso] || [];
             const isToday = iso === todayISO();
-            // Red surround for any day someone's off — a quick visual check
+            // Red star for any day someone's off — a quick visual check
             // before booking a job in, not tied to any particular booking.
             const onHoliday = (holidays || []).filter((h) => iso >= h.dateFrom && iso <= h.dateTo);
             return (
               <div
                 key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`}
                 onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}
-                style={onHoliday.length > 0 ? { border: "2px solid var(--red)" } : undefined}
+                style={{ position: "relative" }}
                 title={onHoliday.length > 0 ? `Holiday: ${onHoliday.map((h) => h.name).join(", ")}` : undefined}
               >
+                {onHoliday.length > 0 && (
+                  <Star size={14} fill="var(--red)" color="var(--red)" style={{ position: "absolute", top: 3, right: 3 }} />
+                )}
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => {
                   const st = bookingStatus(b);
