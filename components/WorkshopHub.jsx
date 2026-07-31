@@ -585,6 +585,60 @@ export default function WorkshopHub() {
   }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder]);
   const lowStockItems = stockRows.filter((r) => r.needsOrder);
 
+  // Walks every not-yet-completed booking in date order, running down each
+  // part's available stock (physical + on order) as demand comes due, to
+  // find the first booking whose parts won't be covered by what's in hand —
+  // i.e. the actual date by which more needs to be ordered, rather than just
+  // "is it low right now" (stockRows/lowStockItems above are a snapshot, not
+  // a timeline). Only the earliest shortfall per part is kept — once it's
+  // flagged there, ordering more fixes every booking after it too.
+  const partsForecastShortfalls = useMemo(() => {
+    const available = {};
+    parts.forEach((p) => { available[p.id] = p.stock + (partOnOrder[p.id] || 0); });
+    const upcoming = bookings
+      .filter((b) => !b.workshopCompleted && !b.completed && b.date)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const shortfalls = {};
+    upcoming.forEach((b) => {
+      fullBookingBom(b, jobTypes).forEach((l) => {
+        if (!(l.partId in available)) return;
+        available[l.partId] -= l.qty;
+        if (available[l.partId] < 0 && !shortfalls[l.partId]) {
+          const part = parts.find((p) => p.id === l.partId);
+          shortfalls[l.partId] = {
+            partId: l.partId,
+            partName: part?.name || l.partId,
+            shortBy: -available[l.partId],
+            date: b.date,
+            bookingId: b.id,
+            customerName: b.customerName,
+          };
+        }
+      });
+    });
+    return Object.values(shortfalls).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }, [bookings, jobTypes, parts, partOnOrder]);
+
+  // Shown once per calendar day (not per session, unlike the reorder alert
+  // above) — a fresh check each morning of what the diary now needs, without
+  // nagging again every time someone flips between Office and Workshop mode.
+  const [forecastShownDate, setForecastShownDate] = useState(() => {
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem("wb-parts-forecast-shown-date");
+  });
+  const [showForecastAlert, setShowForecastAlert] = useState(false);
+  useEffect(() => {
+    if (partsForecastShortfalls.length > 0 && forecastShownDate !== todayISO()) {
+      setShowForecastAlert(true);
+    }
+  }, [partsForecastShortfalls.map((s) => `${s.partId}:${s.date}`).join(","), forecastShownDate]);
+  const dismissForecastAlert = () => {
+    const today = todayISO();
+    localStorage.setItem("wb-parts-forecast-shown-date", today);
+    setForecastShownDate(today);
+    setShowForecastAlert(false);
+  };
+
   // Pops up whenever a part crosses into "needs reorder" — lives at this
   // level (not inside OfficeMode) so switching to Workshop and back doesn't
   // forget a dismissal by remounting the component. Persisted to
@@ -1106,6 +1160,7 @@ export default function WorkshopHub() {
           priceHistory={priceHistory} recordPrice={recordPrice}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
+          partsForecastShortfalls={partsForecastShortfalls} showForecastAlert={showForecastAlert} dismissForecastAlert={dismissForecastAlert}
           jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
         />
       ) : (
@@ -1127,6 +1182,7 @@ function OfficeMode({
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
+  partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
   holidays, addHoliday, removeHoliday,
@@ -1259,6 +1315,13 @@ function OfficeMode({
             setDismissedReorderIds((prev) => new Set([...prev, ...pendingReorder.map((r) => r.id)]));
             setShowReorderAlert(false);
           }}
+        />
+      )}
+      {showForecastAlert && partsForecastShortfalls.length > 0 && (
+        <PartsForecastModal
+          shortfalls={partsForecastShortfalls}
+          onOpenBooking={(s) => { dismissForecastAlert(); openBookingOnCalendar({ date: s.date }); }}
+          onClose={dismissForecastAlert}
         />
       )}
     </div>
@@ -1461,6 +1524,48 @@ function ReorderAlertModal({ items, priceHistory, stockBatches, orderStock, deli
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <button className="wb-btn-ghost" onClick={onClose}>Not now</button>
             <button className="wb-btn" onClick={onDismiss}>Dismiss</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Daily heads-up: which parts will run out before an already-booked job
+// needs them, and on which day that first bites — computed by walking the
+// diary chronologically (see partsForecastShortfalls at the root), not just
+// today's stock level. Clicking a row jumps straight to that booking on the
+// Calendar so it's obvious which job is at risk.
+function PartsForecastModal({ shortfalls, onOpenBooking, onClose }) {
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8, color: "var(--red)" }}>
+            <AlertTriangle size={16} /> Parts needed for booked-in jobs
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Based on what's already booked in, not just today's stock level — order these before the date shown or that job will be short.
+          </div>
+          {shortfalls.map((s) => (
+            <div
+              key={s.partId} className="wb-panel" style={{ padding: 12, cursor: "pointer" }}
+              onClick={() => onOpenBooking(s)}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{s.partName}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--red)" }}>Short by {s.shortBy}</div>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                Needed by {fmtDate(s.date)}{s.customerName ? ` for ${s.customerName}` : ""} — tap to open on Calendar
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button className="wb-btn" onClick={onClose}>Got it</button>
           </div>
         </div>
       </div>
