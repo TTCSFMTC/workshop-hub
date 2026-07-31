@@ -1114,7 +1114,7 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1150,9 +1150,14 @@ function OfficeMode({
         {tab === "holidays" && (
           <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
         )}
+        {tab === "forecast" && (
+          <ProfitabilityGate>
+            <ForecastTab bookings={bookings} settings={settings} onOpenBooking={openBookingOnCalendar} />
+          </ProfitabilityGate>
+        )}
         {tab === "profitability" && (
           <ProfitabilityGate>
-            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} onOpenBooking={openBookingOnCalendar} />
+            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} />
           </ProfitabilityGate>
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
@@ -2258,7 +2263,102 @@ function ProfitabilityGate({ children }) {
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }) {
+function ForecastTab({ bookings, settings, onOpenBooking }) {
+  const monthlyTarget = settings.monthlyTarget || 40000;
+
+  // What's already on the books for the current month and any future month
+  // that already has bookings — every booking dated that month regardless
+  // of price/collected status, tracked against the monthly target, so it's
+  // visible whether a month is on track before it even arrives rather than
+  // only finding out once jobs are done and collected (which the
+  // completed-profit tables on the Profitability tab necessarily lag behind).
+  const forecast = useMemo(() => {
+    const currentKey = todayISO().slice(0, 7);
+    const byMonth = {};
+    bookings.forEach((b) => {
+      if (!b.date) return;
+      const key = b.date.slice(0, 7);
+      if (key < currentKey) return;
+      (byMonth[key] = byMonth[key] || []).push(b);
+    });
+    return Object.keys(byMonth).sort().map((key) => {
+      const rows = byMonth[key];
+      const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+      const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
+      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+      const pct = monthlyTarget > 0 ? Math.min(100, (jobValue / monthlyTarget) * 100) : 0;
+      return { key, label, isCurrent: key === currentKey, count: rows.length, jobValue, unpriced, pct };
+    });
+  }, [bookings, monthlyTarget]);
+
+  // Every booking anywhere, any date, with no price entered yet — can't
+  // count toward the target above until it's costed, so these need
+  // chasing rather than just silently sitting blank.
+  const outstanding = useMemo(() => {
+    return bookings
+      .filter((b) => !(b.jobValue > 0))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }, [bookings]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {outstanding.length > 0 && (
+        <div className="wb-panel" style={{ borderColor: "var(--red)" }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertTriangle size={16} /> {outstanding.length} booking{outstanding.length !== 1 ? "s" : ""} still need a price
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+            None of these count toward the target below until they're priced.{onOpenBooking ? " Click one to open it on the Calendar tab." : ""}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {outstanding.map((b) => (
+              <div
+                key={b.id}
+                onClick={() => onOpenBooking?.(b)}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 13, padding: "6px 10px", borderRadius: 6, background: "var(--panel2)", cursor: onOpenBooking ? "pointer" : "default" }}
+              >
+                <span>{fmtDate(b.date)} — {b.customerName || "Unnamed"} <span style={{ color: "var(--muted)" }}>{b.reg}</span></span>
+                <span style={{ color: "var(--muted)" }}>{b.business}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <TrendingUp size={16} color="var(--amber)" /> Forecast vs £{monthlyTarget.toLocaleString("en-GB")} monthly target
+        </div>
+        {forecast.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>Nothing booked in from today onward yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {forecast.map((f) => (
+              <div key={f.key}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, marginBottom: 4 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{f.label}{f.isCurrent ? " (so far)" : ""}</div>
+                  <div className="wh-mono" style={{ fontSize: 12 }}>
+                    {f.count} job{f.count !== 1 ? "s" : ""} · £{f.jobValue.toFixed(2)} of £{monthlyTarget.toFixed(2)} ({f.pct.toFixed(0)}%)
+                  </div>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${f.pct}%`, background: f.pct >= 100 ? "var(--green)" : "var(--amber)", transition: "width 0.2s" }} />
+                </div>
+                {f.unpriced > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                    {f.unpriced} of those {f.unpriced === 1 ? "hasn't" : "haven't"} had a price entered yet — total will climb once priced.
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -2278,7 +2378,19 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }
         vat: acc.vat + r.vat, profit: acc.profit + r.profit,
       }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, vat: 0, profit: 0 });
       const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-      return { key, label, rows, totals };
+      // Same main+extra job type counting as the all-time breakdown below,
+      // just scoped to this one month — this is the number that actually
+      // matches a staff bonus period, not the all-time total.
+      const jobTypeCounts = {};
+      rows.forEach((r) => {
+        const ids = [r.booking.jobTypeId, ...(r.booking.extraJobTypeIds || [])].filter(Boolean);
+        ids.forEach((id) => {
+          const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
+          jobTypeCounts[name] = (jobTypeCounts[name] || 0) + 1;
+        });
+      });
+      const jobTypeBreakdown = Object.entries(jobTypeCounts).sort((a, b) => b[1] - a[1]);
+      return { key, label, rows, totals, jobTypeBreakdown };
     });
     return { monthList, unpricedCount, notYetCompleteCount };
   }, [bookings, jobTypes, parts, settings]);
@@ -2306,42 +2418,6 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }
     });
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [months, jobTypes]);
-
-  const monthlyTarget = settings.monthlyTarget || 40000;
-
-  // What's already on the books for the current month and any future month
-  // that already has bookings — every booking dated that month regardless
-  // of price/collected status, tracked against the monthly target, so it's
-  // visible whether a month is on track before it even arrives rather than
-  // only finding out once jobs are done and collected (which the
-  // completed-profit tables below necessarily lag behind).
-  const forecast = useMemo(() => {
-    const currentKey = todayISO().slice(0, 7);
-    const byMonth = {};
-    bookings.forEach((b) => {
-      if (!b.date) return;
-      const key = b.date.slice(0, 7);
-      if (key < currentKey) return;
-      (byMonth[key] = byMonth[key] || []).push(b);
-    });
-    return Object.keys(byMonth).sort().map((key) => {
-      const rows = byMonth[key];
-      const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
-      const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
-      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-      const pct = monthlyTarget > 0 ? Math.min(100, (jobValue / monthlyTarget) * 100) : 0;
-      return { key, label, isCurrent: key === currentKey, count: rows.length, jobValue, unpriced, pct };
-    });
-  }, [bookings, monthlyTarget]);
-
-  // Every booking anywhere, any date, with no price entered yet — can't
-  // count toward the target (or profit) above until it's costed, so these
-  // need chasing rather than just silently sitting blank.
-  const outstanding = useMemo(() => {
-    return bookings
-      .filter((b) => !(b.jobValue > 0))
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  }, [bookings]);
 
   const exportExcel = () => {
     const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Profit"]];
@@ -2376,57 +2452,6 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }
         )}
       </div>
 
-      {outstanding.length > 0 && (
-        <div className="wb-panel" style={{ borderColor: "var(--red)" }}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}>
-            <AlertTriangle size={16} /> {outstanding.length} booking{outstanding.length !== 1 ? "s" : ""} still need a price
-          </div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
-            None of these count toward the totals below (or the target above) until they're priced.{onOpenBooking ? " Click one to open it on the Calendar tab." : ""}
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {outstanding.map((b) => (
-              <div
-                key={b.id}
-                onClick={() => onOpenBooking?.(b)}
-                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 13, padding: "6px 10px", borderRadius: 6, background: "var(--panel2)", cursor: onOpenBooking ? "pointer" : "default" }}
-              >
-                <span>{fmtDate(b.date)} — {b.customerName || "Unnamed"} <span style={{ color: "var(--muted)" }}>{b.reg}</span></span>
-                <span style={{ color: "var(--muted)" }}>{b.business}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="wb-panel">
-        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Forecast vs £{monthlyTarget.toLocaleString("en-GB")} monthly target</div>
-        {forecast.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--muted)" }}>Nothing booked in from today onward yet.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {forecast.map((f) => (
-              <div key={f.key}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, marginBottom: 4 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13 }}>{f.label}{f.isCurrent ? " (so far)" : ""}</div>
-                  <div className="wh-mono" style={{ fontSize: 12 }}>
-                    {f.count} job{f.count !== 1 ? "s" : ""} · £{f.jobValue.toFixed(2)} of £{monthlyTarget.toFixed(2)} ({f.pct.toFixed(0)}%)
-                  </div>
-                </div>
-                <div style={{ height: 8, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${f.pct}%`, background: f.pct >= 100 ? "var(--green)" : "var(--amber)", transition: "width 0.2s" }} />
-                </div>
-                {f.unpriced > 0 && (
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                    {f.unpriced} of those {f.unpriced === 1 ? "hasn't" : "haven't"} had a price entered yet — total will climb once priced.
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
       {jobTypeBreakdown.length > 0 && (
         <div className="wb-panel">
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Job types completed (all-time)</div>
@@ -2453,6 +2478,16 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }
             <div style={{ fontWeight: 700, fontSize: 14 }}>{m.label}</div>
             <div style={{ fontSize: 11, color: "var(--muted)" }}>{m.rows.length} job{m.rows.length !== 1 ? "s" : ""}</div>
           </div>
+          {m.jobTypeBreakdown.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 6, marginBottom: 12 }}>
+              {m.jobTypeBreakdown.map(([name, count]) => (
+                <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: "5px 8px" }}>
+                  <span>{name}</span>
+                  <span className="wh-mono" style={{ fontWeight: 700 }}>{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ overflowX: "auto" }}>
             <table className="wb-table">
               <thead><tr><th>Date</th><th>Customer</th><th>Job type</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th></tr></thead>
