@@ -9,9 +9,10 @@ import {
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
+  insertBonusRate, updateBonusRate, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
@@ -378,6 +379,13 @@ const DEFAULT_SETTINGS = {
 const STANDARD_TIMING_CHAIN_PRICE = { jobValue: 1495, labourCost: 220 };
 const isTimingChainReplacement = (jt) => jt?.name === "Timing Chain Replacement";
 
+// Staff wages — basic monthly salary equates to a 40hr week, plus flat
+// rates for weekend work on top (bonus rates are configurable per job
+// type via the Bonus rates list instead, since that list needs to grow).
+const DEFAULT_BASIC_WAGE = 2063;
+const WEEKEND_FULL_DAY_RATE = 150;
+const WEEKEND_HALF_DAY_RATE = 75;
+
 // "Days in for" defaults per the shop's own standard turnaround for a few
 // well-known job types — saves re-typing it (and mistyping it) on every
 // booking. Brand-driven rather than matched on job type name alone, since
@@ -452,6 +460,8 @@ export default function WorkshopHub() {
   const [stockBatches, setStockBatches] = useState([]);
   const [brands, setBrands] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [bonusRates, setBonusRates] = useState([]);
+  const [staffWages, setStaffWages] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -476,6 +486,8 @@ export default function WorkshopHub() {
         setStockBatches(d.stockBatches);
         setBrands(d.brands);
         setHolidays(d.holidays);
+        setBonusRates(d.bonusRates);
+        setStaffWages(d.staffWages);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -502,6 +514,8 @@ export default function WorkshopHub() {
       subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
       subscribeTable("brands", async () => setBrands(await fetchBrands())),
       subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
+      subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
+      subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -891,6 +905,35 @@ export default function WorkshopHub() {
     await deleteHoliday(holidayId);
   });
 
+  const addBonusRateFn = (name, rate) => withSaveState(async () => {
+    const br = { id: uid("br"), name, rate };
+    setBonusRates((prev) => [...prev, br]);
+    await insertBonusRate(br);
+  });
+
+  const updateBonusRateFn = (id, rate) => withSaveState(async () => {
+    setBonusRates((prev) => prev.map((b) => (b.id === id ? { ...b, rate } : b)));
+    await updateBonusRate(id, rate);
+  });
+
+  const removeBonusRateFn = (id) => withSaveState(async () => {
+    setBonusRates((prev) => prev.filter((b) => b.id !== id));
+    await deleteBonusRate(id);
+  });
+
+  // Callers always pass the row's existing id when editing (so this is a
+  // true update, not a duplicate) and a freshly generated one only when
+  // adding a new person for a month — see StaffWagesSection.
+  const upsertStaffWageFn = (wage) => withSaveState(async () => {
+    setStaffWages((prev) => (prev.some((w) => w.id === wage.id) ? prev.map((w) => (w.id === wage.id ? wage : w)) : [...prev, wage]));
+    await upsertStaffWage(wage);
+  });
+
+  const removeStaffWageFn = (id) => withSaveState(async () => {
+    setStaffWages((prev) => prev.filter((w) => w.id !== id));
+    await deleteStaffWage(id);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -1054,6 +1097,8 @@ export default function WorkshopHub() {
           brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
+          bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} removeBonusRate={removeBonusRateFn}
+          staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1085,6 +1130,8 @@ function OfficeMode({
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
   holidays, addHoliday, removeHoliday,
+  bonusRates, addBonusRate, updateBonusRate, removeBonusRate,
+  staffWages, upsertStaffWage, removeStaffWage,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1174,7 +1221,11 @@ function OfficeMode({
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
-            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} />
+            <ProfitabilityTab
+              bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
+              bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} removeBonusRate={removeBonusRate}
+              staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+            />
           </ProfitabilityGate>
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
@@ -2431,7 +2482,126 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
+// Staff wages & efficiency — basic + weekend days + per-job bonuses, per
+// person per month, against that month's gross profit (job value minus
+// parts) to see wages as a share of margin. One month at a time rather
+// than a table per historical month, since this is edited like a
+// spreadsheet as the month goes rather than browsed after the fact.
+function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage }) {
+  const [month, setMonth] = useState(() => todayISO().slice(0, 7));
+  const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
+
+  const rowTotal = (w) => {
+    const bonusTotal = bonusRates.reduce((sum, br) => sum + (Number(w.bonusCounts[br.id]) || 0) * br.rate, 0);
+    return (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusTotal;
+  };
+
+  const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
+  const monthTotals = months.monthList.find((m) => m.key === month)?.totals;
+  const grossMinusParts = monthTotals ? monthTotals.jobValue - monthTotals.partsCost : 0;
+  const pct = grossMinusParts > 0 ? (totalOutlay / grossMinusParts) * 100 : null;
+
+  const addPerson = () => {
+    const name = prompt("Name:");
+    if (!name || !name.trim()) return;
+    if (monthRows.some((w) => w.name.toLowerCase() === name.trim().toLowerCase())) { alert(`${name.trim()} is already on this month's list.`); return; }
+    upsertStaffWage({ id: uid("sw"), name: name.trim(), month, basic: DEFAULT_BASIC_WAGE, weekendFullDays: 0, weekendHalfDays: 0, bonusCounts: {} });
+  };
+
+  const patch = (w, fields) => upsertStaffWage({ ...w, ...fields });
+
+  const addBonusType = () => {
+    const name = prompt("Bonus job name (e.g. Turbo):");
+    if (!name || !name.trim()) return;
+    const rateStr = prompt(`£ bonus per ${name.trim()}:`, "50");
+    const rate = parseFloat(rateStr);
+    if (!rate || rate < 0) return;
+    addBonusRate(name.trim(), rate);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="wb-panel">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><User size={16} color="var(--amber)" /> Staff wages & efficiency</div>
+          <input type="month" className="wb-input" style={{ maxWidth: 160 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wb-table">
+            <thead>
+              <tr>
+                <th>Name</th><th>Basic £</th><th>Weekend full days</th><th>Weekend half days</th>
+                {bonusRates.map((br) => <th key={br.id}>{br.name} (£{br.rate})</th>)}
+                <th>Total £</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthRows.map((w) => (
+                <tr key={w.id}>
+                  <td style={{ fontWeight: 600 }}>{w.name}</td>
+                  <td><input type="number" className="wb-input" style={{ width: 80 }} value={w.basic} onChange={(e) => patch(w, { basic: parseFloat(e.target.value) || 0 })} /></td>
+                  <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendFullDays} onChange={(e) => patch(w, { weekendFullDays: parseFloat(e.target.value) || 0 })} /></td>
+                  <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendHalfDays} onChange={(e) => patch(w, { weekendHalfDays: parseFloat(e.target.value) || 0 })} /></td>
+                  {bonusRates.map((br) => (
+                    <td key={br.id}>
+                      <input
+                        type="number" className="wb-input" style={{ width: 55 }} value={w.bonusCounts[br.id] || ""}
+                        onChange={(e) => patch(w, { bonusCounts: { ...w.bonusCounts, [br.id]: parseFloat(e.target.value) || 0 } })}
+                      />
+                    </td>
+                  ))}
+                  <td className="wh-mono" style={{ fontWeight: 700 }}>£{rowTotal(w).toFixed(2)}</td>
+                  <td><button onClick={() => removeStaffWage(w.id)} title="Remove" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
+                </tr>
+              ))}
+              {monthRows.length === 0 && (
+                <tr><td colSpan={5 + bonusRates.length} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>Nobody added for this month yet.</td></tr>
+              )}
+            </tbody>
+            {monthRows.length > 0 && (
+              <tfoot>
+                <tr style={{ fontWeight: 700 }}>
+                  <td colSpan={3 + bonusRates.length}>Total wage outlay</td>
+                  <td className="wh-mono">£{totalOutlay.toFixed(2)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+        <button className="wb-btn-ghost" style={{ marginTop: 10 }} onClick={addPerson}><Plus size={13} /> Add person</button>
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
+          {monthTotals ? (
+            <div className="wh-mono" style={{ fontSize: 13, color: pct !== null && pct > 100 ? "var(--red)" : "var(--green)" }}>
+              £{totalOutlay.toFixed(2)} wages is {pct !== null ? `${pct.toFixed(1)}%` : "—"} of £{grossMinusParts.toFixed(2)} gross profit (job value minus parts) for this month.
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>No completed, priced jobs for this month yet, so there's no gross profit to compare wages against.</div>
+          )}
+        </div>
+      </div>
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Bonus rates</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>£ per job, applied to the quantity boxes above. Shared across every month.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+          {bonusRates.map((br) => (
+            <div key={br.id} style={{ display: "grid", gridTemplateColumns: "1fr 100px 32px", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 13 }}>{br.name}</div>
+              <input type="number" step="0.01" className="wb-input" value={br.rate} onChange={(e) => updateBonusRate(br.id, parseFloat(e.target.value) || 0)} />
+              <button onClick={() => removeBonusRate(br.id)} title="Delete bonus type" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+            </div>
+          ))}
+          {bonusRates.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No bonus types set up yet.</div>}
+        </div>
+        <button className="wb-btn-ghost" onClick={addBonusType}><Plus size={13} /> Add bonus type</button>
+      </div>
+    </div>
+  );
+}
+
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -2509,6 +2679,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
           </div>
         )}
       </div>
+
+      <StaffWagesSection
+        months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} removeBonusRate={removeBonusRate}
+        staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+      />
 
       {jobTypeBreakdown.length > 0 && (
         <div className="wb-panel">
