@@ -60,6 +60,20 @@ const addDaysISO = (iso, days) => {
 };
 // Every calendar day a multi-day booking spans, e.g. days=3 from 2026-07-08 -> [07-08, 07-09, 07-10].
 const bookingDates = (b) => Array.from({ length: b.days || 1 }, (_, i) => addDaysISO(b.date, i));
+// Weekdays only between two dates inclusive — a holiday spanning a weekend
+// shouldn't count those two days, since nobody's rostered to work them
+// anyway. Same UTC-throughout approach as addDaysISO above, for the same
+// DST-safety reason.
+const weekdayCount = (dateFrom, dateTo) => {
+  const [fy, fm, fd] = dateFrom.split("-").map(Number);
+  const [ty, tm, td] = dateTo.split("-").map(Number);
+  let count = 0;
+  for (let t = Date.UTC(fy, fm - 1, fd), end = Date.UTC(ty, tm - 1, td); t <= end; t += 86400000) {
+    const day = new Date(t).getUTCDay();
+    if (day !== 0 && day !== 6) count++;
+  }
+  return count;
+};
 
 // ============================================================
 // Stock batches — FIFO cost basis
@@ -1155,7 +1169,7 @@ function OfficeMode({
         )}
         {tab === "forecast" && (
           <ProfitabilityGate>
-            <ForecastTab bookings={bookings} settings={settings} onOpenBooking={openBookingOnCalendar} />
+            <ForecastTab bookings={bookings} jobTypes={jobTypes} settings={settings} onOpenBooking={openBookingOnCalendar} />
           </ProfitabilityGate>
         )}
         {tab === "profitability" && (
@@ -2209,6 +2223,23 @@ function bookingProfit(booking, jobTypes, parts, settings) {
   return { jt, partsCost, jobValue, labourCost, transportCost, vat, profit };
 }
 
+// How many of each job type have actually been completed — main job AND
+// every extra job type on the booking both counted (a Timing Chain +
+// Turbo booking counts once for each). Shared between Profitability and
+// Forecast so "how many have we done" can't drift between the two tabs
+// from being computed two different ways.
+function jobTypeCompletionCounts(bookings, jobTypes) {
+  const counts = {};
+  bookings.filter((b) => b.completed && (b.jobValue || 0) > 0).forEach((b) => {
+    const ids = [b.jobTypeId, ...(b.extraJobTypeIds || [])].filter(Boolean);
+    ids.forEach((id) => {
+      const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
+      counts[name] = (counts[name] || 0) + 1;
+    });
+  });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+}
+
 // Second password gate, independent of the main site login — so profit
 // figures stay hidden from anyone who only has the shared Office password.
 // The session lives in its own httpOnly cookie, checked server-side.
@@ -2266,8 +2297,19 @@ function ProfitabilityGate({ children }) {
   );
 }
 
-function ForecastTab({ bookings, settings, onOpenBooking }) {
+function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
   const monthlyTarget = settings.monthlyTarget || 40000;
+
+  // Same completed-job-type counting as Profitability's all-time
+  // breakdown, plus the same thing scoped to just the current month —
+  // both live here too since Forecast is where "are we on track" gets
+  // checked day to day, not just on the Profitability tab.
+  const jobTypeBreakdown = useMemo(() => jobTypeCompletionCounts(bookings, jobTypes), [bookings, jobTypes]);
+  const currentMonthLabel = useMemo(() => new Date(`${todayISO().slice(0, 7)}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" }), []);
+  const jobTypeBreakdownThisMonth = useMemo(() => {
+    const currentKey = todayISO().slice(0, 7);
+    return jobTypeCompletionCounts(bookings.filter((b) => b.date && b.date.slice(0, 7) === currentKey), jobTypes);
+  }, [bookings, jobTypes]);
 
   // What's already on the books for the current month and any future month
   // that already has bookings — every booking dated that month regardless
@@ -2357,6 +2399,34 @@ function ForecastTab({ bookings, settings, onOpenBooking }) {
           </div>
         )}
       </div>
+
+      {jobTypeBreakdownThisMonth.length > 0 && (
+        <div className="wb-panel">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Job types completed — {currentMonthLabel} so far</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+            {jobTypeBreakdownThisMonth.map(([name, count]) => (
+              <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+                <span>{name}</span>
+                <span className="wh-mono" style={{ fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {jobTypeBreakdown.length > 0 && (
+        <div className="wb-panel">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Job types completed (all-time)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+            {jobTypeBreakdown.map(([name, count]) => (
+              <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+                <span>{name}</span>
+                <span className="wh-mono" style={{ fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2404,23 +2474,8 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
     profit: acc.profit + m.totals.profit,
   }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, profit: 0 });
 
-  // How many of each job type have actually been completed — counting the
-  // main job AND every extra job type on the booking (a Timing Chain +
-  // Turbo booking counts once for each), not just the main one like the
-  // month tables above. All-time, across every month.
-  const jobTypeBreakdown = useMemo(() => {
-    const counts = {};
-    months.monthList.forEach((m) => {
-      m.rows.forEach((r) => {
-        const ids = [r.booking.jobTypeId, ...(r.booking.extraJobTypeIds || [])].filter(Boolean);
-        ids.forEach((id) => {
-          const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
-          counts[name] = (counts[name] || 0) + 1;
-        });
-      });
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  }, [months, jobTypes]);
+  // All-time, across every month — see jobTypeCompletionCounts above.
+  const jobTypeBreakdown = useMemo(() => jobTypeCompletionCounts(bookings, jobTypes), [bookings, jobTypes]);
 
   const exportExcel = () => {
     const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Profit"]];
@@ -3205,37 +3260,64 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 
   const sorted = [...holidays].sort((a, b) => (a.dateFrom < b.dateFrom ? -1 : 1));
 
+  // Weekdays only per entry — a Sat-Sun either side of a booked week
+  // doesn't cost a day, since nobody's rostered to work them anyway.
+  const tally = useMemo(() => {
+    const totals = {};
+    holidays.forEach((h) => {
+      totals[h.name] = (totals[h.name] || 0) + weekdayCount(h.dateFrom, h.dateTo);
+    });
+    return Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  }, [holidays]);
+
   return (
-    <div className="wb-panel">
-      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-        <Sun size={16} color="var(--amber)" /> Holidays
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <Sun size={16} color="var(--amber)" /> Holidays
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
+          <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /></div>
+          <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+          <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
+            <Plus size={13} /> Add holiday
+          </button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wb-table">
+            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th></th></tr></thead>
+            <tbody>
+              {sorted.map((h) => (
+                <tr key={h.id}>
+                  <td style={{ fontWeight: 600 }}>{h.name}</td>
+                  <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
+                  <td className="wh-mono">{fmtDate(h.dateTo)}</td>
+                  <td className="wh-mono">{weekdayCount(h.dateFrom, h.dateTo)}</td>
+                  <td><button onClick={() => removeHoliday(h.id)} title="Delete holiday" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
+                </tr>
+              ))}
+              {sorted.length === 0 && (
+                <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No holidays booked in yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
-        <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /></div>
-        <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-        <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-        <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
-          <Plus size={13} /> Add holiday
-        </button>
-      </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="wb-table">
-          <thead><tr><th>Name</th><th>From</th><th>To</th><th></th></tr></thead>
-          <tbody>
-            {sorted.map((h) => (
-              <tr key={h.id}>
-                <td style={{ fontWeight: 600 }}>{h.name}</td>
-                <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
-                <td className="wh-mono">{fmtDate(h.dateTo)}</td>
-                <td><button onClick={() => removeHoliday(h.id)} title="Delete holiday" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
-              </tr>
+
+      {tally.length > 0 && (
+        <div className="wb-panel">
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Total days per person (Mon-Fri only)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+            {tally.map(([person, days]) => (
+              <div key={person} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+                <span>{person}</span>
+                <span className="wh-mono" style={{ fontWeight: 700 }}>{days}</span>
+              </div>
             ))}
-            {sorted.length === 0 && (
-              <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No holidays booked in yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
