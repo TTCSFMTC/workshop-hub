@@ -354,6 +354,7 @@ const DEFAULT_SETTINGS = {
   transportCompanies: [{ name: "Transport company 1", email: "" }, { name: "Transport company 2", email: "" }],
   transportContactName: "Paul",
   transportContactPhone: "",
+  monthlyTarget: 40000,
 };
 
 // Standard pricing for a Timing Chain Replacement — pre-filled on new
@@ -1062,6 +1063,15 @@ function OfficeMode({
   const [printJob, setPrintJob] = useState(null);
   const [printJobs, setPrintJobs] = useState(null);
 
+  // Jumps to a booking's day on the Calendar tab — shared by the Jobs
+  // table and the Profitability tab's outstanding-pricing list, so
+  // clicking either one lands you on the same booking the same way.
+  const openBookingOnCalendar = (b) => {
+    setMonthCursor(new Date(new Date(b.date).getFullYear(), new Date(b.date).getMonth(), 1));
+    setSelectedDay(b.date);
+    setTab("calendar");
+  };
+
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
   // tech to pick up, one card per booking taken.
@@ -1104,11 +1114,7 @@ function OfficeMode({
         {tab === "jobs" && (
           <JobsTableTab
             bookings={bookings} jobTypes={jobTypes}
-            onOpenBooking={(b) => {
-              setMonthCursor(new Date(new Date(b.date).getFullYear(), new Date(b.date).getMonth(), 1));
-              setSelectedDay(b.date);
-              setTab("calendar");
-            }}
+            onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
           />
         )}
@@ -1125,7 +1131,7 @@ function OfficeMode({
         )}
         {tab === "profitability" && (
           <ProfitabilityGate>
-            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} />
+            <ProfitabilityTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} onOpenBooking={openBookingOnCalendar} />
           </ProfitabilityGate>
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
@@ -2223,7 +2229,7 @@ function ProfitabilityGate({ children }) {
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, onOpenBooking }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -2272,17 +2278,40 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [months, jobTypes]);
 
-  // Running total for the current calendar month — every booking dated
-  // this month regardless of price/collected status, so it reads as "what's
-  // in the diary so far" for tracking against a monthly budget or forecast,
-  // not just the (necessarily lagging) completed-and-collected total above.
-  const thisMonth = useMemo(() => {
-    const key = todayISO().slice(0, 7);
-    const rows = bookings.filter((b) => b.date && b.date.slice(0, 7) === key);
-    const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
-    const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
-    const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-    return { label, count: rows.length, jobValue, unpriced };
+  const monthlyTarget = settings.monthlyTarget || 40000;
+
+  // What's already on the books for the current month and any future month
+  // that already has bookings — every booking dated that month regardless
+  // of price/collected status, tracked against the monthly target, so it's
+  // visible whether a month is on track before it even arrives rather than
+  // only finding out once jobs are done and collected (which the
+  // completed-profit tables below necessarily lag behind).
+  const forecast = useMemo(() => {
+    const currentKey = todayISO().slice(0, 7);
+    const byMonth = {};
+    bookings.forEach((b) => {
+      if (!b.date) return;
+      const key = b.date.slice(0, 7);
+      if (key < currentKey) return;
+      (byMonth[key] = byMonth[key] || []).push(b);
+    });
+    return Object.keys(byMonth).sort().map((key) => {
+      const rows = byMonth[key];
+      const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+      const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
+      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+      const pct = monthlyTarget > 0 ? Math.min(100, (jobValue / monthlyTarget) * 100) : 0;
+      return { key, label, isCurrent: key === currentKey, count: rows.length, jobValue, unpriced, pct };
+    });
+  }, [bookings, monthlyTarget]);
+
+  // Every booking anywhere, any date, with no price entered yet — can't
+  // count toward the target (or profit) above until it's costed, so these
+  // need chasing rather than just silently sitting blank.
+  const outstanding = useMemo(() => {
+    return bookings
+      .filter((b) => !(b.jobValue > 0))
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }, [bookings]);
 
   const exportExcel = () => {
@@ -2318,16 +2347,53 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings }) {
         )}
       </div>
 
-      <div className="wb-panel">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>{thisMonth.label} so far</div>
-          <div className="wh-mono" style={{ fontSize: 13 }}>
-            {thisMonth.count} job{thisMonth.count !== 1 ? "s" : ""} booked in · £{thisMonth.jobValue.toFixed(2)} quoted
+      {outstanding.length > 0 && (
+        <div className="wb-panel" style={{ borderColor: "var(--red)" }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, color: "var(--red)", display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertTriangle size={16} /> {outstanding.length} booking{outstanding.length !== 1 ? "s" : ""} still need a price
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+            None of these count toward the totals below (or the target above) until they're priced.{onOpenBooking ? " Click one to open it on the Calendar tab." : ""}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {outstanding.map((b) => (
+              <div
+                key={b.id}
+                onClick={() => onOpenBooking?.(b)}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, fontSize: 13, padding: "6px 10px", borderRadius: 6, background: "var(--panel2)", cursor: onOpenBooking ? "pointer" : "default" }}
+              >
+                <span>{fmtDate(b.date)} — {b.customerName || "Unnamed"} <span style={{ color: "var(--muted)" }}>{b.reg}</span></span>
+                <span style={{ color: "var(--muted)" }}>{b.business}</span>
+              </div>
+            ))}
           </div>
         </div>
-        {thisMonth.unpriced > 0 && (
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-            {thisMonth.unpriced} of those {thisMonth.unpriced === 1 ? "hasn't" : "haven't"} had a price entered yet, so the total above will climb as they're priced.
+      )}
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Forecast vs £{monthlyTarget.toLocaleString("en-GB")} monthly target</div>
+        {forecast.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>Nothing booked in from today onward yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {forecast.map((f) => (
+              <div key={f.key}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, marginBottom: 4 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{f.label}{f.isCurrent ? " (so far)" : ""}</div>
+                  <div className="wh-mono" style={{ fontSize: 12 }}>
+                    {f.count} job{f.count !== 1 ? "s" : ""} · £{f.jobValue.toFixed(2)} of £{monthlyTarget.toFixed(2)} ({f.pct.toFixed(0)}%)
+                  </div>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${f.pct}%`, background: f.pct >= 100 ? "var(--green)" : "var(--amber)", transition: "width 0.2s" }} />
+                </div>
+                {f.unpriced > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                    {f.unpriced} of those {f.unpriced === 1 ? "hasn't" : "haven't"} had a price entered yet — total will climb once priced.
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -3017,6 +3083,11 @@ function SettingsTab({ settings, updateSettingsField }) {
             <input type="checkbox" checked={settings.vatRegistered} onChange={(e) => updateSettingsField({ vatRegistered: e.target.checked })} /> VAT registered
           </label>
         </div>
+      </div>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Monthly target</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Gross invoice sales target per month — shown as progress on the Profitability tab.</div>
+        <div><label className="wb-label">Target £ per month</label><input type="number" step="100" className="wb-input" style={{ maxWidth: 160 }} value={settings.monthlyTarget} onChange={(e) => updateSettingsField({ monthlyTarget: parseFloat(e.target.value) || 0 })} /></div>
       </div>
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Transport companies</div>
