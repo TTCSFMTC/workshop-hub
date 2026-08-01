@@ -76,6 +76,10 @@ const weekdayCount = (dateFrom, dateTo) => {
   }
   return count;
 };
+// Per-staff holiday colour, keyed by first name (case-insensitive) so the
+// calendar star and Holidays tab agree on who's who at a glance.
+const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)" };
+const holidayColor = (name) => STAFF_HOLIDAY_COLORS[(name || "").trim().toLowerCase()] || "var(--amber)";
 
 // ============================================================
 // Stock batches — FIFO cost basis
@@ -1097,7 +1101,7 @@ export default function WorkshopHub() {
   }
 
   return (
-    <div style={{ "--bg": "#16181a", "--panel": "#1e2124", "--panel2": "#25292c", "--line": "#33383c", "--text": "#e7e3da", "--muted": "#9aa0a6", "--amber": "#f5a623", "--amber2": "#ffcf6b", "--red": "#e2574c", "--green": "#5fb87a" }} className="wh-root">
+    <div style={{ "--bg": "#16181a", "--panel": "#1e2124", "--panel2": "#25292c", "--line": "#33383c", "--text": "#e7e3da", "--muted": "#9aa0a6", "--amber": "#f5a623", "--amber2": "#ffcf6b", "--red": "#e2574c", "--green": "#5fb87a", "--blue": "#4a90e2" }} className="wh-root">
       <style>{`
         .wh-root { background: var(--bg); color: var(--text); font-family: var(--font-inter), 'Inter', ui-sans-serif, system-ui, sans-serif; min-height: 100vh; -webkit-tap-highlight-color: transparent; }
         .wh-mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
@@ -1869,7 +1873,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 title={onHoliday.length > 0 ? `Holiday: ${onHoliday.map((h) => h.name).join(", ")}` : undefined}
               >
                 {onHoliday.length > 0 && (
-                  <Star size={14} fill="var(--red)" color="var(--red)" style={{ position: "absolute", top: 3, right: 3 }} />
+                  <div style={{ position: "absolute", top: 3, right: 3, display: "flex", gap: 2 }}>
+                    {onHoliday.map((h) => (
+                      <Star key={h.id} size={14} fill={holidayColor(h.name)} color={holidayColor(h.name)} />
+                    ))}
+                  </div>
                 )}
                 <div className="wb-daynum">{d}</div>
                 {dayBk.slice(0, 5).map((b) => {
@@ -3768,7 +3776,10 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
             <tbody>
               {sorted.map((h) => (
                 <tr key={h.id}>
-                  <td style={{ fontWeight: 600 }}>{h.name}</td>
+                  <td style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 7 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(h.name), display: "inline-block", flexShrink: 0 }} />
+                    {h.name}
+                  </td>
                   <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
                   <td className="wh-mono">{fmtDate(h.dateTo)}</td>
                   <td className="wh-mono">{weekdayCount(h.dateFrom, h.dateTo)}</td>
@@ -3789,7 +3800,10 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
             {tally.map(([person, days]) => (
               <div key={person} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
-                <span>{person}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(person), display: "inline-block", flexShrink: 0 }} />
+                  {person}
+                </span>
                 <span className="wh-mono" style={{ fontWeight: 700 }}>{days}</span>
               </div>
             ))}
