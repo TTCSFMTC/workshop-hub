@@ -9,14 +9,15 @@ import {
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
   insertBonusRate, updateBonusRate, deleteBonusRate, upsertStaffWage, deleteStaffWage,
+  insertFixedCost, updateFixedCost, deleteFixedCost,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
-  insertPriceHistory, deletePriceHistory, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch,
+  insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
 } from "@/lib/data";
@@ -371,6 +372,7 @@ const DEFAULT_SETTINGS = {
   transportContactName: "Paul",
   transportContactPhone: "",
   monthlyTarget: 40000,
+  nonProductivesCost: 5000,
 };
 
 // Standard pricing for a Timing Chain Replacement — pre-filled on new
@@ -462,6 +464,7 @@ export default function WorkshopHub() {
   const [holidays, setHolidays] = useState([]);
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
+  const [fixedCosts, setFixedCosts] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -488,6 +491,7 @@ export default function WorkshopHub() {
         setHolidays(d.holidays);
         setBonusRates(d.bonusRates);
         setStaffWages(d.staffWages);
+        setFixedCosts(d.fixedCosts);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -516,6 +520,7 @@ export default function WorkshopHub() {
       subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
+      subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -988,6 +993,35 @@ export default function WorkshopHub() {
     await deleteStaffWage(id);
   });
 
+  // Corrects a supplier name once it's actually known, on either a delivered
+  // purchase (part_price_history) or a still-pending order (stock_batches) —
+  // Suppliers tab passes the right one of these depending on the row's kind.
+  const updatePriceHistorySupplierFn = (id, supplier) => withSaveState(async () => {
+    setPriceHistory((prev) => prev.map((h) => (h.id === id ? { ...h, supplier } : h)));
+    await updatePriceHistorySupplier(id, supplier);
+  });
+
+  const updateStockBatchSupplierFn = (id, supplier) => withSaveState(async () => {
+    setStockBatches((prev) => prev.map((b) => (b.id === id ? { ...b, supplier } : b)));
+    await updateStockBatchSupplier(id, supplier);
+  });
+
+  const addFixedCostFn = (name, amount) => withSaveState(async () => {
+    const fc = { id: uid("fc"), name, amount };
+    setFixedCosts((prev) => [...prev, fc]);
+    await insertFixedCost(fc);
+  });
+
+  const updateFixedCostFn = (id, fields) => withSaveState(async () => {
+    setFixedCosts((prev) => prev.map((f) => (f.id === id ? { ...f, ...fields } : f)));
+    await updateFixedCost(id, fields);
+  });
+
+  const removeFixedCostFn = (id) => withSaveState(async () => {
+    setFixedCosts((prev) => prev.filter((f) => f.id !== id));
+    await deleteFixedCost(id);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -1153,11 +1187,13 @@ export default function WorkshopHub() {
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
+          fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
           stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
           priceHistory={priceHistory} recordPrice={recordPrice}
+          updatePriceHistorySupplier={updatePriceHistorySupplierFn} updateStockBatchSupplier={updateStockBatchSupplierFn}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
           partsForecastShortfalls={partsForecastShortfalls} showForecastAlert={showForecastAlert} dismissForecastAlert={dismissForecastAlert}
@@ -1182,12 +1218,14 @@ function OfficeMode({
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
   stockBatches, orderStock, deliverStock, cancelOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
+  updatePriceHistorySupplier, updateStockBatchSupplier,
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
   holidays, addHoliday, removeHoliday,
   bonusRates, addBonusRate, updateBonusRate, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
+  fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1259,7 +1297,8 @@ function OfficeMode({
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand} />
         )}
         {tab === "suppliers" && (
-          <SuppliersTab priceHistory={priceHistory} parts={parts} />
+          <SuppliersTab priceHistory={priceHistory} parts={parts} brands={brands} jobTypes={jobTypes} stockBatches={stockBatches}
+            updatePriceHistorySupplier={updatePriceHistorySupplier} updateStockBatchSupplier={updateStockBatchSupplier} />
         )}
         {tab === "jobtypes" && (
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
@@ -1281,6 +1320,7 @@ function OfficeMode({
               bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
               bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} removeBonusRate={removeBonusRate}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+              fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
             />
           </ProfitabilityGate>
         )}
@@ -2709,7 +2749,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -2793,6 +2833,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
         staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
       />
 
+      <FixedCostsSection
+        fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
+        latestMonth={months.monthList[0] || null}
+      />
+
       {jobTypeBreakdown.length > 0 && (
         <div className="wb-panel">
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Job types completed (all-time)</div>
@@ -2858,8 +2903,89 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
               </tfoot>
             </table>
           </div>
+          {(() => {
+            // GP here is the same "job value minus parts" figure the wages
+            // % already compares against above — one consistent definition
+            // of gross profit used everywhere on this tab, not a second one.
+            const gp = m.totals.jobValue - m.totals.partsCost;
+            const pct = (v) => (gp > 0 ? `${((v / gp) * 100).toFixed(1)}% of GP` : "—");
+            return (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>Gross profit (quoted − parts)</span>
+                  <span className="wh-mono" style={{ fontWeight: 700 }}>£{gp.toFixed(2)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
+                  <span>Parts cost</span>
+                  <span className="wh-mono">£{m.totals.partsCost.toFixed(2)} ({pct(m.totals.partsCost)})</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
+                  <span>Transport cost</span>
+                  <span className="wh-mono">£{m.totals.transportCost.toFixed(2)} ({pct(m.totals.transportCost)})</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
+                  <span>Non-productives</span>
+                  <span className="wh-mono">£{settings.nonProductivesCost.toFixed(2)} ({pct(settings.nonProductivesCost)})</span>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       ))}
+    </div>
+  );
+}
+
+// Standing monthly overheads — rent, insurance, subscriptions etc — kept as
+// a maintainable list (add/rename/delete, like Bonus rates above) rather
+// than a fixed set of fields, so the list can grow or change without a
+// schema change every time. Not tied to a particular month since these
+// rarely change; the % shown is against the most recent month's gross
+// profit purely for a sense of scale.
+function FixedCostsSection({ fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, latestMonth }) {
+  const total = fixedCosts.reduce((sum, f) => sum + (f.amount || 0), 0);
+  const gp = latestMonth ? latestMonth.totals.jobValue - latestMonth.totals.partsCost : 0;
+  const pct = latestMonth && gp > 0 ? (total / gp) * 100 : null;
+
+  const addCost = () => {
+    const name = prompt("Fixed cost name (e.g. Rent):");
+    if (!name || !name.trim()) return;
+    addFixedCost(name.trim(), 0);
+  };
+  const renameCost = (f) => {
+    const name = prompt("Rename:", f.name);
+    if (!name || !name.trim()) return;
+    updateFixedCost(f.id, { name: name.trim() });
+  };
+
+  return (
+    <div className="wb-panel">
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>True fixed costs</div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+        Standing monthly overheads — add, rename or delete to build a true picture of what it costs to run the business each month.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+        {fixedCosts.map((f) => (
+          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "1fr 100px 32px 32px", gap: 8, alignItems: "center" }}>
+            <div style={{ fontSize: 13 }}>{f.name}</div>
+            <input type="number" step="0.01" className="wb-input" value={f.amount} onChange={(e) => updateFixedCost(f.id, { amount: parseFloat(e.target.value) || 0 })} />
+            <button onClick={() => renameCost(f)} title="Rename" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
+            <button onClick={() => removeFixedCost(f.id)} title="Delete" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+          </div>
+        ))}
+        {fixedCosts.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No fixed costs set up yet.</div>}
+      </div>
+      <button className="wb-btn-ghost" onClick={addCost}><Plus size={13} /> Add fixed cost</button>
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+        <div className="wh-mono" style={{ fontSize: 13, fontWeight: 700 }}>Total fixed costs: £{total.toFixed(2)} / month</div>
+        {latestMonth ? (
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+            {pct !== null ? `${pct.toFixed(1)}%` : "—"} of £{gp.toFixed(2)} gross profit for {latestMonth.label}.
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>No completed, priced jobs yet to compare against.</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2998,24 +3124,78 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
 
 const STOCK_UNASSIGNED = "__unassigned__";
 
+// Groups a set of part ids by brand — a part appears under every brand
+// whose job type(s) use it (a generic oil filter used on both a Ford and a
+// Nissan job appears in both sections), and anything not tied to a branded
+// job type (or not on any recipe at all) falls into "Unassigned / other" so
+// it's never invisible while brands are still being set up. Shared by Stock
+// & Reorder and Suppliers so both tabs group parts identically.
+function computeBrandSections(brands, jobTypes, allPartIds) {
+  const partIdsByBrand = {};
+  const usedPartIds = new Set();
+  jobTypes.forEach((jt) => {
+    const key = jt.brandId || STOCK_UNASSIGNED;
+    jt.bom.forEach((l) => {
+      usedPartIds.add(l.partId);
+      (partIdsByBrand[key] || (partIdsByBrand[key] = new Set())).add(l.partId);
+    });
+  });
+  const unassigned = new Set(partIdsByBrand[STOCK_UNASSIGNED] || []);
+  allPartIds.forEach((id) => { if (!usedPartIds.has(id)) unassigned.add(id); });
+  const list = brands.map((b) => ({ id: b.id, name: b.name, partIds: partIdsByBrand[b.id] || new Set() }));
+  list.push({ id: STOCK_UNASSIGNED, name: "Unassigned / other", partIds: unassigned });
+  return list;
+}
+
+// A small inline-editable text cell — click in, type a correction, tab or
+// click away to save. Used for supplier names so a purchase can be relabelled
+// once the real supplier is known, without a separate edit modal.
+function EditableSupplierCell({ value, onSave }) {
+  const [draft, setDraft] = useState(value || "");
+  useEffect(() => { setDraft(value || ""); }, [value]);
+  const commit = () => { if (draft.trim() !== (value || "")) onSave(draft.trim()); };
+  return (
+    <input
+      className="wb-input" style={{ minWidth: 110, fontSize: 12, padding: "6px 8px" }}
+      value={draft} placeholder="—"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+    />
+  );
+}
+
 // Every recorded purchase, part first — pulled straight from price
 // history rather than a new table, since every delivered stock order
 // already logs itself there (deliverStock, above) alongside anything
 // manually logged via the Price history modal, so this is already the
 // complete, de-duplicated purchase record with no separate log to keep.
-function SuppliersTab({ priceHistory, parts }) {
+// Parts still on order (not yet delivered) are folded in too, shown in
+// amber, so "who did we order this from" is answered even before it arrives.
+function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, updatePriceHistorySupplier, updateStockBatchSupplier }) {
   const [search, setSearch] = useState("");
+  const [expandedBrands, setExpandedBrands] = useState(() => new Set());
+  const toggleBrand = (id) => setExpandedBrands((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
 
+  // Delivered purchases plus anything still on order — on-order rows carry
+  // `onOrder: true` so they render in amber, since that stock isn't actually
+  // here yet even though it's already committed to a supplier and a price.
   const rows = useMemo(() => {
-    return priceHistory
-      .map((h) => ({ ...h, part: partsIndex[h.partId] }))
-      .filter((h) => h.part)
+    const delivered = priceHistory.map((h) => ({
+      id: h.id, kind: "history", partId: h.partId, supplier: h.supplier, qty: h.qty, price: h.price, date: h.recordedAt, onOrder: false,
+    }));
+    const onOrder = stockBatches.filter((b) => b.status === "ordered").map((b) => ({
+      id: b.id, kind: "batch", partId: b.partId, supplier: b.supplier, qty: b.qtyOrdered, price: b.price, date: b.orderedAt, onOrder: true,
+    }));
+    return [...delivered, ...onOrder]
+      .map((r) => ({ ...r, part: partsIndex[r.partId] }))
+      .filter((r) => r.part)
       .sort((a, b) => {
         if (a.part.name !== b.part.name) return a.part.name < b.part.name ? -1 : 1;
-        return a.recordedAt < b.recordedAt ? 1 : -1;
+        return a.date < b.date ? 1 : -1;
       });
-  }, [priceHistory, partsIndex]);
+  }, [priceHistory, stockBatches, partsIndex]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -3023,30 +3203,62 @@ function SuppliersTab({ priceHistory, parts }) {
     return rows.filter((r) => r.part.name.toLowerCase().includes(q) || (r.supplier || "").toLowerCase().includes(q));
   }, [rows, search]);
 
+  // Grouped by brand (same grouping as Stock & Reorder) so a specific make's
+  // suppliers are easy to find, rather than one long list across every part —
+  // within a brand, parts stay in the existing alphabetical-then-newest-first order.
+  const sections = useMemo(() => {
+    const sectionDefs = computeBrandSections(brands, jobTypes, parts.map((p) => p.id));
+    return sectionDefs
+      .map((section) => ({ ...section, rows: filtered.filter((r) => section.partIds.has(r.partId)) }))
+      .filter((section) => section.rows.length > 0);
+  }, [brands, jobTypes, parts, filtered]);
+
+  const saveSupplier = (r, value) => {
+    if (r.kind === "history") updatePriceHistorySupplier(r.id, value || null);
+    else updateStockBatchSupplier(r.id, value || null);
+  };
+
   return (
     <div className="wb-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Truck size={16} color="var(--amber)" /> Suppliers</div>
         <input className="wb-input" style={{ maxWidth: 240 }} placeholder="Search part or supplier…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="wb-table">
-          <thead><tr><th>Part</th><th>Supplier</th><th>Qty</th><th>Price</th><th>Date</th></tr></thead>
-          <tbody>
-            {filtered.map((r) => (
-              <tr key={r.id}>
-                <td style={{ fontWeight: 600 }}>{r.part.name}</td>
-                <td>{r.supplier || "—"}</td>
-                <td className="wh-mono">{r.qty ?? "—"}</td>
-                <td className="wh-mono">£{r.price.toFixed(2)}</td>
-                <td className="wh-mono">{new Date(r.recordedAt).toLocaleDateString("en-GB")}</td>
-              </tr>
-            ))}
-            {filtered.length === 0 && (
-              <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No purchases recorded yet.</td></tr>
-            )}
-          </tbody>
-        </table>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {sections.map((section) => {
+          const open = expandedBrands.has(section.id);
+          return (
+            <div key={section.id} className="wb-panel" style={{ padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleBrand(section.id)}>
+                <ChevronDown size={14} style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{section.name}</div>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>({section.rows.length})</span>
+              </div>
+              {open && (
+                <div style={{ overflowX: "auto", marginTop: 10 }}>
+                  <table className="wb-table">
+                    <thead><tr><th>Part</th><th>Supplier</th><th>Qty</th><th>Price</th><th>Date</th><th></th></tr></thead>
+                    <tbody>
+                      {section.rows.map((r) => (
+                        <tr key={`${r.kind}-${r.id}`}>
+                          <td style={{ fontWeight: 600 }}>{r.part.name}</td>
+                          <td><EditableSupplierCell value={r.supplier} onSave={(v) => saveSupplier(r, v)} /></td>
+                          <td className="wh-mono" style={r.onOrder ? { color: "var(--amber2)" } : undefined}>{r.qty ?? "—"}</td>
+                          <td className="wh-mono" style={r.onOrder ? { color: "var(--amber2)" } : undefined}>£{r.price.toFixed(2)}</td>
+                          <td className="wh-mono" style={r.onOrder ? { color: "var(--amber2)" } : undefined}>{new Date(r.date).toLocaleDateString("en-GB")}</td>
+                          <td>{r.onOrder && <span className="wb-chip" style={{ display: "inline-block" }}>On order</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {sections.length === 0 && (
+          <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "30px 0" }}>No purchases recorded yet.</div>
+        )}
       </div>
     </div>
   );
@@ -3095,27 +3307,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
     XLSX.writeFile(workbook, `price-history-${todayISO()}.xlsx`);
   };
 
-  // A part shows up under every brand whose job type(s) use it (a generic
-  // oil filter used on both a Ford and a Nissan job appears in both
-  // sections) — and anything not yet tied to a branded job type (or not on
-  // any job type's recipe at all) falls into "Unassigned / other" so it's
-  // never invisible while brands are still being set up.
-  const sections = useMemo(() => {
-    const partIdsByBrand = {};
-    const usedPartIds = new Set();
-    jobTypes.forEach((jt) => {
-      const key = jt.brandId || STOCK_UNASSIGNED;
-      jt.bom.forEach((l) => {
-        usedPartIds.add(l.partId);
-        (partIdsByBrand[key] || (partIdsByBrand[key] = new Set())).add(l.partId);
-      });
-    });
-    const unassigned = new Set(partIdsByBrand[STOCK_UNASSIGNED] || []);
-    stockRows.forEach((r) => { if (!usedPartIds.has(r.id)) unassigned.add(r.id); });
-    const list = brands.map((b) => ({ id: b.id, name: b.name, partIds: partIdsByBrand[b.id] || new Set() }));
-    list.push({ id: STOCK_UNASSIGNED, name: "Unassigned / other", partIds: unassigned });
-    return list;
-  }, [brands, jobTypes, stockRows]);
+  const sections = useMemo(() => computeBrandSections(brands, jobTypes, stockRows.map((r) => r.id)), [brands, jobTypes, stockRows]);
 
   const addBrandClick = () => { const name = prompt("New brand name:"); if (!name || !name.trim()) return; addBrand(name.trim()); };
   const renameBrandClick = (section) => { const name = prompt("Rename brand:", section.name); if (!name || !name.trim()) return; renameBrand(section.id, name.trim()); };
@@ -3142,12 +3334,15 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         {sections.map((section) => {
           const rows = stockRows.filter((r) => section.partIds.has(r.id));
           const brandOpen = expandedBrands.has(section.id);
+          // A red brand name is a quick "something in here needs ordering"
+          // signal without having to open every section to check.
+          const hasShortage = rows.some((r) => r.needsOrder);
           return (
             <div key={section.id} className="wb-panel" style={{ padding: 12 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => toggleBrand(section.id)}>
                   <ChevronDown size={14} style={{ transform: brandOpen ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.1s", color: "var(--muted)" }} />
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>{section.name}</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: hasShortage ? "var(--red)" : undefined }}>{section.name}</div>
                   <span style={{ fontSize: 11, color: "var(--muted)" }}>({rows.length} part{rows.length === 1 ? "" : "s"})</span>
                 </div>
                 {section.id !== STOCK_UNASSIGNED && (
@@ -3626,6 +3821,11 @@ function SettingsTab({ settings, updateSettingsField }) {
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Monthly target</div>
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Gross invoice sales target per month — shown as progress on the Profitability tab.</div>
         <div><label className="wb-label">Target £ per month</label><input type="number" step="100" className="wb-input" style={{ maxWidth: 160 }} value={settings.monthlyTarget} onChange={(e) => updateSettingsField({ monthlyTarget: parseFloat(e.target.value) || 0 })} /></div>
+      </div>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Non-productives cost</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Monthly cost of non-productive time — shown as a deduction against gross profit on the Profitability tab.</div>
+        <div><label className="wb-label">£ per month</label><input type="number" step="100" className="wb-input" style={{ maxWidth: 160 }} value={settings.nonProductivesCost} onChange={(e) => updateSettingsField({ nonProductivesCost: parseFloat(e.target.value) || 0 })} /></div>
       </div>
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Transport companies</div>
