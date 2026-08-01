@@ -1945,6 +1945,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
                 </div>
+                {b.vehicleModel && (
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#38bdf8", marginTop: 6 }}>
+                    {b.vehicleModel}
+                  </div>
+                )}
                 <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>
                   {jt?.name || "—"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
                 </div>
