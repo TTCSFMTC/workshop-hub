@@ -21,6 +21,7 @@ const fmtDate = (iso) => {
 export default function PublicBooking() {
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [availability, setAvailability] = useState({});
+  const [dayCaps, setDayCaps] = useState({}); // per-date cap, shrunk when a technician's on holiday
   const [jobTypes, setJobTypes] = useState([]);
   const [selectedDay, setSelectedDay] = useState(null);
   const [form, setForm] = useState({ name: "", address: "", phone: "", reg: "", business: BUSINESSES[0], requirements: [] });
@@ -42,9 +43,11 @@ export default function PublicBooking() {
     const end = `${year}-${String(month + 1).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
     fetch(`/api/public/availability?start=${start}&end=${end}`)
       .then((r) => r.json())
-      .then((d) => setAvailability(d.counts || {}))
-      .catch(() => setAvailability({}));
+      .then((d) => { setAvailability(d.counts || {}); setDayCaps(d.caps || {}); })
+      .catch(() => { setAvailability({}); setDayCaps({}); });
   }, [year, month, daysInMonth]);
+
+  const capFor = (iso) => dayCaps[iso] ?? DAILY_CAP;
 
   const toggleRequirement = (name) => {
     setForm((f) => ({
@@ -60,7 +63,7 @@ export default function PublicBooking() {
   const minBookableISO = addDaysISO(todayISO(), MIN_NOTICE_DAYS);
 
   const openDay = (iso, count) => {
-    if (count >= DAILY_CAP || iso < minBookableISO) return;
+    if (count >= capFor(iso) || iso < minBookableISO) return;
     setSelectedDay(iso);
     setResult(null);
   };
@@ -80,7 +83,7 @@ export default function PublicBooking() {
       const data = await res.json();
       if (!res.ok) {
         setResult({ error: data.error || "Something went wrong.", offerContact: !!data.offerContact });
-        setAvailability((a) => ({ ...a, [selectedDay]: DAILY_CAP })); // reflect it's now full
+        setAvailability((a) => ({ ...a, [selectedDay]: capFor(selectedDay) })); // reflect it's now full
       } else {
         setResult({ ok: true });
         setForm({ name: "", address: "", phone: "", reg: "", business: BUSINESSES[0], requirements: [] });
@@ -131,13 +134,14 @@ export default function PublicBooking() {
               if (!d) return <div key={i} style={{ visibility: "hidden" }} />;
               const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
               const count = availability[iso] || 0;
-              const isFull = count >= DAILY_CAP;
+              const dayCap = capFor(iso);
+              const isFull = count >= dayCap;
               const isPast = iso < todayISO();
               const isTooSoon = !isPast && iso < minBookableISO;
               return (
                 <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast || isTooSoon ? "past" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
                   <div className="pb-daynum">{d}</div>
-                  <div className={`pb-slots ${isFull ? "full" : ""}`}>{isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : `${count}/${DAILY_CAP} booked`}</div>
+                  <div className={`pb-slots ${isFull ? "full" : ""}`}>{isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : `${count}/${dayCap} booked`}</div>
                 </div>
               );
             })}

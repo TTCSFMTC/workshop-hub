@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { BUSINESSES } from "@/lib/constants";
 import { sendBookingRequestNotification } from "@/lib/resend";
+import { techsOffOn, capForTechsOff } from "@/lib/bookingCapacity";
 
 const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
@@ -60,8 +61,20 @@ export async function POST(request) {
   };
 
   try {
+    // A holiday shrinks (or zeroes out) what a day can actually take —
+    // computed fresh each submission rather than office having to remember
+    // to block dates manually whenever someone books time off.
+    const techsOff = await techsOffOn(date);
+    const effectiveCap = capForTechsOff(techsOff.length, DAILY_CAP);
+    if (effectiveCap === 0) {
+      return NextResponse.json(
+        { error: "We're short-staffed that day — please pick another, or get in touch if it's urgent.", offerContact: true },
+        { status: 409 }
+      );
+    }
+
     const before = await countForDate();
-    if (before >= DAILY_CAP) {
+    if (before >= effectiveCap) {
       return NextResponse.json({ error: "That day is fully booked — please pick another.", offerContact: true }, { status: 409 });
     }
 
@@ -75,7 +88,7 @@ export async function POST(request) {
     // Re-check after inserting to catch a simultaneous submission that also
     // slipped past the first check — whichever request loses gets rolled back.
     const after = await countForDate();
-    if (after > DAILY_CAP) {
+    if (after > effectiveCap) {
       await supabaseAdmin.from("booking_requests").delete().eq("id", data.id);
       return NextResponse.json({ error: "That day just filled up — please pick another.", offerContact: true }, { status: 409 });
     }

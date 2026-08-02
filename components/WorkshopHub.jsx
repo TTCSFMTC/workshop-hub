@@ -1355,7 +1355,7 @@ function OfficeMode({
         )}
         {tab === "requests" && (
           <BookingRequestsTab
-            requests={bookingRequests} jobTypes={jobTypes} bookings={bookings}
+            requests={bookingRequests} jobTypes={jobTypes} bookings={bookings} holidays={holidays}
             onAccept={(req) => setAcceptingRequest(req)}
             onDecline={(req) => { if (confirm(`Decline the request from ${req.name}?`)) declineRequest(req.id); }}
             onRefresh={refreshBookingRequests}
@@ -3988,7 +3988,7 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 // office want to accept it". A request whose requirements mention a chain
 // job and lands within 2 days of another chain job's span gets a warning
 // badge, since that's the one case worth a closer look even within capacity.
-function BookingRequestsTab({ requests, jobTypes, bookings, onAccept, onDecline, onRefresh }) {
+function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, onDecline, onRefresh }) {
   const overlapsChainJob = (req) => {
     const isChainRequest = (req.requirements || []).some((r) => r.toLowerCase().includes("chain"));
     if (!isChainRequest) return false;
@@ -3998,6 +3998,21 @@ function BookingRequestsTab({ requests, jobTypes, bookings, onAccept, onDecline,
       if (!isTimingChainReplacement(jt) && !extraJts.some(isTimingChainReplacement)) return false;
       return bookingDates(b).some((d) => req.date >= addDaysISO(d, -2) && req.date <= addDaysISO(d, 2));
     });
+  };
+
+  // Both technicians off already stops the request ever reaching this list
+  // (the public form refuses it outright — see /api/public/book) — so in
+  // practice this only ever fires for the one-off case, cutting that day's
+  // capacity to 2 rather than blocking it, worth a closer look.
+  const TECHS = ["Ernesto", "Ervin"];
+  const techsOffFor = (req) => {
+    const off = new Set();
+    holidays.forEach((h) => {
+      if (req.date >= h.dateFrom && req.date <= h.dateTo) {
+        TECHS.forEach((t) => { if (h.name.toLowerCase().includes(t.toLowerCase())) off.add(t); });
+      }
+    });
+    return [...off];
   };
 
   return (
@@ -4016,7 +4031,9 @@ function BookingRequestsTab({ requests, jobTypes, bookings, onAccept, onDecline,
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {requests.map((req) => {
-          const warn = overlapsChainJob(req);
+          const chainWarn = overlapsChainJob(req);
+          const techsOff = techsOffFor(req);
+          const warn = chainWarn || techsOff.length > 0;
           return (
             <div key={req.id} className="wb-panel" style={{ padding: 12, ...(warn ? { borderColor: "var(--red)" } : {}) }}>
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -4024,11 +4041,18 @@ function BookingRequestsTab({ requests, jobTypes, bookings, onAccept, onDecline,
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{req.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>— {req.business}</span></div>
                   <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{fmtDate(req.date)}</div>
                 </div>
-                {warn && (
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <AlertTriangle size={12} /> Close to another chain job
-                  </div>
-                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                  {chainWarn && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <AlertTriangle size={12} /> Close to another chain job
+                    </div>
+                  )}
+                  {techsOff.length > 0 && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <AlertTriangle size={12} /> {techsOff.join(" & ")} on holiday that day
+                    </div>
+                  )}
+                </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
                 {req.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{req.phone}</span>}
