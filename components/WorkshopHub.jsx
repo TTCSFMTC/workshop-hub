@@ -9,7 +9,7 @@ import {
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star,
 } from "lucide-react";
 import {
-  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts,
+  fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
   insertBonusRate, updateBonusRate, deleteBonusRate, upsertStaffWage, deleteStaffWage,
@@ -17,7 +17,7 @@ import {
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
-  insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier,
+  insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier, updateStockBatch,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   subscribeTable,
 } from "@/lib/data";
@@ -47,8 +47,18 @@ const THERMOSTAT_MODEL_MAP = {
   "Discovery 5": "p_thermostat_housing_b",
 };
 const VEHICLE_MODELS = Object.keys(THERMOSTAT_MODEL_MAP);
+const PAYMENT_METHODS = ["Cash", "Debit Card", "Bank Transfer"];
 const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
+// Forces a real reason before a stock correction or order change goes
+// through — an empty answer just re-prompts rather than being accepted as
+// blank, and cancelling out of the prompt aborts the whole action (so the
+// change never happens without a reason logged, not just skips the log).
+const promptReason = (question) => {
+  let reason = window.prompt(question);
+  while (reason !== null && !reason.trim()) reason = window.prompt(`${question}\n(An answer is required — Cancel instead if you don't want to make this change.)`);
+  return reason === null ? null : reason.trim();
+};
 const fmtDate = (iso) => {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
@@ -469,6 +479,7 @@ export default function WorkshopHub() {
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
   const [fixedCosts, setFixedCosts] = useState([]);
+  const [auditLog, setAuditLog] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -496,6 +507,7 @@ export default function WorkshopHub() {
         setBonusRates(d.bonusRates);
         setStaffWages(d.staffWages);
         setFixedCosts(d.fixedCosts);
+        setAuditLog(d.auditLog);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
@@ -525,6 +537,7 @@ export default function WorkshopHub() {
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
+      subscribeTable("audit_log", async () => setAuditLog(await fetchAuditLog())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
     ];
     return () => unsubs.forEach((u) => u());
@@ -880,6 +893,21 @@ export default function WorkshopHub() {
     await deleteStockBatch(batchId);
   });
 
+  // Corrects a pending order still awaiting delivery — wrong qty/price typed
+  // in, supplier came back with a different price, or there genuinely wasn't
+  // enough in stock to justify the original quantity. Only touches orders
+  // that haven't been delivered yet (see updateStockBatch in lib/data).
+  const amendOrder = (batchId, fields) => withSaveState(async () => {
+    setStockBatches((prev) => prev.map((b) => (b.id === batchId ? { ...b, ...(fields.qty !== undefined ? { qtyOrdered: fields.qty, qtyRemaining: fields.qty } : {}), ...(fields.price !== undefined ? { price: fields.price } : {}), ...(fields.supplier !== undefined ? { supplier: fields.supplier } : {}), ...(fields.dueDate !== undefined ? { dueDate: fields.dueDate } : {}) } : b)));
+    await updateStockBatch(batchId, fields);
+  });
+
+  const addAuditLog = (summary, reason) => withSaveState(async () => {
+    const entry = { id: uid("al"), summary, reason, createdAt: new Date().toISOString() };
+    setAuditLog((prev) => [entry, ...prev]);
+    await insertAuditLog(entry);
+  });
+
   const updatePartField = (partId, patch) => withSaveState(async () => {
     setRawParts((prev) => prev.map((p) => (p.id === partId ? { ...p, ...patch } : p)));
     await updatePart(partId, patch);
@@ -1195,9 +1223,10 @@ export default function WorkshopHub() {
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
-          stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
+          stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
           priceHistory={priceHistory} recordPrice={recordPrice}
           updatePriceHistorySupplier={updatePriceHistorySupplierFn} updateStockBatchSupplier={updateStockBatchSupplierFn}
+          auditLog={auditLog} addAuditLog={addAuditLog}
           pendingReorder={pendingReorder} showReorderAlert={showReorderAlert}
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
           partsForecastShortfalls={partsForecastShortfalls} showForecastAlert={showForecastAlert} dismissForecastAlert={dismissForecastAlert}
@@ -1220,9 +1249,10 @@ export default function WorkshopHub() {
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
   bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
-  stockBatches, orderStock, deliverStock, cancelOrder,
+  stockBatches, orderStock, deliverStock, cancelOrder, amendOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   updatePriceHistorySupplier, updateStockBatchSupplier,
+  auditLog, addAuditLog,
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
@@ -1273,7 +1303,7 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1297,8 +1327,9 @@ function OfficeMode({
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
-            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder}
-            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand} />
+            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
+            priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
+            addAuditLog={addAuditLog} />
         )}
         {tab === "suppliers" && (
           <SuppliersTab priceHistory={priceHistory} parts={parts} brands={brands} jobTypes={jobTypes} stockBatches={stockBatches}
@@ -1326,6 +1357,11 @@ function OfficeMode({
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
             />
+          </ProfitabilityGate>
+        )}
+        {tab === "audit" && (
+          <ProfitabilityGate>
+            <AuditLogTab auditLog={auditLog} />
           </ProfitabilityGate>
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
@@ -1953,6 +1989,14 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>
                   {jt?.name || "—"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
                 </div>
+                {b.paymentMethod && (
+                  // Deliberately shown up front, not tucked inside the collapsible
+                  // Job pricing panel — the whole point is that whoever picks up
+                  // payment can see what was agreed without hunting for it.
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--green)", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                    <PoundSterling size={11} /> {b.paymentMethod} agreed
+                  </div>
+                )}
                 {b.days > 1 && (
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
                     {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(addDaysISO(b.date, b.days - 1))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
@@ -2364,6 +2408,19 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
             <button className="wb-btn-ghost" onClick={() => updateBooking(booking.id, STANDARD_TIMING_CHAIN_PRICE)}>Use standard timing chain pricing</button>
           )}
           {needsQuote && <button className="wb-btn-ghost" onClick={draftQuoteEmail}><Mail size={12} /> Draft transport quote request</button>}
+          <div>
+            <label className="wb-label">Payment method (agreed)</label>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {PAYMENT_METHODS.map((m) => (
+                <label key={m} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input
+                    type="checkbox" checked={booking.paymentMethod === m}
+                    onChange={() => updateBooking(booking.id, { paymentMethod: booking.paymentMethod === m ? "" : m })}
+                  /> {m}
+                </label>
+              ))}
+            </div>
+          </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer" }}>
             <input type="checkbox" checked={!!booking.transportRequired} onChange={(e) => updateBooking(booking.id, { transportRequired: e.target.checked })} /> Transport required
           </label>
@@ -3007,7 +3064,24 @@ function FixedCostsSection({ fixedCosts, addFixedCost, updateFixedCost, removeFi
 // with job types in more than one brand now renders once per brand section
 // it belongs to (per the "show it under every brand that uses it" choice),
 // so this markup needs to be instantiable more than once per part.
-function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, deletePartClick }) {
+function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, amendOrder, deletePartClick, addAuditLog }) {
+  const [editingBatchId, setEditingBatchId] = useState(null);
+  const [editDraft, setEditDraft] = useState({});
+  const startEdit = (b) => { setEditingBatchId(b.id); setEditDraft({ qty: b.qtyOrdered, price: b.price, supplier: b.supplier || "" }); };
+  const saveEdit = (b) => {
+    const qty = parseFloat(editDraft.qty), price = parseFloat(editDraft.price);
+    if (!qty || qty <= 0 || !price || price < 0) return;
+    const reason = promptReason(`Why is the order for ${r.name} (${b.qtyOrdered} @ £${b.price.toFixed(2)}) being changed?`);
+    if (reason === null) return;
+    const changes = [];
+    if (qty !== b.qtyOrdered) changes.push(`qty ${b.qtyOrdered}→${qty}`);
+    if (price !== b.price) changes.push(`price £${b.price.toFixed(2)}→£${price.toFixed(2)}`);
+    const supplier = editDraft.supplier.trim();
+    if (supplier !== (b.supplier || "")) changes.push(`supplier ${b.supplier || "—"}→${supplier || "—"}`);
+    amendOrder(b.id, { qty, price, supplier });
+    if (changes.length > 0) addAuditLog(`Order amended: ${r.name} (${changes.join(", ")})`, reason);
+    setEditingBatchId(null);
+  };
   return (
     <React.Fragment>
       <tr style={{ cursor: "pointer" }} onClick={() => onToggle(r.id)}>
@@ -3067,6 +3141,17 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {pendingByPart[r.id].map((b) => {
                       const overdue = b.dueDate && b.dueDate < todayISO();
+                      if (editingBatchId === b.id) {
+                        return (
+                          <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, flexWrap: "wrap" }}>
+                            <input type="number" className="wb-input" style={{ width: 55 }} value={editDraft.qty} onChange={(e) => setEditDraft((prev) => ({ ...prev, qty: e.target.value }))} />
+                            <input type="number" step="0.01" className="wb-input" style={{ width: 70 }} value={editDraft.price} onChange={(e) => setEditDraft((prev) => ({ ...prev, price: e.target.value }))} />
+                            <input type="text" className="wb-input" style={{ width: 100 }} placeholder="Supplier" value={editDraft.supplier} onChange={(e) => setEditDraft((prev) => ({ ...prev, supplier: e.target.value }))} />
+                            <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => saveEdit(b)}>Save</button>
+                            <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => setEditingBatchId(null)}>Cancel</button>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, flexWrap: "wrap" }}>
                           <span className="wh-mono">{b.qtyOrdered} @ £{b.price.toFixed(2)}</span>
@@ -3081,9 +3166,18 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
                           <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => deliverStock(b.id)}>
                             <Truck size={11} style={{ display: "inline", marginRight: 3 }} />Delivered
                           </button>
+                          <button className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap" }} onClick={() => startEdit(b)}>
+                            <PenLine size={11} style={{ display: "inline", marginRight: 3 }} />Amend
+                          </button>
                           <button
                             className="wb-btn-ghost" style={{ padding: "4px 8px", minHeight: 26, fontSize: 11, whiteSpace: "nowrap", color: "var(--red)" }}
-                            onClick={() => { if (confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) cancelOrder(b.id); }}
+                            onClick={() => {
+                              if (!confirm(`Cancel this order for ${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""}? Use this when a supplier can't fulfil it after all.`)) return;
+                              const reason = promptReason(`Why is this order for ${r.name} being cancelled?`);
+                              if (reason === null) return;
+                              cancelOrder(b.id);
+                              addAuditLog(`Order cancelled: ${r.name} (${b.qtyOrdered} @ £${b.price.toFixed(2)}${b.supplier ? ` from ${b.supplier}` : ""})`, reason);
+                            }}
                           >
                             <X size={11} style={{ display: "inline", marginRight: 3 }} />Cancel
                           </button>
@@ -3115,8 +3209,28 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
                 <div className="jc-label" style={{ marginBottom: 4 }}>Correct</div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input type="number" className="wb-input" style={{ width: 60 }} placeholder="qty" value={receiveAmounts[r.id] || ""} onChange={(e) => setReceiveAmounts((prev) => ({ ...prev, [r.id]: e.target.value }))} />
-                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Add</button>
-                  <button className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }} onClick={() => { const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return; receiveStock(r.id, -qty); setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" })); }}>Remove</button>
+                  <button
+                    className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
+                    onClick={() => {
+                      const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return;
+                      const reason = promptReason(`Why are you adding ${qty} ${r.unit} of ${r.name} to stock?`);
+                      if (reason === null) return;
+                      receiveStock(r.id, qty);
+                      addAuditLog(`Stock correction: ${r.name} +${qty}`, reason);
+                      setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" }));
+                    }}
+                  >Add</button>
+                  <button
+                    className="wb-btn-ghost" style={{ padding: "8px 10px", minHeight: 36, whiteSpace: "nowrap" }}
+                    onClick={() => {
+                      const qty = parseFloat(receiveAmounts[r.id]); if (!qty || qty <= 0) return;
+                      const reason = promptReason(`Why are you removing ${qty} ${r.unit} of ${r.name} from stock?`);
+                      if (reason === null) return;
+                      receiveStock(r.id, -qty);
+                      addAuditLog(`Stock correction: ${r.name} -${qty}`, reason);
+                      setReceiveAmounts((prev) => ({ ...prev, [r.id]: "" }));
+                    }}
+                  >Remove</button>
                 </div>
               </div>
               <div>
@@ -3277,7 +3391,7 @@ function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, upd
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [historyPart, setHistoryPart] = useState(null);
@@ -3333,7 +3447,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
     removeBrand(section.id);
   };
 
-  const rowProps = { pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, deletePartClick };
+  const rowProps = { pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, amendOrder, deletePartClick, addAuditLog };
 
   return (
     <div className="wb-panel">
@@ -3819,6 +3933,41 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
   );
 }
 
+// Every stock correction, order amendment, or cancelled order — and the
+// reason given for it — so if a figure looks wrong later there's a record
+// of what changed and why, rather than a silent edit. Read-only here; the
+// entries themselves are written by the actions that trigger them (Stock
+// tab's Correct/Cancel/order-edit controls), each gated on promptReason.
+function AuditLogTab({ auditLog }) {
+  return (
+    <div className="wb-panel">
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+        <History size={16} color="var(--amber)" /> Corrections & deletions
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+        Every stock correction, order amendment, or cancelled order requires a reason — this is the record of what changed and why.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="wb-table">
+          <thead><tr><th>Date</th><th>What changed</th><th>Reason given</th></tr></thead>
+          <tbody>
+            {auditLog.map((a) => (
+              <tr key={a.id}>
+                <td className="wh-mono" style={{ whiteSpace: "nowrap" }}>{new Date(a.createdAt).toLocaleString("en-GB")}</td>
+                <td>{a.summary}</td>
+                <td>{a.reason}</td>
+              </tr>
+            ))}
+            {auditLog.length === 0 && (
+              <tr><td colSpan={3} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No corrections or deletions logged yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({ settings, updateSettingsField }) {
   const updateCompany = (idx, field, val) => { const list = [...settings.transportCompanies]; list[idx] = { ...list[idx], [field]: val }; updateSettingsField({ transportCompanies: list }); };
   const addCompany = () => updateSettingsField({ transportCompanies: [...settings.transportCompanies, { name: "New transport company", email: "" }] });
@@ -3908,6 +4057,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || "");
   const [postcode, setPostcode] = useState(booking?.postcode || "");
   const [distanceMiles, setDistanceMiles] = useState(booking?.distanceMiles ?? null);
+  const [paymentMethod, setPaymentMethod] = useState(booking?.paymentMethod || "");
   // Price per job type on this booking (main + each extra), keyed by job
   // type id — summed into the invoice total below. An existing booking with
   // no breakdown saved yet (from before this existed) falls back to putting
@@ -4081,6 +4231,17 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
             </div>
           </div>
           <div>
+            <label className="wb-label">Payment method (agreed with customer)</label>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              {PAYMENT_METHODS.map((m) => (
+                <label key={m} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={paymentMethod === m} onChange={() => setPaymentMethod(paymentMethod === m ? "" : m)} />
+                  {m}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="wb-label">Extra parts (single items straight from Stock, e.g. one extra gasket)</label>
             {extraParts.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
@@ -4150,6 +4311,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
             customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
             pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
             distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
+            paymentMethod,
             jobValue,
             jobTypePrices: allJobTypeIds.map((id) => ({ jobTypeId: id, price: jobTypePrices[id] || 0 })),
             // Labour/transport stay calendar-tab-only for an existing booking — editing here must never clobber those.
