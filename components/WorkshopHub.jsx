@@ -1268,6 +1268,33 @@ function OfficeMode({
   const [editingBooking, setEditingBooking] = useState(null);
   const [printJob, setPrintJob] = useState(null);
   const [printJobs, setPrintJobs] = useState(null);
+  const [bookingRequests, setBookingRequests] = useState([]);
+  // Set while converting a pending request into a real booking — prefills
+  // NewBookingModal without treating it as an edit, and tells the onSave
+  // handler below which request to mark converted once it's saved.
+  const [acceptingRequest, setAcceptingRequest] = useState(null);
+
+  // Public /book submissions land in booking_requests, not bookings — this
+  // is the one place office actually sees them, since nothing auto-converts
+  // a request into a real booking. Refetched on mount and after every
+  // accept/decline rather than realtime, since this is a low-volume,
+  // session-gated admin table rather than one of the anon-RLS tables the
+  // rest of the app subscribes to.
+  const refreshBookingRequests = () => {
+    fetch("/api/office/booking-requests")
+      .then((r) => r.json())
+      .then((d) => setBookingRequests(d.requests || []))
+      .catch(() => {});
+  };
+  useEffect(() => { refreshBookingRequests(); }, []);
+
+  const declineRequest = (id) => {
+    fetch("/api/office/booking-requests", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, status: "declined" }),
+    }).then(refreshBookingRequests);
+  };
 
   // Jumps to a booking's day on the Calendar tab — shared by the Jobs
   // table and the Profitability tab's outstanding-pricing list, so
@@ -1303,10 +1330,11 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
+            {key === "requests" && bookingRequests.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{bookingRequests.length}</span>}
           </div>
         ))}
       </div>
@@ -1323,6 +1351,14 @@ function OfficeMode({
             bookings={bookings} jobTypes={jobTypes}
             onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
+          />
+        )}
+        {tab === "requests" && (
+          <BookingRequestsTab
+            requests={bookingRequests} jobTypes={jobTypes} bookings={bookings}
+            onAccept={(req) => setAcceptingRequest(req)}
+            onDecline={(req) => { if (confirm(`Decline the request from ${req.name}?`)) declineRequest(req.id); }}
+            onRefresh={refreshBookingRequests}
           />
         )}
         {tab === "stock" && (
@@ -1366,10 +1402,16 @@ function OfficeMode({
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
       </div>
-      {(showNewBooking || editingBooking) && (
+      {(showNewBooking || editingBooking || acceptingRequest) && (
         <NewBookingModal
           jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking}
-          onClose={() => { setShowNewBooking(false); setEditingBooking(null); }}
+          initialValues={acceptingRequest ? {
+            customerName: acceptingRequest.name, phone: acceptingRequest.phone, reg: acceptingRequest.reg,
+            business: acceptingRequest.business, date: acceptingRequest.date, pickupAddress: acceptingRequest.address,
+            symptoms: (acceptingRequest.requirements || []).join(", "),
+            jobTypeId: jobTypes.find((jt) => (acceptingRequest.requirements || []).some((r) => r.toLowerCase() === jt.name.toLowerCase()))?.id,
+          } : undefined}
+          onClose={() => { setShowNewBooking(false); setEditingBooking(null); setAcceptingRequest(null); }}
           onSave={(b) => {
             if (editingBooking) {
               updateBooking(editingBooking.id, b);
@@ -1377,7 +1419,14 @@ function OfficeMode({
               addBooking(b);
               setPrintJob(b);
             }
-            setShowNewBooking(false); setEditingBooking(null); setSelectedDay(b.date);
+            if (acceptingRequest) {
+              fetch("/api/office/booking-requests", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: acceptingRequest.id, status: "converted" }),
+              }).then(refreshBookingRequests);
+            }
+            setShowNewBooking(false); setEditingBooking(null); setAcceptingRequest(null); setSelectedDay(b.date);
           }}
         />
       )}
@@ -3933,6 +3982,76 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
   );
 }
 
+// Requests submitted through the public /book form — the daily cap and
+// week's-notice rule are already enforced before a request ever lands here,
+// so everything visible has passed those checks; this is purely "does
+// office want to accept it". A request whose requirements mention a chain
+// job and lands within 2 days of another chain job's span gets a warning
+// badge, since that's the one case worth a closer look even within capacity.
+function BookingRequestsTab({ requests, jobTypes, bookings, onAccept, onDecline, onRefresh }) {
+  const overlapsChainJob = (req) => {
+    const isChainRequest = (req.requirements || []).some((r) => r.toLowerCase().includes("chain"));
+    if (!isChainRequest) return false;
+    return bookings.some((b) => {
+      const jt = jobTypes.find((j) => j.id === b.jobTypeId);
+      const extraJts = (b.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id));
+      if (!isTimingChainReplacement(jt) && !extraJts.some(isTimingChainReplacement)) return false;
+      return bookingDates(b).some((d) => req.date >= addDaysISO(d, -2) && req.date <= addDaysISO(d, 2));
+    });
+  };
+
+  return (
+    <div className="wb-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+          <Inbox size={16} color="var(--amber)" /> Booking requests
+        </div>
+        <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: "auto" }} onClick={onRefresh}>Refresh</button>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+        Submitted through the public booking page — accept to add it to the diary as a real booking, or decline it.
+      </div>
+      {requests.length === 0 && (
+        <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "30px 0" }}>No pending requests.</div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {requests.map((req) => {
+          const warn = overlapsChainJob(req);
+          return (
+            <div key={req.id} className="wb-panel" style={{ padding: 12, ...(warn ? { borderColor: "var(--red)" } : {}) }}>
+              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>{req.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>— {req.business}</span></div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{fmtDate(req.date)}</div>
+                </div>
+                {warn && (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4 }}>
+                    <AlertTriangle size={12} /> Close to another chain job
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                {req.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{req.phone}</span>}
+                {req.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{req.reg}</span>}
+                {req.address && <span><MapPin size={10} style={{ display: "inline", marginRight: 4 }} />{req.address}</span>}
+              </div>
+              {(req.requirements || []).length > 0 && (
+                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {req.requirements.map((r) => <span key={r} className="wb-chip" style={{ marginTop: 0 }}>{r}</span>)}
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="wb-btn" style={{ padding: "8px 14px", minHeight: "auto" }} onClick={() => onAccept(req)}>Accept</button>
+                <button className="wb-btn-ghost" style={{ padding: "8px 14px", minHeight: "auto", color: "var(--red)" }} onClick={() => onDecline(req)}>Decline</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Every stock correction, order amendment, or cancelled order — and the
 // reason given for it — so if a figure looks wrong later there's a record
 // of what changed and why, rather than a silent edit. Read-only here; the
@@ -4021,16 +4140,20 @@ function SettingsTab({ settings, updateSettingsField }) {
   );
 }
 
-function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, onClose, onSave }) {
+// initialValues prefills a brand-new booking (e.g. from an accepted public
+// booking request) without treating it as an edit of an existing one — kept
+// separate from `booking` so onSave/the "Save changes" vs "Save booking"
+// label still key off whether this is a genuine edit.
+function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, initialValues, onClose, onSave }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const [pasteText, setPasteText] = useState("");
-  const [customerName, setCustomerName] = useState(booking?.customerName || "");
-  const [phone, setPhone] = useState(booking?.phone || "");
+  const [customerName, setCustomerName] = useState(booking?.customerName || initialValues?.customerName || "");
+  const [phone, setPhone] = useState(booking?.phone || initialValues?.phone || "");
   const [email, setEmail] = useState(booking?.email || "");
-  const [reg, setReg] = useState(booking?.reg || "");
-  const [symptoms, setSymptoms] = useState(booking?.symptoms || "");
-  const [business, setBusiness] = useState(booking?.business || BUSINESSES[0]);
-  const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || jobTypes[0]?.id || "");
+  const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
+  const [symptoms, setSymptoms] = useState(booking?.symptoms || initialValues?.symptoms || "");
+  const [business, setBusiness] = useState(booking?.business || initialValues?.business || BUSINESSES[0]);
+  const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || initialValues?.jobTypeId || jobTypes[0]?.id || "");
   const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [extraParts, setExtraParts] = useState(booking?.extraParts || []);
   const [bomQtyOverrides, setBomQtyOverrides] = useState(booking?.bomQtyOverrides || []);
@@ -4047,14 +4170,14 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [vehicleMakeOther, setVehicleMakeOther] = useState(matchedBrand ? "" : guessedVehicle.make);
   const [vehicleModelText, setVehicleModelText] = useState(guessedVehicle.model);
   const vehicleModel = [vehicleMake === "Other" ? vehicleMakeOther.trim() : vehicleMake, vehicleModelText.trim()].filter(Boolean).join(" ").trim();
-  const [date, setDate] = useState(booking?.date || defaultDate);
+  const [date, setDate] = useState(booking?.date || initialValues?.date || defaultDate);
   const [days, setDays] = useState(booking?.days || 1);
   // Once staff manually type a days figure, the auto-default below stops
   // touching it — otherwise picking a second job type after correcting the
   // first would silently overwrite their correction.
   const [daysTouched, setDaysTouched] = useState(false);
   const [pickupRequired, setPickupRequired] = useState(booking?.pickupRequired || false);
-  const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || "");
+  const [pickupAddress, setPickupAddress] = useState(booking?.pickupAddress || initialValues?.pickupAddress || "");
   const [postcode, setPostcode] = useState(booking?.postcode || "");
   const [distanceMiles, setDistanceMiles] = useState(booking?.distanceMiles ?? null);
   const [paymentMethod, setPaymentMethod] = useState(booking?.paymentMethod || "");
