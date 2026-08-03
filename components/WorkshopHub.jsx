@@ -6,7 +6,7 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download,
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
@@ -1190,12 +1190,18 @@ export default function WorkshopHub() {
         .req-banner.ok { background:#10281a; border-color:#1f4530; color: var(--green); }
         .print-job-card { display: none; }
         .print-job-cards { display: none; }
+        .print-still-to-finish { display: none; }
+        .print-outstanding-parts { display: none; }
         @media print {
           body * { visibility: hidden; }
           .print-job-card, .print-job-card *,
-          .print-job-cards, .print-job-cards * { visibility: visible; }
+          .print-job-cards, .print-job-cards *,
+          .print-still-to-finish, .print-still-to-finish *,
+          .print-outstanding-parts, .print-outstanding-parts * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-still-to-finish { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-outstanding-parts { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
@@ -1275,6 +1281,8 @@ function OfficeMode({
   const [editingBooking, setEditingBooking] = useState(null);
   const [printJob, setPrintJob] = useState(null);
   const [printJobs, setPrintJobs] = useState(null);
+  const [printStillToFinish, setPrintStillToFinish] = useState(false);
+  const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [bookingRequests, setBookingRequests] = useState([]);
   // Set while converting a pending request into a real booking — prefills
   // NewBookingModal without treating it as an edit, and tells the onSave
@@ -1334,6 +1342,24 @@ function OfficeMode({
     return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
   }, [printJobs]);
 
+  // Same pattern again, for the daily "jobs still to finish" sheet.
+  useEffect(() => {
+    if (!printStillToFinish) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintStillToFinish(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printStillToFinish]);
+
+  // Same pattern again, for the daily "outstanding parts" sheet.
+  useEffect(() => {
+    if (!printOutstandingParts) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintOutstandingParts(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printOutstandingParts]);
+
   return (
     <div>
       <div className="wb-tabs">
@@ -1358,6 +1384,7 @@ function OfficeMode({
             bookings={bookings} jobTypes={jobTypes}
             onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
+            onPrintStillToFinish={() => setPrintStillToFinish(true)}
           />
         )}
         {tab === "requests" && (
@@ -1372,7 +1399,7 @@ function OfficeMode({
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
-            addAuditLog={addAuditLog} />
+            addAuditLog={addAuditLog} onPrintOutstandingParts={() => setPrintOutstandingParts(true)} />
         )}
         {tab === "suppliers" && (
           <SuppliersTab priceHistory={priceHistory} parts={parts} brands={brands} jobTypes={jobTypes} stockBatches={stockBatches}
@@ -1443,6 +1470,8 @@ function OfficeMode({
       )}
       {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} />}
       {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} />}
+      {printStillToFinish && <JobsStillToFinishPrintout rows={stillToFinishRows(bookings, jobTypes)} />}
+      {printOutstandingParts && <OutstandingPartsPrintout rows={outstandingPartsRows(stockBatches, parts)} />}
       {showReorderAlert && pendingReorder.length > 0 && (
         <ReorderAlertModal
           items={pendingReorder}
@@ -1539,6 +1568,80 @@ function JobCardsPrintout({ bookings, jobTypes }) {
           <JobCardBody booking={b} jobTypes={jobTypes} />
         </div>
       ))}
+    </div>
+  );
+}
+
+// A single sheet listing every job still outstanding, oldest first —
+// printed each morning and worked through top to bottom, rather than one
+// card per booking like JobCardsPrintout above.
+const STF_COLS = ["Booked in", "Required by", "Customer", "Reg", "Vehicle", "Business", "Job type", "Status"];
+const STF_KEYS = ["dateLabel", "requiredByLabel", "customerName", "reg", "vehicleModel", "business", "jobTypeLabel", "status"];
+function JobsStillToFinishPrintout({ rows }) {
+  return (
+    <div className="print-still-to-finish">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Jobs still to finish</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>Printed {new Date().toLocaleString("en-GB")} — oldest first</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>
+              {STF_COLS.map((h) => (
+                <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                {STF_KEYS.map((k) => (
+                  <td key={k} style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{r[k]}</td>
+                ))}
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={STF_COLS.length} style={{ padding: "10px 8px", color: "#555" }}>Nothing outstanding — every booked job is workshop completed.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Same pattern again, for stock orders placed but not yet delivered.
+const OP_COLS = ["Part", "Qty", "Price", "Supplier", "Ordered", "Due"];
+const OP_KEYS = ["partName", "qty", "price", "supplier", "orderedLabel", "dueLabel"];
+function OutstandingPartsPrintout({ rows }) {
+  return (
+    <div className="print-outstanding-parts">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Outstanding parts</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>Printed {new Date().toLocaleString("en-GB")} — soonest due first</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>
+              {OP_COLS.map((h) => (
+                <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                {OP_KEYS.map((k) => (
+                  <td key={k} style={{ padding: "5px 8px", borderBottom: "1px solid #ccc", color: k === "dueLabel" && r.overdue ? "#b3261e" : "#000", fontWeight: k === "dueLabel" && r.overdue ? 700 : 400 }}>
+                    {r[k]}{k === "dueLabel" && r.overdue ? " (overdue)" : ""}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={OP_COLS.length} style={{ padding: "10px 8px", color: "#555" }}>Nothing on order — everything's been delivered.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1780,6 +1883,62 @@ function bookingStatus(b) {
   if (b.workshopCompleted) return { color: "#ffb84d", label: "Workshop completed" };
   if (b.arrived) return { color: "var(--red)", label: "Arrived" };
   return { color: null, label: "Not started" };
+}
+
+// Everything the workshop still has physically outstanding — same "not
+// workshop completed, not collected" cutoff used for capacity elsewhere
+// (see realBookingCountForDate), since a job only waiting on collection
+// isn't work still to do. Oldest booking date first, so the most overdue
+// job is what a technician picks up first from the printed/PDF list.
+function stillToFinishRows(bookings, jobTypes) {
+  const jtIndex = Object.fromEntries(jobTypes.map((j) => [j.id, j.name]));
+  return bookings
+    .filter((b) => !b.workshopCompleted && !b.completed && b.date)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((b) => {
+      const jt = jtIndex[b.jobTypeId];
+      const extraNames = (b.extraJobTypeIds || []).map((id) => jtIndex[id]).filter(Boolean);
+      const jobTypeLabel = [jt, ...extraNames].filter(Boolean).join(" + ") || "—";
+      const requiredBy = addDaysISO(b.date, (b.days || 1) - 1);
+      return {
+        id: b.id,
+        dateLabel: fmtDate(b.date),
+        requiredByLabel: fmtDate(requiredBy),
+        customerName: b.customerName || "Unnamed",
+        reg: b.reg || "—",
+        vehicleModel: b.vehicleModel || "",
+        business: b.business || "",
+        jobTypeLabel,
+        status: b.arrived ? "Arrived" : "Not started",
+      };
+    });
+}
+
+// Every stock order placed but not yet delivered, with its supplier — so
+// office can see in one place what's still owed and by when. Soonest due
+// date first (an overdue one is already in the past, so it naturally sorts
+// to the top); orders with no due date set sort to the very end instead of
+// jumping the queue.
+function outstandingPartsRows(stockBatches, parts) {
+  const partIndex = Object.fromEntries(parts.map((p) => [p.id, p.name]));
+  return stockBatches
+    .filter((b) => b.status === "ordered")
+    .sort((a, b) => {
+      const ad = a.dueDate || "9999-12-31";
+      const bd = b.dueDate || "9999-12-31";
+      if (ad !== bd) return ad < bd ? -1 : 1;
+      return a.orderedAt < b.orderedAt ? -1 : a.orderedAt > b.orderedAt ? 1 : 0;
+    })
+    .map((b) => ({
+      id: b.id,
+      partName: partIndex[b.partId] || "Unknown part",
+      qty: b.qtyRemaining,
+      price: `£${Number(b.price).toFixed(2)}`,
+      supplier: b.supplier || "—",
+      orderedLabel: fmtDate(b.orderedAt.slice(0, 10)),
+      dueLabel: b.dueDate ? fmtDate(b.dueDate) : "—",
+      overdue: !!(b.dueDate && b.dueDate < todayISO()),
+    }));
 }
 
 // The legal/evidence record captured with the customer present at
@@ -2108,8 +2267,9 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
 // see what's in, what's done, and what's ready to collect. Hides collected
 // jobs by default — those are done and out the door — but they're a tick
 // away.
-function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected }) {
+function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPrintStillToFinish }) {
   const [showCollected, setShowCollected] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   // Which rows are ticked for a bulk reprint — e.g. tick every car
   // currently "Arrived" top to bottom, then print the lot in one go
   // instead of opening and printing each booking one at a time.
@@ -2133,14 +2293,46 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected }) {
     setSelected(new Set());
   };
 
+  // Downloads a PDF of every outstanding job (oldest first) — separate from
+  // the print button, which sends the same sheet to the reception printer
+  // instead of a file that can be forwarded to a technician directly.
+  const downloadStillToFinishPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      const stfRows = stillToFinishRows(bookings, jobTypes);
+      const res = await fetch("/api/office/jobs-still-to-finish-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: stfRows, generatedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) { alert("Failed to generate the PDF."); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `jobs-still-to-finish-${todayISO()}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Failed to generate the PDF — check your connection and try again.");
+    }
+    setDownloadingPdf(false);
+  };
+
   return (
     <div className="wb-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 15 }}>Jobs</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={showCollected} onChange={(e) => setShowCollected(e.target.checked)} /> Show collected
           </label>
+          <button className="wb-btn-ghost" onClick={onPrintStillToFinish} title="Print every outstanding job, oldest first">
+            <Printer size={13} /> Print daily list
+          </button>
+          <button className="wb-btn-ghost" disabled={downloadingPdf} style={downloadingPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadStillToFinishPdf} title="Download the same list as a PDF to send to the guys">
+            <Download size={13} /> {downloadingPdf ? "Generating…" : "Download PDF"}
+          </button>
           <button className="wb-btn" disabled={selected.size === 0} style={selected.size === 0 ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={printSelected}>
             <Printer size={13} /> Print selected{selected.size > 0 ? ` (${selected.size})` : ""}
           </button>
@@ -3451,9 +3643,10 @@ function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, upd
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
+  const [downloadingPartsPdf, setDownloadingPartsPdf] = useState(false);
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set()); // per-part rows, shared across brand sections
@@ -3494,6 +3687,32 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
     XLSX.writeFile(workbook, `price-history-${todayISO()}.xlsx`);
   };
 
+  // Downloads a PDF of every part on order but not yet delivered, soonest
+  // due first — same list the print button sends to the reception printer,
+  // just as a file that can be forwarded to a supplier or a technician.
+  const downloadOutstandingPartsPdf = async () => {
+    setDownloadingPartsPdf(true);
+    try {
+      const opRows = outstandingPartsRows(stockBatches, stockRows);
+      const res = await fetch("/api/office/outstanding-parts-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: opRows, generatedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) { alert("Failed to generate the PDF."); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `outstanding-parts-${todayISO()}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Failed to generate the PDF — check your connection and try again.");
+    }
+    setDownloadingPartsPdf(false);
+  };
+
   const sections = useMemo(() => computeBrandSections(brands, jobTypes, stockRows.map((r) => r.id)), [brands, jobTypes, stockRows]);
 
   const addBrandClick = () => { const name = prompt("New brand name:"); if (!name || !name.trim()) return; addBrand(name.trim()); };
@@ -3514,6 +3733,8 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Stock levels</div>
         <div style={{ fontSize: 11, color: "var(--muted)" }}>Usage from last 28 days · flags when cover &lt; {REORDER_WEEKS} week</div>
+        <button className="wb-btn-ghost" onClick={onPrintOutstandingParts} title="Print every part on order, soonest due first"><Printer size={13} /> Print outstanding parts</button>
+        <button className="wb-btn-ghost" disabled={downloadingPartsPdf} style={downloadingPartsPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadOutstandingPartsPdf} title="Download the same list as a PDF"><Download size={13} /> {downloadingPartsPdf ? "Generating…" : "Download PDF"}</button>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
       </div>
