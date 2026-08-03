@@ -74,7 +74,11 @@ export default function PublicBooking() {
   const minBookableISO = addDaysISO(todayISO(), MIN_NOTICE_DAYS);
 
   const openDay = (iso, count) => {
-    if (count >= capFor(iso) || iso < minBookableISO) return;
+    // Days inside the notice window are still selectable (previously blocked
+    // outright) — picking one just shows a nudge toward Emergency/calling
+    // instead of silently refusing the click. Full/closed days stay blocked
+    // since there's genuinely no room.
+    if (count >= capFor(iso) || iso < todayISO()) return;
     setSelectedDay(iso);
     setResult(null);
   };
@@ -146,6 +150,24 @@ export default function PublicBooking() {
     </>
   );
 
+  // Shown when the customer picks a date inside the notice window — they can
+  // still fill the form in and try (the server has the final say and offers
+  // the same call/WhatsApp escape hatch if it's genuinely too soon), but this
+  // steers them toward Emergency or a direct call up front instead of just
+  // silently blocking the day like before.
+  const EmergencyNudge = () => (
+    <div className="pb-panel" style={{ borderColor: "var(--amber)", background: "#2a2210", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, color: "var(--amber2)" }}>
+        <AlertTriangle size={16} /> That's a bit soon for a standard booking
+      </div>
+      <div style={{ fontSize: 13 }}>
+        We do have emergency appointments — please fill in the booking below or call us on{" "}
+        <a href={`tel:${CONTACT_PHONE}`} style={{ color: "var(--amber2)" }}>{CONTACT_PHONE}</a>.
+      </div>
+      <ContactEscapeHatch />
+    </div>
+  );
+
   const ResultAndSubmit = () => (
     <>
       {result?.error && <div style={{ color: "var(--red)", fontSize: 13 }}>{result.error}</div>}
@@ -177,9 +199,9 @@ export default function PublicBooking() {
           const statusClass = isFull ? "full" : count > 0 ? "amber" : "green";
           const statusLabel = isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : count > 0 ? "Some availability" : "Availability";
           return (
-            <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast || isTooSoon ? "past" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
+            <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast ? "past" : ""} ${isTooSoon ? "soon" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
               <div className="pb-daynum">{d}</div>
-              <div className={`pb-slots ${isPast || isTooSoon ? "" : statusClass}`}>{statusLabel}</div>
+              <div className={`pb-slots ${isPast ? "" : isTooSoon ? "soon" : statusClass}`}>{statusLabel}</div>
             </div>
           );
         })}
@@ -197,12 +219,14 @@ export default function PublicBooking() {
         .pb-day { min-height:56px; border:1px solid var(--line); border-radius:6px; padding:6px; cursor:pointer; display:flex; flex-direction:column; gap:4px; }
         .pb-day.full { opacity: 0.4; cursor: not-allowed; }
         .pb-day.past { opacity: 0.25; cursor: not-allowed; }
+        .pb-day.soon { border-style: dashed; }
         .pb-day.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
         .pb-daynum { font-size:12px; font-weight:600; color: var(--muted); }
         .pb-slots { font-size:10px; }
         .pb-slots.green { color: var(--green); }
         .pb-slots.amber { color: var(--amber2); }
         .pb-slots.full { color: var(--red); }
+        .pb-slots.soon { color: var(--muted); }
         .pb-input, .pb-textarea { width:100%; background: var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:12px; font-size:16px; font-family:inherit; }
         .pb-label { font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:5px; display:block; font-weight:600; }
         .pb-check { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:8px; border:1px solid var(--line); background: var(--panel2); cursor:pointer; font-size:14px; }
@@ -250,6 +274,7 @@ export default function PublicBooking() {
         {path === "standard" && (
           <>
             <Calendar />
+            {selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
             {selectedDay && (
               <div className="pb-panel">
                 <div style={{ fontWeight: 700, marginBottom: 14 }}>Booking for {fmtDate(selectedDay)}</div>
@@ -283,6 +308,7 @@ export default function PublicBooking() {
         {path === "other" && (
           <>
             <Calendar />
+            {selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
             {selectedDay && (
               <div className="pb-panel">
                 <div style={{ fontWeight: 700, marginBottom: 14 }}>Booking for {fmtDate(selectedDay)}</div>
