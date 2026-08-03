@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { BUSINESSES } from "@/lib/constants";
 import { sendBookingRequestNotification } from "@/lib/resend";
-import { techsOffOn, capForTechsOff } from "@/lib/bookingCapacity";
+import { techsOffOn, capForTechsOff, realBookingCountForDate } from "@/lib/bookingCapacity";
 
 const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
@@ -92,6 +92,10 @@ export async function POST(request) {
     );
   }
 
+  // Real bookings already on the diary (taken via the office New Booking
+  // form) count toward the same capacity as public requests — otherwise
+  // this check could let a day already full of real jobs accept another
+  // request anyway.
   const countForDate = async () => {
     const { count, error } = await supabaseAdmin
       .from("booking_requests")
@@ -99,7 +103,8 @@ export async function POST(request) {
       .eq("date", date)
       .neq("status", "declined");
     if (error) throw error;
-    return count;
+    const realCount = await realBookingCountForDate(date);
+    return (count || 0) + realCount;
   };
 
   try {

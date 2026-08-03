@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { capForTechsOff } from "@/lib/bookingCapacity";
+import { capForTechsOff, realBookingCountsByDate } from "@/lib/bookingCapacity";
 
 const DAILY_CAP = 3;
 
@@ -12,21 +12,28 @@ export async function GET(request) {
     return NextResponse.json({ error: "start and end are required (YYYY-MM-DD)" }, { status: 400 });
   }
 
-  const [{ data, error }, { data: holidayRows, error: holidayError }] = await Promise.all([
-    supabaseAdmin.rpc("public_booking_counts", { from_date: start, to_date: end }),
-    supabaseAdmin.from("holidays").select("name, date_from, date_to").lte("date_from", end).gte("date_to", start),
-  ]);
-  if (error) {
-    console.error("availability rpc failed", error);
-    return NextResponse.json({ error: "Failed to load availability" }, { status: 500 });
-  }
-  if (holidayError) {
-    console.error("availability holiday lookup failed", holidayError);
+  let requestCounts, holidayRows, realCounts;
+  try {
+    const [{ data, error }, { data: holidayData, error: holidayError }, realBookingCounts] = await Promise.all([
+      supabaseAdmin.rpc("public_booking_counts", { from_date: start, to_date: end }),
+      supabaseAdmin.from("holidays").select("name, date_from, date_to").lte("date_from", end).gte("date_to", start),
+      realBookingCountsByDate(start, end),
+    ]);
+    if (error) throw error;
+    if (holidayError) throw holidayError;
+    requestCounts = data;
+    holidayRows = holidayData;
+    realCounts = realBookingCounts;
+  } catch (e) {
+    console.error("availability lookup failed", e);
     return NextResponse.json({ error: "Failed to load availability" }, { status: 500 });
   }
 
-  const counts = {};
-  for (const row of data) counts[row.booking_date] = row.request_count;
+  // Real bookings already on the diary (taken via the office New Booking
+  // form) count toward the same capacity as public requests — otherwise a
+  // day already full of real jobs would still show as wide open here.
+  const counts = { ...realCounts };
+  for (const row of requestCounts) counts[row.booking_date] = (counts[row.booking_date] || 0) + row.request_count;
 
   // Per-day cap, shrunk for any date a technician's on holiday — computed
   // per calendar day in the requested range so the public calendar can show
