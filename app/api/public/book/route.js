@@ -12,6 +12,7 @@ const addDaysISO = (iso, days) => {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 };
+const isValidFutureDate = (d) => DATE_RE.test(d) && !Number.isNaN(new Date(d).getTime()) && d >= todayISO();
 
 export async function POST(request) {
   const body = await request.json().catch(() => null);
@@ -22,18 +23,59 @@ export async function POST(request) {
   const phone = (body.phone || "").trim();
   const reg = (body.reg || "").trim().toUpperCase();
   const business = body.business || "";
-  const date = body.date || "";
+  const isEmergency = !!body.isEmergency;
+  const otherDetails = (body.otherDetails || "").trim();
   const requirements = Array.isArray(body.requirements) ? body.requirements.filter(Boolean) : [];
+  const isOther = !isEmergency && requirements.includes("Other");
 
-  if (!name || !phone || !reg || !date || requirements.length === 0) {
-    return NextResponse.json(
-      { error: "Name, phone, registration, date, and at least one requirement are required." },
-      { status: 400 }
-    );
+  if (!name || !phone || !reg) {
+    return NextResponse.json({ error: "Name, phone, and registration are required." }, { status: 400 });
   }
   if (!BUSINESSES.includes(business)) {
     return NextResponse.json({ error: "Please select which business you're booking with." }, { status: 400 });
   }
+  if (isOther && !otherDetails) {
+    return NextResponse.json({ error: "Please tell us what you need." }, { status: 400 });
+  }
+  if (!isEmergency && !isOther && requirements.length === 0) {
+    return NextResponse.json({ error: "Please select at least one requirement." }, { status: 400 });
+  }
+
+  // Emergency skips the normal notice window and daily cap entirely — it's
+  // always accepted (never silently refused) with two preferred dates, and
+  // office triages actual capacity manually via the Emergency flag in the
+  // Booking Requests tab. This is the one path that doesn't go through the
+  // shared countForDate/capacity checks below.
+  if (isEmergency) {
+    const date = body.date || "";
+    const secondDate = body.secondDate || "";
+    if (!isValidFutureDate(date) || !isValidFutureDate(secondDate)) {
+      return NextResponse.json({ error: "Please give two valid dates, today or later." }, { status: 400 });
+    }
+    try {
+      const { error: insertError } = await supabaseAdmin.from("booking_requests").insert({
+        name, address, phone, reg, business, date, second_date: secondDate,
+        requirements: ["Emergency Appointment"], is_emergency: true,
+      });
+      if (insertError) throw insertError;
+      try {
+        await sendBookingRequestNotification({
+          name, business, phone, reg, date, requirements: ["Emergency Appointment"], needsReview: true, isEmergency: true,
+        });
+      } catch (emailError) {
+        console.error("booking request email failed", emailError);
+      }
+      return NextResponse.json({ ok: true });
+    } catch (e) {
+      console.error("emergency booking request failed", e);
+      return NextResponse.json({ error: "Something went wrong — please try again." }, { status: 500 });
+    }
+  }
+
+  // Standard and Other both use a single date under the normal notice-window
+  // and capacity rules — Other just swaps the job-type checklist for a
+  // free-text description of what's needed.
+  const date = body.date || "";
   if (!DATE_RE.test(date) || Number.isNaN(new Date(date).getTime())) {
     return NextResponse.json({ error: "Invalid date." }, { status: 400 });
   }
@@ -80,7 +122,7 @@ export async function POST(request) {
 
     const { data, error: insertError } = await supabaseAdmin
       .from("booking_requests")
-      .insert({ name, address, phone, reg, business, date, requirements })
+      .insert({ name, address, phone, reg, business, date, requirements, other_details: isOther ? otherDetails : null })
       .select("id")
       .single();
     if (insertError) throw insertError;
@@ -97,8 +139,10 @@ export async function POST(request) {
     // error for the customer — office can still see it was submitted via
     // the Booking Requests tab even if the email never arrives.
     try {
-      const needsReview = requirements.some((r) => r.toLowerCase().includes("chain"));
-      await sendBookingRequestNotification({ name, business, phone, reg, date, requirements, needsReview });
+      const needsReview = isOther || requirements.some((r) => r.toLowerCase().includes("chain"));
+      await sendBookingRequestNotification({
+        name, business, phone, reg, date, requirements, needsReview, otherDetails: isOther ? otherDetails : undefined,
+      });
     } catch (emailError) {
       console.error("booking request email failed", emailError);
     }

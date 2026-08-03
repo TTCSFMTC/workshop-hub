@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
   insertBonusRate, updateBonusRate, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
@@ -416,7 +416,8 @@ function defaultDaysForJobType(jt, brands) {
   if ((brandName === "Landrover" || brandName === "Jaguar" || brandName === "JLR") && name.includes("timing chain")) return 3;
   if (brandName === "Ford" && name.includes("wet belt")) return 2;
   if (brandName === "Nissan") return 2;
-  if (brandName === "Peugeot" && name.includes("pure tech")) return 2;
+  if (brandName === "Peugeot" && (name.includes("pure tech") || name.includes("wetbelt") || name.includes("wet belt"))) return 2;
+  if (brandName === "Vauxhall") return 2;
   return null;
 }
 
@@ -961,6 +962,11 @@ export default function WorkshopHub() {
     await updateJobTypeStandardPrice(jtId, price);
   });
 
+  const updateJobTypePublicBookableFn = (jtId, publicBookable) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, publicBookable } : j)));
+    await updateJobTypePublicBookable(jtId, publicBookable);
+  });
+
   const removeJobTypeFn = (jtId) => withSaveState(async () => {
     setJobTypes((prev) => prev.filter((j) => j.id !== jtId));
     await deleteJobType(jtId);
@@ -1216,6 +1222,7 @@ export default function WorkshopHub() {
           addBomLine={addBomLineFn} updateBomQty={updateBomQtyFn} removeBomLine={removeBomLineFn}
           brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
+          updateJobTypePublicBookable={updateJobTypePublicBookableFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
@@ -1255,7 +1262,7 @@ function OfficeMode({
   auditLog, addAuditLog,
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice,
+  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable,
   holidays, addHoliday, removeHoliday,
   bonusRates, addBonusRate, updateBonusRate, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
@@ -1375,7 +1382,7 @@ function OfficeMode({
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
             brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType}
-            updateJobTypeStandardPrice={updateJobTypeStandardPrice} />
+            updateJobTypeStandardPrice={updateJobTypeStandardPrice} updateJobTypePublicBookable={updateJobTypePublicBookable} />
         )}
         {tab === "holidays" && (
           <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
@@ -1408,7 +1415,11 @@ function OfficeMode({
           initialValues={acceptingRequest ? {
             customerName: acceptingRequest.name, phone: acceptingRequest.phone, reg: acceptingRequest.reg,
             business: acceptingRequest.business, date: acceptingRequest.date, pickupAddress: acceptingRequest.address,
-            symptoms: (acceptingRequest.requirements || []).join(", "),
+            symptoms: acceptingRequest.is_emergency
+              ? `Emergency appointment — 2nd choice date ${acceptingRequest.second_date || "—"}`
+              : acceptingRequest.other_details
+              ? acceptingRequest.other_details
+              : (acceptingRequest.requirements || []).join(", "),
             jobTypeId: jobTypes.find((jt) => (acceptingRequest.requirements || []).some((r) => r.toLowerCase() === jt.name.toLowerCase()))?.id,
           } : undefined}
           onClose={() => { setShowNewBooking(false); setEditingBooking(null); setAcceptingRequest(null); }}
@@ -3796,6 +3807,9 @@ function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJob
               {!open && jt.standardPrice != null && (
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>· £{jt.standardPrice.toFixed(2)}</span>
               )}
+              {!open && jt.publicBookable && (
+                <span style={{ fontSize: 10, fontWeight: 700, color: "var(--green)", border: "1px solid var(--green)", borderRadius: 20, padding: "1px 7px" }}>Public</span>
+              )}
             </div>
             {open && (
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -3827,6 +3841,10 @@ function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJob
                     />
                   ))}
                 </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!jt.publicBookable} onChange={(e) => updateJobTypePublicBookable(jt.id, e.target.checked)} />
+                  Show on public booking form
+                </label>
                 <button className="wb-btn-ghost" onClick={() => renameJobTypeClick(jt.id)}>Rename</button>
                 <button onClick={() => removeJobTypeClick(jt)} title="Delete job type" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
               </div>
@@ -4036,10 +4054,21 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
           const warn = chainWarn || techsOff.length > 0;
           return (
             <div key={req.id} className="wb-panel" style={{ padding: 12, ...(warn ? { borderColor: "var(--red)" } : {}) }}>
+              {req.is_emergency && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  <AlertTriangle size={12} /> Emergency — call to confirm
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{req.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>— {req.business}</span></div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{fmtDate(req.date)}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                    {req.is_emergency ? (
+                      <>1st choice {fmtDate(req.date)} · 2nd choice {req.second_date ? fmtDate(req.second_date) : "—"}</>
+                    ) : (
+                      fmtDate(req.date)
+                    )}
+                  </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
                   {chainWarn && (
@@ -4059,6 +4088,11 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
                 {req.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{req.reg}</span>}
                 {req.address && <span><MapPin size={10} style={{ display: "inline", marginRight: 4 }} />{req.address}</span>}
               </div>
+              {req.other_details && (
+                <div style={{ marginTop: 8, fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: 8, whiteSpace: "pre-wrap" }}>
+                  {req.other_details}
+                </div>
+              )}
               {(req.requirements || []).length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {req.requirements.map((r) => <span key={r} className="wb-chip" style={{ marginTop: 0 }}>{r}</span>)}
