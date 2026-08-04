@@ -18,6 +18,95 @@ const fmtDate = (iso) => {
   return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 };
 
+// All of the sub-components below live at module scope rather than nested
+// inside PublicBooking() — a component defined inside another component's
+// body gets a new function identity on every render of the parent, which
+// makes React treat it as a completely different component and remount its
+// DOM node from scratch. For a text input that means losing focus (and the
+// cursor position) after every single keystroke, since the parent re-renders
+// on every keystroke to update the controlled value.
+
+const ContactEscapeHatch = () => (
+  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+    <a href={`tel:${CONTACT_PHONE}`} className="pb-btn" style={{ width: "auto", padding: "10px 16px", fontSize: 13 }}>Need it sooner? Call us</a>
+    <a href={`https://wa.me/44${CONTACT_PHONE.slice(1)}`} target="_blank" rel="noreferrer" className="pb-btn" style={{ width: "auto", padding: "10px 16px", fontSize: 13, background: "#25D366", color: "#0b1a10" }}>Message us on WhatsApp</a>
+  </div>
+);
+
+const ContactFields = ({ form, setForm }) => (
+  <>
+    <div><label className="pb-label">Name</label><input className="pb-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
+    <div>
+      <label className="pb-label">Which business are you booking with?</label>
+      <select className="pb-input" value={form.business} onChange={(e) => setForm((f) => ({ ...f, business: e.target.value }))}>
+        {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
+      </select>
+    </div>
+    <div><label className="pb-label">Address</label><input className="pb-input" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} /></div>
+    <div><label className="pb-label">Mobile number</label><input className="pb-input" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} /></div>
+    <div><label className="pb-label">Vehicle registration</label><input className="pb-input" value={form.reg} onChange={(e) => setForm((f) => ({ ...f, reg: e.target.value.toUpperCase() }))} /></div>
+  </>
+);
+
+// Shown when the customer picks a date inside the notice window — they can
+// still fill the form in and try (the server has the final say and offers
+// the same call/WhatsApp escape hatch if it's genuinely too soon), but this
+// steers them toward Emergency or a direct call up front instead of just
+// silently blocking the day like before.
+const EmergencyNudge = () => (
+  <div className="pb-panel" style={{ borderColor: "var(--amber)", background: "#2a2210", display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, color: "var(--amber2)" }}>
+      <AlertTriangle size={16} /> That's a bit soon for a standard booking
+    </div>
+    <div style={{ fontSize: 13 }}>
+      We do have emergency appointments — please fill in the booking below or call us on{" "}
+      <a href={`tel:${CONTACT_PHONE}`} style={{ color: "var(--amber2)" }}>{CONTACT_PHONE}</a>.
+    </div>
+    <ContactEscapeHatch />
+  </div>
+);
+
+const ResultAndSubmit = ({ result, canSubmit, submitting, submit }) => (
+  <>
+    {result?.error && <div style={{ color: "var(--red)", fontSize: 13 }}>{result.error}</div>}
+    {result?.error && result.offerContact && <ContactEscapeHatch />}
+    {result?.ok && <div style={{ color: "var(--green)", fontSize: 14, fontWeight: 700 }}>Thanks — your booking request has been sent. We'll be in touch to confirm.</div>}
+    <button className="pb-btn" disabled={!canSubmit || submitting} onClick={submit}>{submitting ? "Sending…" : "Request this booking"}</button>
+  </>
+);
+
+const Calendar = ({ year, month, monthCursor, setMonthCursor, cells, availability, capFor, minBookableISO, selectedDay, openDay }) => (
+  <div className="pb-panel">
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+      <button className="pb-btn" style={{ width: "auto", padding: "8px 12px" }} onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={16} /></button>
+      <div style={{ fontWeight: 700 }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+      <button className="pb-btn" style={{ width: "auto", padding: "8px 12px" }} onClick={() => setMonthCursor(new Date(year, month + 1, 1))}><ChevronRight size={16} /></button>
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
+      {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center" }}>{d}</div>)}
+    </div>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+      {cells.map((d, i) => {
+        if (!d) return <div key={i} style={{ visibility: "hidden" }} />;
+        const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const count = availability[iso] || 0;
+        const dayCap = capFor(iso);
+        const isFull = count >= dayCap;
+        const isPast = iso < todayISO();
+        const isTooSoon = !isPast && iso < minBookableISO;
+        const statusClass = isFull ? "full" : count > 0 ? "amber" : "green";
+        const statusLabel = isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : count > 0 ? "Some availability" : "Availability";
+        return (
+          <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast ? "past" : ""} ${isTooSoon ? "soon" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
+            <div className="pb-daynum">{d}</div>
+            <div className={`pb-slots ${isPast ? "" : isTooSoon ? "soon" : statusClass}`}>{statusLabel}</div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
 export default function PublicBooking() {
   // Three distinct intake paths rather than one combined form — a real job
   // type + single date, an emergency (two preferred dates, no notice/
@@ -128,87 +217,6 @@ export default function PublicBooking() {
     setSubmitting(false);
   };
 
-  const ContactEscapeHatch = () => (
-    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-      <a href={`tel:${CONTACT_PHONE}`} className="pb-btn" style={{ width: "auto", padding: "10px 16px", fontSize: 13 }}>Need it sooner? Call us</a>
-      <a href={`https://wa.me/44${CONTACT_PHONE.slice(1)}`} target="_blank" rel="noreferrer" className="pb-btn" style={{ width: "auto", padding: "10px 16px", fontSize: 13, background: "#25D366", color: "#0b1a10" }}>Message us on WhatsApp</a>
-    </div>
-  );
-
-  const ContactFields = () => (
-    <>
-      <div><label className="pb-label">Name</label><input className="pb-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></div>
-      <div>
-        <label className="pb-label">Which business are you booking with?</label>
-        <select className="pb-input" value={form.business} onChange={(e) => setForm((f) => ({ ...f, business: e.target.value }))}>
-          {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
-      </div>
-      <div><label className="pb-label">Address</label><input className="pb-input" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} /></div>
-      <div><label className="pb-label">Mobile number</label><input className="pb-input" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} /></div>
-      <div><label className="pb-label">Vehicle registration</label><input className="pb-input" value={form.reg} onChange={(e) => setForm((f) => ({ ...f, reg: e.target.value.toUpperCase() }))} /></div>
-    </>
-  );
-
-  // Shown when the customer picks a date inside the notice window — they can
-  // still fill the form in and try (the server has the final say and offers
-  // the same call/WhatsApp escape hatch if it's genuinely too soon), but this
-  // steers them toward Emergency or a direct call up front instead of just
-  // silently blocking the day like before.
-  const EmergencyNudge = () => (
-    <div className="pb-panel" style={{ borderColor: "var(--amber)", background: "#2a2210", display: "flex", flexDirection: "column", gap: 10 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, color: "var(--amber2)" }}>
-        <AlertTriangle size={16} /> That's a bit soon for a standard booking
-      </div>
-      <div style={{ fontSize: 13 }}>
-        We do have emergency appointments — please fill in the booking below or call us on{" "}
-        <a href={`tel:${CONTACT_PHONE}`} style={{ color: "var(--amber2)" }}>{CONTACT_PHONE}</a>.
-      </div>
-      <ContactEscapeHatch />
-    </div>
-  );
-
-  const ResultAndSubmit = () => (
-    <>
-      {result?.error && <div style={{ color: "var(--red)", fontSize: 13 }}>{result.error}</div>}
-      {result?.error && result.offerContact && <ContactEscapeHatch />}
-      {result?.ok && <div style={{ color: "var(--green)", fontSize: 14, fontWeight: 700 }}>Thanks — your booking request has been sent. We'll be in touch to confirm.</div>}
-      <button className="pb-btn" disabled={!canSubmit || submitting} onClick={submit}>{submitting ? "Sending…" : "Request this booking"}</button>
-    </>
-  );
-
-  const Calendar = () => (
-    <div className="pb-panel">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <button className="pb-btn" style={{ width: "auto", padding: "8px 12px" }} onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={16} /></button>
-        <div style={{ fontWeight: 700 }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
-        <button className="pb-btn" style={{ width: "auto", padding: "8px 12px" }} onClick={() => setMonthCursor(new Date(year, month + 1, 1))}><ChevronRight size={16} /></button>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
-        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center" }}>{d}</div>)}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
-        {cells.map((d, i) => {
-          if (!d) return <div key={i} style={{ visibility: "hidden" }} />;
-          const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          const count = availability[iso] || 0;
-          const dayCap = capFor(iso);
-          const isFull = count >= dayCap;
-          const isPast = iso < todayISO();
-          const isTooSoon = !isPast && iso < minBookableISO;
-          const statusClass = isFull ? "full" : count > 0 ? "amber" : "green";
-          const statusLabel = isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : count > 0 ? "Some availability" : "Availability";
-          return (
-            <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast ? "past" : ""} ${isTooSoon ? "soon" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
-              <div className="pb-daynum">{d}</div>
-              <div className={`pb-slots ${isPast ? "" : isTooSoon ? "soon" : statusClass}`}>{statusLabel}</div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-
   return (
     <div style={{ "--bg": "#16181a", "--panel": "#1e2124", "--panel2": "#25292c", "--line": "#33383c", "--text": "#e7e3da", "--muted": "#9aa0a6", "--amber": "#f5a623", "--amber2": "#ffcf6b", "--red": "#e2574c", "--green": "#5fb87a" }} className="pb-root">
       <style>{`
@@ -273,13 +281,14 @@ export default function PublicBooking() {
 
         {path === "standard" && (
           <>
-            <Calendar />
+            <Calendar year={year} month={month} monthCursor={monthCursor} setMonthCursor={setMonthCursor} cells={cells}
+              availability={availability} capFor={capFor} minBookableISO={minBookableISO} selectedDay={selectedDay} openDay={openDay} />
             {selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
             {selectedDay && (
               <div className="pb-panel">
                 <div style={{ fontWeight: 700, marginBottom: 14 }}>Booking for {fmtDate(selectedDay)}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <ContactFields />
+                  <ContactFields form={form} setForm={setForm} />
                   <div>
                     <label className="pb-label">Requirement (select any that apply)</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -298,7 +307,7 @@ export default function PublicBooking() {
                       })}
                     </div>
                   </div>
-                  <ResultAndSubmit />
+                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
                 </div>
               </div>
             )}
@@ -307,13 +316,14 @@ export default function PublicBooking() {
 
         {path === "other" && (
           <>
-            <Calendar />
+            <Calendar year={year} month={month} monthCursor={monthCursor} setMonthCursor={setMonthCursor} cells={cells}
+              availability={availability} capFor={capFor} minBookableISO={minBookableISO} selectedDay={selectedDay} openDay={openDay} />
             {selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
             {selectedDay && (
               <div className="pb-panel">
                 <div style={{ fontWeight: 700, marginBottom: 14 }}>Booking for {fmtDate(selectedDay)}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <ContactFields />
+                  <ContactFields form={form} setForm={setForm} />
                   <div>
                     <label className="pb-label">What do you need?</label>
                     <textarea
@@ -321,7 +331,7 @@ export default function PublicBooking() {
                       value={form.otherDetails} onChange={(e) => setForm((f) => ({ ...f, otherDetails: e.target.value }))}
                     />
                   </div>
-                  <ResultAndSubmit />
+                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
                 </div>
               </div>
             )}
@@ -337,7 +347,7 @@ export default function PublicBooking() {
               Give us two dates that would work — we'll call you back to confirm rather than an automatic slot.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <ContactFields />
+              <ContactFields form={form} setForm={setForm} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div>
                   <label className="pb-label"><CalendarClock size={11} style={{ display: "inline", marginRight: 3 }} />First choice</label>
@@ -348,7 +358,7 @@ export default function PublicBooking() {
                   <input type="date" className="pb-input" min={todayISO()} value={emergencyDate2} onChange={(e) => setEmergencyDate2(e.target.value)} />
                 </div>
               </div>
-              <ResultAndSubmit />
+              <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
             </div>
           </div>
         )}
