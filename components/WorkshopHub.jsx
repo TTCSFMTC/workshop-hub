@@ -1440,13 +1440,17 @@ function OfficeMode({
         <NewBookingModal
           jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking}
           initialValues={acceptingRequest ? {
-            customerName: acceptingRequest.name, phone: acceptingRequest.phone, reg: acceptingRequest.reg,
+            customerName: acceptingRequest.name, phone: acceptingRequest.phone, email: acceptingRequest.email, reg: acceptingRequest.reg,
             business: acceptingRequest.business, date: acceptingRequest.date, pickupAddress: acceptingRequest.address,
-            symptoms: acceptingRequest.is_emergency
-              ? `Emergency appointment — 2nd choice date ${acceptingRequest.second_date || "—"}`
-              : acceptingRequest.other_details
-              ? acceptingRequest.other_details
-              : (acceptingRequest.requirements || []).join(", "),
+            symptoms: [
+              acceptingRequest.is_non_runner ? "NON-RUNNER" : null,
+              acceptingRequest.symptoms || null,
+              acceptingRequest.is_emergency
+                ? `Emergency appointment — 2nd choice date ${acceptingRequest.second_date || "—"}`
+                : acceptingRequest.other_details
+                ? acceptingRequest.other_details
+                : (acceptingRequest.requirements || []).join(", "),
+            ].filter(Boolean).join("\n"),
             jobTypeId: jobTypes.find((jt) => (acceptingRequest.requirements || []).some((r) => r.toLowerCase() === jt.name.toLowerCase()))?.id,
           } : undefined}
           onClose={() => { setShowNewBooking(false); setEditingBooking(null); setAcceptingRequest(null); }}
@@ -4280,6 +4284,11 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
                   <AlertTriangle size={12} /> Emergency — call to confirm
                 </div>
               )}
+              {req.is_non_runner && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  <AlertTriangle size={12} /> Non-runner
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{req.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>— {req.business}</span></div>
@@ -4306,9 +4315,15 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
                 {req.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{req.phone}</span>}
+                {req.email && <span><Mail size={10} style={{ display: "inline", marginRight: 4 }} />{req.email}</span>}
                 {req.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{req.reg}</span>}
                 {req.address && <span><MapPin size={10} style={{ display: "inline", marginRight: 4 }} />{req.address}</span>}
               </div>
+              {req.symptoms && (
+                <div style={{ marginTop: 8, fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: 8, whiteSpace: "pre-wrap" }}>
+                  <strong>Symptoms:</strong> {req.symptoms}
+                </div>
+              )}
               {req.other_details && (
                 <div style={{ marginTop: 8, fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: 8, whiteSpace: "pre-wrap" }}>
                   {req.other_details}
@@ -4428,7 +4443,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [pasteText, setPasteText] = useState("");
   const [customerName, setCustomerName] = useState(booking?.customerName || initialValues?.customerName || "");
   const [phone, setPhone] = useState(booking?.phone || initialValues?.phone || "");
-  const [email, setEmail] = useState(booking?.email || "");
+  const [email, setEmail] = useState(booking?.email || initialValues?.email || "");
   const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
   const [symptoms, setSymptoms] = useState(booking?.symptoms || initialValues?.symptoms || "");
   const [business, setBusiness] = useState(booking?.business || initialValues?.business || BUSINESSES[0]);

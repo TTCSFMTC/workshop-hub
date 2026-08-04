@@ -8,6 +8,7 @@ import { BUSINESSES } from "@/lib/constants";
 const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
 const CONTACT_PHONE = "07521543379";
+const TERMS_URL = "https://www.warrington4x4.co.uk/terms-and-conditions";
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const addDaysISO = (iso, days) => {
   const [y, m, d] = iso.split("-").map(Number);
@@ -42,9 +43,21 @@ const ContactFields = ({ form, setForm }) => (
         {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
       </select>
     </div>
+    <div><label className="pb-label">Email address</label><input type="email" className="pb-input" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></div>
     <div><label className="pb-label">Address</label><input className="pb-input" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} /></div>
     <div><label className="pb-label">Mobile number</label><input className="pb-input" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} /></div>
     <div><label className="pb-label">Vehicle registration</label><input className="pb-input" value={form.reg} onChange={(e) => setForm((f) => ({ ...f, reg: e.target.value.toUpperCase() }))} /></div>
+    <div className={`pb-check ${form.isNonRunner ? "on" : ""}`} onClick={() => setForm((f) => ({ ...f, isNonRunner: !f.isNonRunner }))}>
+      <div style={{ width: 18, height: 18, borderRadius: 4, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{form.isNonRunner && <Check size={12} />}</div>
+      Is it a non-runner?
+    </div>
+    <div>
+      <label className="pb-label">Symptoms / engine management lights</label>
+      <textarea
+        className="pb-textarea" rows={3} placeholder="e.g. rattling on cold start, engine management light on"
+        value={form.symptoms} onChange={(e) => setForm((f) => ({ ...f, symptoms: e.target.value }))}
+      />
+    </div>
   </>
 );
 
@@ -66,8 +79,34 @@ const EmergencyNudge = () => (
   </div>
 );
 
-const ResultAndSubmit = ({ result, canSubmit, submitting, submit }) => (
+// The checkbox stays disabled until the customer has actually clicked
+// through to the terms — ticking it is meant to follow reading it, not
+// substitute for reading it. termsViewed only ever goes true (there's no
+// way to "unread" it once clicked), so re-opening the link a second time
+// doesn't reset anything.
+const TermsGate = ({ termsViewed, setTermsViewed, termsAccepted, setTermsAccepted }) => (
+  <div>
+    <a
+      href={TERMS_URL} target="_blank" rel="noreferrer" onClick={() => setTermsViewed(true)}
+      style={{ color: "var(--amber2)", fontSize: 13, display: "inline-block", marginBottom: 8 }}
+    >
+      Read our Terms & Conditions ↗
+    </a>
+    <div
+      className={`pb-check ${termsAccepted ? "on" : ""}`}
+      style={!termsViewed ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+      onClick={() => { if (termsViewed) setTermsAccepted((v) => !v); }}
+    >
+      <div style={{ width: 18, height: 18, borderRadius: 4, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{termsAccepted && <Check size={12} />}</div>
+      I have read and accept the Terms &amp; Conditions
+    </div>
+    {!termsViewed && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>Please open and read the Terms &amp; Conditions above first.</div>}
+  </div>
+);
+
+const ResultAndSubmit = ({ result, canSubmit, submitting, submit, termsViewed, setTermsViewed, termsAccepted, setTermsAccepted }) => (
   <>
+    <TermsGate termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
     {result?.error && <div style={{ color: "var(--red)", fontSize: 13 }}>{result.error}</div>}
     {result?.error && result.offerContact && <ContactEscapeHatch />}
     {result?.ok && <div style={{ color: "var(--green)", fontSize: 14, fontWeight: 700 }}>Thanks — your booking request has been sent. We'll be in touch to confirm.</div>}
@@ -119,9 +158,11 @@ export default function PublicBooking() {
   const [dayCaps, setDayCaps] = useState({}); // per-date cap, shrunk when a technician's on holiday
   const [jobTypes, setJobTypes] = useState([]);
   const [selectedDay, setSelectedDay] = useState(null);
-  const [form, setForm] = useState({ name: "", address: "", phone: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "" });
+  const [form, setForm] = useState({ name: "", address: "", phone: "", email: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "", isNonRunner: false, symptoms: "" });
   const [emergencyDate1, setEmergencyDate1] = useState("");
   const [emergencyDate2, setEmergencyDate2] = useState("");
+  const [termsViewed, setTermsViewed] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null); // { ok: true } | { error: string, offerContact?: bool }
 
@@ -176,12 +217,14 @@ export default function PublicBooking() {
     setPath(null);
     setResult(null);
     setSelectedDay(null);
-    setForm({ name: "", address: "", phone: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "" });
+    setForm({ name: "", address: "", phone: "", email: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "", isNonRunner: false, symptoms: "" });
     setEmergencyDate1(""); setEmergencyDate2("");
+    setTermsViewed(false); setTermsAccepted(false);
   };
 
   const canSubmit = (() => {
-    if (!form.name.trim() || !form.phone.trim() || !form.reg.trim()) return false;
+    if (!form.name.trim() || !form.phone.trim() || !form.reg.trim() || !form.email.trim() || !form.symptoms.trim()) return false;
+    if (!termsAccepted) return false;
     if (path === "emergency") return !!emergencyDate1 && !!emergencyDate2;
     if (path === "other") return !!selectedDay && form.otherDetails.trim().length > 0;
     if (path === "standard") return !!selectedDay && form.requirements.length > 0;
@@ -192,7 +235,11 @@ export default function PublicBooking() {
     if (!canSubmit) return;
     setSubmitting(true);
     setResult(null);
-    const base = { name: form.name.trim(), address: form.address.trim(), phone: form.phone.trim(), reg: form.reg.trim().toUpperCase(), business: form.business };
+    const base = {
+      name: form.name.trim(), address: form.address.trim(), phone: form.phone.trim(), email: form.email.trim(),
+      reg: form.reg.trim().toUpperCase(), business: form.business, isNonRunner: form.isNonRunner, symptoms: form.symptoms.trim(),
+      termsAccepted,
+    };
     const payload =
       path === "emergency" ? { ...base, isEmergency: true, date: emergencyDate1, secondDate: emergencyDate2 } :
       path === "other" ? { ...base, date: selectedDay, requirements: ["Other"], otherDetails: form.otherDetails.trim() } :
@@ -307,7 +354,7 @@ export default function PublicBooking() {
                       })}
                     </div>
                   </div>
-                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
+                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
                 </div>
               </div>
             )}
@@ -331,7 +378,7 @@ export default function PublicBooking() {
                       value={form.otherDetails} onChange={(e) => setForm((f) => ({ ...f, otherDetails: e.target.value }))}
                     />
                   </div>
-                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
+                  <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
                 </div>
               </div>
             )}
@@ -358,7 +405,7 @@ export default function PublicBooking() {
                   <input type="date" className="pb-input" min={todayISO()} value={emergencyDate2} onChange={(e) => setEmergencyDate2(e.target.value)} />
                 </div>
               </div>
-              <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} />
+              <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
             </div>
           </div>
         )}

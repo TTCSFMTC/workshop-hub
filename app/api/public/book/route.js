@@ -21,15 +21,28 @@ export async function POST(request) {
   const name = (body.name || "").trim();
   const address = (body.address || "").trim();
   const phone = (body.phone || "").trim();
+  const email = (body.email || "").trim();
   const reg = (body.reg || "").trim().toUpperCase();
   const business = body.business || "";
   const isEmergency = !!body.isEmergency;
   const otherDetails = (body.otherDetails || "").trim();
   const requirements = Array.isArray(body.requirements) ? body.requirements.filter(Boolean) : [];
   const isOther = !isEmergency && requirements.includes("Other");
+  const isNonRunner = !!body.isNonRunner;
+  const symptoms = (body.symptoms || "").trim();
+  const termsAccepted = !!body.termsAccepted;
 
   if (!name || !phone || !reg) {
     return NextResponse.json({ error: "Name, phone, and registration are required." }, { status: 400 });
+  }
+  if (!email || !email.includes("@")) {
+    return NextResponse.json({ error: "Please enter a valid email address." }, { status: 400 });
+  }
+  if (!symptoms) {
+    return NextResponse.json({ error: "Please tell us the symptoms or any warning lights." }, { status: 400 });
+  }
+  if (!termsAccepted) {
+    return NextResponse.json({ error: "Please accept the terms and conditions to continue." }, { status: 400 });
   }
   if (!BUSINESSES.includes(business)) {
     return NextResponse.json({ error: "Please select which business you're booking with." }, { status: 400 });
@@ -54,13 +67,15 @@ export async function POST(request) {
     }
     try {
       const { error: insertError } = await supabaseAdmin.from("booking_requests").insert({
-        name, address, phone, reg, business, date, second_date: secondDate,
+        name, address, phone, email, reg, business, date, second_date: secondDate,
         requirements: ["Emergency Appointment"], is_emergency: true,
+        is_non_runner: isNonRunner, symptoms, terms_accepted_at: new Date().toISOString(),
       });
       if (insertError) throw insertError;
       try {
         await sendBookingRequestNotification({
-          name, business, phone, reg, date, requirements: ["Emergency Appointment"], needsReview: true, isEmergency: true,
+          name, business, phone, email, reg, date, requirements: ["Emergency Appointment"], needsReview: true, isEmergency: true,
+          isNonRunner, symptoms,
         });
       } catch (emailError) {
         console.error("booking request email failed", emailError);
@@ -127,7 +142,10 @@ export async function POST(request) {
 
     const { data, error: insertError } = await supabaseAdmin
       .from("booking_requests")
-      .insert({ name, address, phone, reg, business, date, requirements, other_details: isOther ? otherDetails : null })
+      .insert({
+        name, address, phone, email, reg, business, date, requirements, other_details: isOther ? otherDetails : null,
+        is_non_runner: isNonRunner, symptoms, terms_accepted_at: new Date().toISOString(),
+      })
       .select("id")
       .single();
     if (insertError) throw insertError;
@@ -146,7 +164,8 @@ export async function POST(request) {
     try {
       const needsReview = isOther || requirements.some((r) => r.toLowerCase().includes("chain"));
       await sendBookingRequestNotification({
-        name, business, phone, reg, date, requirements, needsReview, otherDetails: isOther ? otherDetails : undefined,
+        name, business, phone, email, reg, date, requirements, needsReview, otherDetails: isOther ? otherDetails : undefined,
+        isNonRunner, symptoms,
       });
     } catch (emailError) {
       console.error("booking request email failed", emailError);
