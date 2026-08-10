@@ -24,6 +24,7 @@ import {
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
 import { BUSINESSES, REVIEW_LINKS } from "@/lib/constants";
 import * as XLSX from "xlsx";
+import { BookingShareActions } from "./BookingShareActions";
 
 // ============================================================
 // Shared constants & helpers
@@ -2203,6 +2204,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <button onClick={() => onPrintJob(b)} title="Print job card" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><Printer size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
+                  <BookingShareActions booking={b} jobTypes={jobTypes} />
                 </div>
                 {b.vehicleModel && (
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#38bdf8", marginTop: 6 }}>
