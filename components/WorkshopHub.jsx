@@ -3120,6 +3120,21 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   const [month, setMonth] = useState(() => todayISO().slice(0, 7));
   const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
 
+  // Ernesto and Ervin are both full-time on the same basic wage every
+  // month — rather than Chris having to remember to click "Add person"
+  // twice at the start of each new month, a month that has nobody on it
+  // yet gets seeded with both automatically. Only fires once per month per
+  // session (tracked below) so deliberately removing everyone from a month
+  // doesn't just bring them straight back.
+  const seededMonths = useRef(new Set());
+  useEffect(() => {
+    if (monthRows.length > 0 || seededMonths.current.has(month)) return;
+    seededMonths.current.add(month);
+    ["Ernesto", "Ervin"].forEach((name) => {
+      upsertStaffWage({ id: uid("sw"), name, month, basic: DEFAULT_BASIC_WAGE, weekendFullDays: 0, weekendHalfDays: 0, bonusCounts: {} });
+    });
+  }, [month, monthRows.length, upsertStaffWage]);
+
   // Auto-derived from actually completed + invoiced bookings — see
   // computeBonusCounts — nobody has to remember to type a count in by hand,
   // and it updates itself the moment a job gets marked complete and

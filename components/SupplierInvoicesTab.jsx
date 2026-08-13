@@ -31,13 +31,11 @@ export function SupplierInvoicesTab({
 }) {
   const [uploadRows, setUploadRows] = useState([]); // [{ filename, status, error, matchedSupplier }]
   const [uploading, setUploading] = useState(false);
-  const [postingId, setPostingId] = useState(null);
   const [newSupplier, setNewSupplier] = useState({ name: "", contactEmail: "", contactName: "" });
   const [missingSupplierId, setMissingSupplierId] = useState("");
   const [sendingEmail, setSendingEmail] = useState(false);
 
   const partName = (id) => parts.find((p) => p.id === id)?.name || "Unknown part";
-  const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || "";
 
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList || []).filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
@@ -64,11 +62,7 @@ export function SupplierInvoicesTab({
   };
 
   const openInvoices = useMemo(
-    () => supplierInvoices.filter((i) => i.status !== "posted").sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1)),
-    [supplierInvoices]
-  );
-  const postedInvoices = useMemo(
-    () => supplierInvoices.filter((i) => i.status === "posted").sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1)).slice(0, 20),
+    () => [...supplierInvoices].sort((a, b) => (a.uploadedAt < b.uploadedAt ? 1 : -1)),
     [supplierInvoices]
   );
 
@@ -86,23 +80,6 @@ export function SupplierInvoicesTab({
   const confirmInvoice = (inv) => {
     if (!inv.supplierId) { alert("Assign a supplier before confirming."); return; }
     updateSupplierInvoiceField(inv.id, { status: "confirmed", confirmedAt: new Date().toISOString() });
-  };
-
-  const postToZoho = async (inv) => {
-    setPostingId(inv.id);
-    try {
-      const res = await fetch("/api/office/supplier-invoices/post-to-zoho", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invoiceId: inv.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) { alert(data.error || "Failed to post to Zoho."); return; }
-      updateSupplierInvoiceField(inv.id, { status: "posted", zohoBillId: data.billId, zohoBillNumber: data.billNumber });
-    } catch {
-      alert("Failed to post to Zoho — check your connection and try again.");
-    }
-    setPostingId(null);
   };
 
   const addSupplierClick = () => {
@@ -194,7 +171,7 @@ export function SupplierInvoicesTab({
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <a href={inv.pdfUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "var(--amber2)" }}>View PDF</a>
-                    <button onClick={() => { if (confirm("Remove this invoice? This doesn't delete anything from Zoho.")) removeSupplierInvoice(inv.id); }} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+                    <button onClick={() => { if (confirm("Remove this invoice?")) removeSupplierInvoice(inv.id); }} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
                   </div>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end" }}>
@@ -206,7 +183,7 @@ export function SupplierInvoicesTab({
                     </select>
                   </div>
                   <div>
-                    <label className="wb-label">Business (Zoho)</label>
+                    <label className="wb-label">Business</label>
                     <select className="wb-input" style={{ width: 170 }} value={inv.business} onChange={(e) => updateSupplierInvoiceField(inv.id, { business: e.target.value })}>
                       {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
                     </select>
@@ -221,37 +198,12 @@ export function SupplierInvoicesTab({
                   <button className="wb-btn-ghost" style={{ minHeight: 36 }} disabled={!inv.supplierId || inv.status === "confirmed"} onClick={() => confirmInvoice(inv)}>
                     <Check size={13} /> {inv.status === "confirmed" ? "Confirmed" : "Confirm"}
                   </button>
-                  <button className="wb-btn" style={{ minHeight: 36, width: "auto" }} disabled={inv.status !== "confirmed" || postingId === inv.id} onClick={() => postToZoho(inv)}>
-                    {postingId === inv.id ? "Posting…" : "Post to Zoho"}
-                  </button>
                 </div>
               </div>
             );
           })}
         </div>
       </div>
-
-      {postedInvoices.length > 0 && (
-        <div className="wb-panel">
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Recently posted</div>
-          <div style={{ overflowX: "auto" }}>
-            <table className="wb-table">
-              <thead><tr><th>Vendor</th><th>Invoice</th><th>Total</th><th>Business</th><th>Zoho bill</th></tr></thead>
-              <tbody>
-                {postedInvoices.map((inv) => (
-                  <tr key={inv.id}>
-                    <td>{inv.vendorNameRaw || supplierName(inv.supplierId)}</td>
-                    <td className="wh-mono">{inv.invoiceNumber || "—"}</td>
-                    <td>£{Number(inv.total).toFixed(2)}</td>
-                    <td>{inv.business}</td>
-                    <td className="wh-mono">{inv.zohoBillNumber || inv.zohoBillId}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
