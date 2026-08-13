@@ -63,10 +63,18 @@ export async function POST(request) {
     const { error: e3 } = await supabase.from("bookings").update({ arrived: true, arrived_at: confirmedAt }).eq("id", bookingId);
     if (e3) throw e3;
 
+    // The confirmation itself (signed PDF, Drive upload, DB record, arrived
+    // flag) is already saved by this point — a failed email to the customer
+    // is worth logging, but must never make a successful save look like it
+    // failed (see sendBookingRequestNotification for the same reasoning).
     if (booking.email) {
-      await sendIntakeConfirmationEmail({
-        to: booking.email, business: booking.business, customerName: booking.customer_name, reg: booking.reg, pdfUrl, videoUrl,
-      });
+      try {
+        await sendIntakeConfirmationEmail({
+          to: booking.email, business: booking.business, customerName: booking.customer_name, reg: booking.reg, pdfUrl, videoUrl,
+        });
+      } catch (emailError) {
+        console.error("intake confirmation email failed", emailError);
+      }
     }
 
     return NextResponse.json({ ok: true, pdfUrl, videoUrl });
