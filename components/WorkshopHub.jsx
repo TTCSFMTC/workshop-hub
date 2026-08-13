@@ -12,19 +12,22 @@ import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
-  insertBonusRate, updateBonusRate, deleteBonusRate, upsertStaffWage, deleteStaffWage,
+  insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier, updateStockBatch,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
+  fetchSuppliers, insertSupplier, updateSupplier, deleteSupplier,
+  fetchSupplierInvoices, updateSupplierInvoice, deleteSupplierInvoice,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
 import { BUSINESSES, REVIEW_LINKS } from "@/lib/constants";
 import * as XLSX from "xlsx";
 import { BookingShareActions } from "./BookingShareActions";
+import { SupplierInvoicesTab } from "./SupplierInvoicesTab";
 
 // ============================================================
 // Shared constants & helpers
@@ -388,6 +391,7 @@ const DEFAULT_SETTINGS = {
   transportContactPhone: "",
   monthlyTarget: 40000,
   nonProductivesCost: 5000,
+  workingDaysPerMonth: 25,
 };
 
 // Standard pricing for a Timing Chain Replacement — pre-filled on new
@@ -482,6 +486,8 @@ export default function WorkshopHub() {
   const [staffWages, setStaffWages] = useState([]);
   const [fixedCosts, setFixedCosts] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [supplierInvoices, setSupplierInvoices] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -513,6 +519,16 @@ export default function WorkshopHub() {
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
       }
+      // Fetched separately from the bundle above — these two tables are the
+      // newest in the schema, so isolating them means a not-yet-run
+      // migration only leaves the Supplier Invoices tab empty instead of
+      // taking down every other table's initial load with it.
+      try {
+        setSuppliers(await fetchSuppliers());
+        setSupplierInvoices(await fetchSupplierInvoices());
+      } catch (e) {
+        console.error("Failed to load supplier invoice data", e);
+      }
       setReady(true);
     })();
   }, []);
@@ -541,6 +557,8 @@ export default function WorkshopHub() {
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
       subscribeTable("audit_log", async () => setAuditLog(await fetchAuditLog())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
+      subscribeTable("suppliers", async () => setSuppliers(await fetchSuppliers())),
+      subscribeTable("supplier_invoices", async () => setSupplierInvoices(await fetchSupplierInvoices())),
     ];
     return () => unsubs.forEach((u) => u());
   }, [ready]);
@@ -992,6 +1010,32 @@ export default function WorkshopHub() {
     await renameBrand(brandId, name);
   });
 
+  const addSupplierFn = (name, contactEmail, contactName) => withSaveState(async () => {
+    const supplier = { id: uid("sup"), name, contactEmail, contactName };
+    setSuppliers((prev) => [...prev, supplier]);
+    await insertSupplier(supplier);
+  });
+
+  const updateSupplierFn = (id, patch) => withSaveState(async () => {
+    setSuppliers((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    await updateSupplier(id, patch);
+  });
+
+  const removeSupplierFn = (id) => withSaveState(async () => {
+    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    await deleteSupplier(id);
+  });
+
+  const updateSupplierInvoiceFn = (id, patch) => withSaveState(async () => {
+    setSupplierInvoices((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
+    await updateSupplierInvoice(id, patch);
+  });
+
+  const removeSupplierInvoiceFn = (id) => withSaveState(async () => {
+    setSupplierInvoices((prev) => prev.filter((i) => i.id !== id));
+    await deleteSupplierInvoice(id);
+  });
+
   const addHolidayFn = (name, dateFrom, dateTo) => withSaveState(async () => {
     const holiday = { id: uid("hol"), name, dateFrom, dateTo };
     setHolidays((prev) => [...prev, holiday]);
@@ -1003,8 +1047,8 @@ export default function WorkshopHub() {
     await deleteHoliday(holidayId);
   });
 
-  const addBonusRateFn = (name, rate) => withSaveState(async () => {
-    const br = { id: uid("br"), name, rate };
+  const addBonusRateFn = (name, rate, jobTypeIds = []) => withSaveState(async () => {
+    const br = { id: uid("br"), name, rate, jobTypeIds };
     setBonusRates((prev) => [...prev, br]);
     await insertBonusRate(br);
   });
@@ -1012,6 +1056,11 @@ export default function WorkshopHub() {
   const updateBonusRateFn = (id, rate) => withSaveState(async () => {
     setBonusRates((prev) => prev.map((b) => (b.id === id ? { ...b, rate } : b)));
     await updateBonusRate(id, rate);
+  });
+
+  const updateBonusRateJobTypesFn = (id, jobTypeIds) => withSaveState(async () => {
+    setBonusRates((prev) => prev.map((b) => (b.id === id ? { ...b, jobTypeIds } : b)));
+    await updateBonusRateJobTypes(id, jobTypeIds);
   });
 
   const removeBonusRateFn = (id) => withSaveState(async () => {
@@ -1231,7 +1280,7 @@ export default function WorkshopHub() {
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
           updateJobTypePublicBookable={updateJobTypePublicBookableFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
-          bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} removeBonusRate={removeBonusRateFn}
+          bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
@@ -1245,6 +1294,8 @@ export default function WorkshopHub() {
           setShowReorderAlert={setShowReorderAlert} setDismissedReorderIds={setDismissedReorderIds}
           partsForecastShortfalls={partsForecastShortfalls} showForecastAlert={showForecastAlert} dismissForecastAlert={dismissForecastAlert}
           jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
+          suppliers={suppliers} addSupplier={addSupplierFn} updateSupplierField={updateSupplierFn} removeSupplier={removeSupplierFn}
+          supplierInvoices={supplierInvoices} updateSupplierInvoiceField={updateSupplierInvoiceFn} removeSupplierInvoice={removeSupplierInvoiceFn}
         />
       ) : (
         <WorkshopMode
@@ -1271,9 +1322,11 @@ function OfficeMode({
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable,
   holidays, addHoliday, removeHoliday,
-  bonusRates, addBonusRate, updateBonusRate, removeBonusRate,
+  bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
+  suppliers, addSupplier, updateSupplierField, removeSupplier,
+  supplierInvoices, updateSupplierInvoiceField, removeSupplierInvoice,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1364,11 +1417,14 @@ function OfficeMode({
   return (
     <div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
             {key === "requests" && bookingRequests.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{bookingRequests.length}</span>}
+            {key === "supplierinvoices" && supplierInvoices.filter((i) => i.status === "needs_review").length > 0 && (
+              <span className="wb-badge-low" style={{ marginLeft: 4 }}>{supplierInvoices.filter((i) => i.status === "needs_review").length}</span>
+            )}
           </div>
         ))}
       </div>
@@ -1402,6 +1458,13 @@ function OfficeMode({
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
             addAuditLog={addAuditLog} onPrintOutstandingParts={() => setPrintOutstandingParts(true)} />
         )}
+        {tab === "supplierinvoices" && (
+          <SupplierInvoicesTab
+            suppliers={suppliers} addSupplier={addSupplier} updateSupplierField={updateSupplierField} removeSupplier={removeSupplier}
+            supplierInvoices={supplierInvoices} updateSupplierInvoiceField={updateSupplierInvoiceField} removeSupplierInvoice={removeSupplierInvoice}
+            stockBatches={stockBatches} parts={parts}
+          />
+        )}
         {tab === "suppliers" && (
           <SuppliersTab priceHistory={priceHistory} parts={parts} brands={brands} jobTypes={jobTypes} stockBatches={stockBatches}
             updatePriceHistorySupplier={updatePriceHistorySupplier} updateStockBatchSupplier={updateStockBatchSupplier} />
@@ -1424,7 +1487,7 @@ function OfficeMode({
           <ProfitabilityGate>
             <ProfitabilityTab
               bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
-              bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} removeBonusRate={removeBonusRate}
+              bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
             />
@@ -2755,6 +2818,28 @@ function bookingProfit(booking, jobTypes, parts, settings) {
 // Turbo booking counts once for each). Shared between Profitability and
 // Forecast so "how many have we done" can't drift between the two tabs
 // from being computed two different ways.
+// How many bonus-qualifying jobs actually happened in a given month, per
+// bonus type — driven entirely by real booking data (completed, priced,
+// and invoiced) rather than a number someone has to remember to type in.
+// Grouped by the month the job was actually completed in, not the month it
+// was originally booked for, since that's when the work — and the bonus —
+// is actually earned. A bonus rate with no job types linked never counts
+// anything, rather than guessing from its name.
+function computeBonusCounts(bookings, bonusRates, month) {
+  const counts = {};
+  bonusRates.forEach((br) => { counts[br.id] = 0; });
+  bookings.forEach((b) => {
+    if (!b.completed || !(b.jobValue > 0) || !b.zohoInvoiceId) return;
+    const completedMonth = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : (b.date || "").slice(0, 7);
+    if (completedMonth !== month) return;
+    const ids = new Set([b.jobTypeId, ...(b.extraJobTypeIds || [])].filter(Boolean));
+    bonusRates.forEach((br) => {
+      if ((br.jobTypeIds || []).some((jtId) => ids.has(jtId))) counts[br.id] += 1;
+    });
+  });
+  return counts;
+}
+
 function jobTypeCompletionCounts(bookings, jobTypes) {
   const counts = {};
   bookings.filter((b) => b.completed && (b.jobValue || 0) > 0).forEach((b) => {
@@ -2826,6 +2911,8 @@ function ProfitabilityGate({ children }) {
 
 function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
   const monthlyTarget = settings.monthlyTarget || 40000;
+  const workingDaysPerMonth = settings.workingDaysPerMonth || 25;
+  const dailyTarget = workingDaysPerMonth > 0 ? monthlyTarget / workingDaysPerMonth : 0;
 
   // Same completed-job-type counting as Profitability's all-time
   // breakdown, plus the same thing scoped to just the current month —
@@ -2856,12 +2943,45 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
     return Object.keys(byMonth).sort().map((key) => {
       const rows = byMonth[key];
       const jobValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+      // Actually invoiced (a real Zoho invoice raised) vs still just booked
+      // in — the gauge below splits on this rather than a flat "hit target
+      // or not" colour, since a month can look fully booked while most of
+      // that value hasn't actually been billed yet.
+      const invoicedValue = rows.reduce((sum, b) => sum + (b.zohoInvoiceId ? (b.jobValue || 0) : 0), 0);
+      const notInvoicedValue = jobValue - invoicedValue;
       const unpriced = rows.filter((b) => !(b.jobValue > 0)).length;
       const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
       const pct = monthlyTarget > 0 ? Math.min(100, (jobValue / monthlyTarget) * 100) : 0;
-      return { key, label, isCurrent: key === currentKey, count: rows.length, jobValue, unpriced, pct };
+      const invoicedPct = monthlyTarget > 0 ? Math.min(100, (invoicedValue / monthlyTarget) * 100) : 0;
+      const notInvoicedPct = Math.max(0, pct - invoicedPct);
+      return { key, label, isCurrent: key === currentKey, count: rows.length, jobValue, invoicedValue, notInvoicedValue, unpriced, pct, invoicedPct, notInvoicedPct };
     });
   }, [bookings, monthlyTarget]);
+
+  // "Where are we up to today" — a fixed daily pace (monthly target spread
+  // over a settings-configurable working-days assumption, not the real
+  // weekday count for whichever month this happens to be, so the daily
+  // number itself stays stable to work to) compared against how many
+  // working days have actually elapsed so far this month (real Mon-Fri
+  // count, same weekdayCount used for holidays), then both booked-in value
+  // and actually-invoiced value are checked against that expected-by-today
+  // figure — invoiced is the one that actually matters, booked is just an
+  // early signal since it can include jobs not yet done or billed.
+  const salesAnalysis = useMemo(() => {
+    const today = todayISO();
+    const monthStart = `${today.slice(0, 7)}-01`;
+    const workingDaysElapsed = weekdayCount(monthStart, today);
+    const expectedByToday = dailyTarget * workingDaysElapsed;
+    const currentMonth = forecast.find((f) => f.isCurrent);
+    return {
+      workingDaysElapsed,
+      expectedByToday,
+      bookedValue: currentMonth?.jobValue || 0,
+      invoicedValue: currentMonth?.invoicedValue || 0,
+      bookedVsExpected: (currentMonth?.jobValue || 0) - expectedByToday,
+      invoicedVsExpected: (currentMonth?.invoicedValue || 0) - expectedByToday,
+    };
+  }, [forecast, dailyTarget]);
 
   // Every booking anywhere, any date, with no price entered yet — can't
   // count toward the target above until it's costed, so these need
@@ -2898,6 +3018,31 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
       )}
 
       <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <TrendingUp size={16} color="var(--amber)" /> Sales analysis — {currentMonthLabel} so far
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 16 }}>
+          £{monthlyTarget.toLocaleString("en-GB")} target over {workingDaysPerMonth} working days = £{dailyTarget.toFixed(0)}/day. {salesAnalysis.workingDaysElapsed} working day{salesAnalysis.workingDaysElapsed !== 1 ? "s" : ""} in so far → expected by today: £{salesAnalysis.expectedByToday.toFixed(0)}.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <div style={{ background: "var(--panel2)", borderRadius: 8, padding: "14px 16px", border: "1px solid var(--line)" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 6 }}>Booked in</div>
+            <div className="wh-mono" style={{ fontSize: 24, fontWeight: 800 }}>£{salesAnalysis.bookedValue.toFixed(0)}</div>
+            <div style={{ fontSize: 12, marginTop: 4, color: salesAnalysis.bookedVsExpected >= 0 ? "var(--green)" : "var(--red)" }}>
+              {salesAnalysis.bookedVsExpected >= 0 ? "▲" : "▼"} £{Math.abs(salesAnalysis.bookedVsExpected).toFixed(0)} {salesAnalysis.bookedVsExpected >= 0 ? "ahead of" : "behind"} pace
+            </div>
+          </div>
+          <div style={{ background: "var(--panel2)", borderRadius: 8, padding: "14px 16px", border: "1px solid var(--green)" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--green)", marginBottom: 6, fontWeight: 700 }}>Invoiced (what counts)</div>
+            <div className="wh-mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--green)" }}>£{salesAnalysis.invoicedValue.toFixed(0)}</div>
+            <div style={{ fontSize: 12, marginTop: 4, color: salesAnalysis.invoicedVsExpected >= 0 ? "var(--green)" : "var(--red)" }}>
+              {salesAnalysis.invoicedVsExpected >= 0 ? "▲" : "▼"} £{Math.abs(salesAnalysis.invoicedVsExpected).toFixed(0)} {salesAnalysis.invoicedVsExpected >= 0 ? "ahead of" : "behind"} pace
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <TrendingUp size={16} color="var(--amber)" /> Forecast vs £{monthlyTarget.toLocaleString("en-GB")} monthly target
         </div>
@@ -2913,8 +3058,13 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
                     {f.count} job{f.count !== 1 ? "s" : ""} · £{f.jobValue.toFixed(2)} of £{monthlyTarget.toFixed(2)} ({f.pct.toFixed(0)}%)
                   </div>
                 </div>
-                <div style={{ height: 8, borderRadius: 4, background: "var(--panel2)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${f.pct}%`, background: f.pct >= 100 ? "var(--green)" : "var(--amber)", transition: "width 0.2s" }} />
+                <div style={{ height: 8, borderRadius: 4, background: "var(--panel2)", overflow: "hidden", display: "flex" }}>
+                  <div style={{ height: "100%", width: `${f.invoicedPct}%`, background: "var(--green)", transition: "width 0.2s" }} title={`Invoiced: £${f.invoicedValue.toFixed(2)}`} />
+                  <div style={{ height: "100%", width: `${f.notInvoicedPct}%`, background: "var(--amber)", transition: "width 0.2s" }} title={`Booked, not yet invoiced: £${f.notInvoicedValue.toFixed(2)}`} />
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, display: "flex", gap: 12 }}>
+                  <span style={{ color: "var(--green)" }}>● Invoiced £{f.invoicedValue.toFixed(2)}</span>
+                  <span style={{ color: "var(--amber2)" }}>● Booked, not yet invoiced £{f.notInvoicedValue.toFixed(2)}</span>
                 </div>
                 {f.unpriced > 0 && (
                   <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
@@ -2958,19 +3108,28 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
   );
 }
 
-// Staff wages & efficiency — basic + weekend days + per-job bonuses, per
-// person per month, against that month's gross profit (job value minus
-// parts) to see wages as a share of margin. One month at a time rather
-// than a table per historical month, since this is edited like a
-// spreadsheet as the month goes rather than browsed after the fact.
-function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage }) {
+// Staff wages & efficiency — basic + weekend days, per person per month,
+// plus one shared bonus pot for the whole team (Ernesto and Ervin are both
+// full-time on the same basic wage and split the bonus pot equally for
+// pay, rather than each having their own separately-tracked bonus count),
+// against that month's gross profit (job value minus parts) to see wages
+// as a share of margin. One month at a time rather than a table per
+// historical month, since this is edited like a spreadsheet as the month
+// goes rather than browsed after the fact.
+function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, bookings, jobTypes }) {
   const [month, setMonth] = useState(() => todayISO().slice(0, 7));
   const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
 
-  const rowTotal = (w) => {
-    const bonusTotal = bonusRates.reduce((sum, br) => sum + (Number(w.bonusCounts[br.id]) || 0) * br.rate, 0);
-    return (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusTotal;
-  };
+  // Auto-derived from actually completed + invoiced bookings — see
+  // computeBonusCounts — nobody has to remember to type a count in by hand,
+  // and it updates itself the moment a job gets marked complete and
+  // invoiced. One shared pot for the month, split equally across however
+  // many people are on this month's list (normally the two full-time techs).
+  const bonusCounts = useMemo(() => computeBonusCounts(bookings, bonusRates, month), [bookings, bonusRates, month]);
+  const totalBonusPot = useMemo(() => bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0), [bonusRates, bonusCounts]);
+  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
+
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
 
   const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
   const monthTotals = months.monthList.find((m) => m.key === month)?.totals;
@@ -3006,8 +3165,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
           <table className="wb-table">
             <thead>
               <tr>
-                <th>Name</th><th>Basic £</th><th>Weekend full days</th><th>Weekend half days</th>
-                {bonusRates.map((br) => <th key={br.id}>{br.name} (£{br.rate})</th>)}
+                <th>Name</th><th>Basic £</th><th>Weekend full days</th><th>Weekend half days</th><th>Bonus share</th>
                 <th>Total £</th><th></th>
               </tr>
             </thead>
@@ -3018,27 +3176,20 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
                   <td><input type="number" className="wb-input" style={{ width: 80 }} value={w.basic} onChange={(e) => patch(w, { basic: parseFloat(e.target.value) || 0 })} /></td>
                   <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendFullDays} onChange={(e) => patch(w, { weekendFullDays: parseFloat(e.target.value) || 0 })} /></td>
                   <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendHalfDays} onChange={(e) => patch(w, { weekendHalfDays: parseFloat(e.target.value) || 0 })} /></td>
-                  {bonusRates.map((br) => (
-                    <td key={br.id}>
-                      <input
-                        type="number" className="wb-input" style={{ width: 55 }} value={w.bonusCounts[br.id] || ""}
-                        onChange={(e) => patch(w, { bonusCounts: { ...w.bonusCounts, [br.id]: parseFloat(e.target.value) || 0 } })}
-                      />
-                    </td>
-                  ))}
+                  <td className="wh-mono" style={{ color: "var(--green)" }}>£{bonusPerPerson.toFixed(2)}</td>
                   <td className="wh-mono" style={{ fontWeight: 700 }}>£{rowTotal(w).toFixed(2)}</td>
                   <td><button onClick={() => removeStaffWage(w.id)} title="Remove" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
                 </tr>
               ))}
               {monthRows.length === 0 && (
-                <tr><td colSpan={5 + bonusRates.length} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>Nobody added for this month yet.</td></tr>
+                <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>Nobody added for this month yet.</td></tr>
               )}
             </tbody>
             {monthRows.length > 0 && (
               <tfoot>
                 <tr style={{ fontWeight: 700 }}>
-                  <td colSpan={3 + bonusRates.length}>Total wage outlay</td>
-                  <td className="wh-mono">£{totalOutlay.toFixed(2)}</td>
+                  <td colSpan={4}>Total wage outlay</td>
+                  <td colSpan={2} className="wh-mono">£{totalOutlay.toFixed(2)}</td>
                   <td></td>
                 </tr>
               </tfoot>
@@ -3058,15 +3209,73 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
         </div>
       </div>
 
+      <div className="wb-panel" style={{ borderColor: "var(--green)" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <PoundSterling size={18} color="var(--green)" /> Team bonus pot — {new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>
+          Fed automatically from jobs completed and invoiced this month — nothing to type in.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+          {bonusRates.map((br) => {
+            const count = bonusCounts[br.id] || 0;
+            const subtotal = count * br.rate;
+            return (
+              <div key={br.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 16, padding: "10px 14px", background: "var(--panel2)", borderRadius: 8 }}>
+                <div>{br.name} <span style={{ color: "var(--muted)", fontSize: 13 }}>({count} × £{br.rate})</span></div>
+                <div className="wh-mono" style={{ fontWeight: 700 }}>£{subtotal.toFixed(2)}</div>
+              </div>
+            );
+          })}
+          {bonusRates.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)" }}>No bonus types set up yet.</div>}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+          <div style={{ background: "#10281a", border: "1px solid var(--green)", borderRadius: 10, padding: "18px 20px" }}>
+            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--green)", marginBottom: 6, fontWeight: 700 }}>Total bonus pot</div>
+            <div className="wh-mono" style={{ fontSize: 32, fontWeight: 800, color: "var(--green)" }}>£{totalBonusPot.toFixed(2)}</div>
+          </div>
+          <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "18px 20px" }}>
+            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 6, fontWeight: 700 }}>
+              Split {monthRows.length || 0} way{monthRows.length === 1 ? "" : "s"}
+            </div>
+            <div className="wh-mono" style={{ fontSize: 32, fontWeight: 800 }}>£{bonusPerPerson.toFixed(2)}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>per person, added to wages above</div>
+          </div>
+        </div>
+      </div>
+
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Bonus rates</div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>£ per job, applied to the quantity boxes above. Shared across every month.</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>£ per job, and which job types earn it — shared across every month, drives the auto-fed pot above.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 10 }}>
           {bonusRates.map((br) => (
-            <div key={br.id} style={{ display: "grid", gridTemplateColumns: "1fr 100px 32px", gap: 8, alignItems: "center" }}>
-              <div style={{ fontSize: 13 }}>{br.name}</div>
-              <input type="number" step="0.01" className="wb-input" value={br.rate} onChange={(e) => updateBonusRate(br.id, parseFloat(e.target.value) || 0)} />
-              <button onClick={() => removeBonusRate(br.id)} title="Delete bonus type" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+            <div key={br.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 12, background: "var(--panel2)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 32px", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{br.name}</div>
+                <input type="number" step="0.01" className="wb-input" value={br.rate} onChange={(e) => updateBonusRate(br.id, parseFloat(e.target.value) || 0)} />
+                <button onClick={() => removeBonusRate(br.id)} title="Delete bonus type" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+              </div>
+              <label className="wb-label">Counts for these job types</label>
+              {(br.jobTypeIds || []).length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {br.jobTypeIds.map((id) => {
+                    const jt = jobTypes.find((j) => j.id === id);
+                    return (
+                      <span key={id} className="wb-chip" style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 0 }}>
+                        {jt?.name || id}
+                        <X size={11} style={{ cursor: "pointer" }} onClick={() => updateBonusRateJobTypes(br.id, br.jobTypeIds.filter((x) => x !== id))} />
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <select
+                className="wb-select" value=""
+                onChange={(e) => { if (e.target.value) updateBonusRateJobTypes(br.id, [...(br.jobTypeIds || []), e.target.value]); }}
+              >
+                <option value="">+ Add job type…</option>
+                {jobTypes.filter((jt) => !(br.jobTypeIds || []).includes(jt.id)).map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
+              </select>
             </div>
           ))}
           {bonusRates.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No bonus types set up yet.</div>}
@@ -3077,7 +3286,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -3157,8 +3366,9 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
       </div>
 
       <StaffWagesSection
-        months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} removeBonusRate={removeBonusRate}
+        months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
         staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+        bookings={bookings} jobTypes={jobTypes}
       />
 
       <FixedCostsSection
@@ -4402,8 +4612,11 @@ function SettingsTab({ settings, updateSettingsField }) {
       </div>
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Monthly target</div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Gross invoice sales target per month — shown as progress on the Profitability tab.</div>
-        <div><label className="wb-label">Target £ per month</label><input type="number" step="100" className="wb-input" style={{ maxWidth: 160 }} value={settings.monthlyTarget} onChange={(e) => updateSettingsField({ monthlyTarget: parseFloat(e.target.value) || 0 })} /></div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Gross invoice sales target per month — shown as progress on the Profitability tab, and drives the daily pace target on the Forecast tab.</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div><label className="wb-label">Target £ per month</label><input type="number" step="100" className="wb-input" style={{ maxWidth: 160 }} value={settings.monthlyTarget} onChange={(e) => updateSettingsField({ monthlyTarget: parseFloat(e.target.value) || 0 })} /></div>
+          <div><label className="wb-label">Working days per month</label><input type="number" step="1" className="wb-input" style={{ maxWidth: 160 }} value={settings.workingDaysPerMonth} onChange={(e) => updateSettingsField({ workingDaysPerMonth: parseFloat(e.target.value) || 0 })} /></div>
+        </div>
       </div>
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Non-productives cost</div>
