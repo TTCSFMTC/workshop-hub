@@ -3338,6 +3338,13 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
     return { monthList, unpricedCount, notYetCompleteCount };
   }, [bookings, jobTypes, parts, settings]);
 
+  // Which month's full breakdown is showing — one at a time behind a row of
+  // month buttons, rather than every month's table stacked and expanded at
+  // once, which just got longer and harder to actually use the more history
+  // built up. Defaults to the most recent month with anything in it.
+  const [selectedMonthKey, setSelectedMonthKey] = useState(null);
+  const activeMonth = months.monthList.find((m) => m.key === selectedMonthKey) || months.monthList[0] || null;
+
   const grandTotal = months.monthList.reduce((acc, m) => ({
     jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
     labourCost: acc.labourCost + m.totals.labourCost, transportCost: acc.transportCost + m.totals.transportCost,
@@ -3378,6 +3385,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
             None of these are counted here — add a job value and mark it collected on the Calendar tab to include it.
           </div>
         )}
+        {months.monthList.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+            {months.monthList.map((m) => (
+              <button
+                key={m.key}
+                onClick={() => setSelectedMonthKey(m.key)}
+                className={m.key === activeMonth?.key ? "wb-btn" : "wb-btn-ghost"}
+                style={{ width: "auto", padding: "8px 16px" }}
+              >
+                {new Date(`${m.key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <StaffWagesSection
@@ -3411,15 +3432,15 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
         </div>
       )}
 
-      {months.monthList.map((m) => (
-        <div key={m.key} className="wb-panel">
+      {activeMonth && (
+        <div className="wb-panel">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>{m.label}</div>
-            <div style={{ fontSize: 11, color: "var(--muted)" }}>{m.rows.length} job{m.rows.length !== 1 ? "s" : ""}</div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>{activeMonth.label}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>{activeMonth.rows.length} job{activeMonth.rows.length !== 1 ? "s" : ""}</div>
           </div>
-          {m.jobTypeBreakdown.length > 0 && (
+          {activeMonth.jobTypeBreakdown.length > 0 && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 6, marginBottom: 12 }}>
-              {m.jobTypeBreakdown.map(([name, count]) => (
+              {activeMonth.jobTypeBreakdown.map(([name, count]) => (
                 <div key={name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: "5px 8px" }}>
                   <span>{name}</span>
                   <span className="wh-mono" style={{ fontWeight: 700 }}>{count}</span>
@@ -3429,13 +3450,18 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
           )}
           <div style={{ overflowX: "auto" }}>
             <table className="wb-table">
-              <thead><tr><th>Date</th><th>Customer</th><th>Job type</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th></tr></thead>
+              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th></tr></thead>
               <tbody>
-                {m.rows.map((r) => (
+                {activeMonth.rows.map((r) => (
                   <tr key={r.booking.id}>
                     <td className="wh-mono">{r.booking.date}</td>
-                    <td>{r.booking.customerName || "Unnamed"} <span style={{ color: "var(--muted)" }}>{r.booking.reg}</span></td>
+                    <td className="wh-mono">{r.booking.days || 1}</td>
+                    <td>{r.booking.customerName || "Unnamed"}</td>
+                    <td className="wh-mono">{r.booking.reg}</td>
                     <td>{r.jt?.name || "—"}</td>
+                    <td style={{ color: r.booking.zohoInvoiceId ? "var(--green)" : "var(--muted)", fontWeight: r.booking.zohoInvoiceId ? 700 : 400 }}>
+                      {r.booking.zohoInvoiceId ? "Yes" : "No"}
+                    </td>
                     <td className="wh-mono">£{r.jobValue.toFixed(2)}</td>
                     <td className="wh-mono">£{r.partsCost.toFixed(2)}</td>
                     <td className="wh-mono">£{r.labourCost.toFixed(2)}</td>
@@ -3446,12 +3472,12 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
               </tbody>
               <tfoot>
                 <tr style={{ fontWeight: 700 }}>
-                  <td colSpan={3}>Total</td>
-                  <td className="wh-mono">£{m.totals.jobValue.toFixed(2)}</td>
-                  <td className="wh-mono">£{m.totals.partsCost.toFixed(2)}</td>
-                  <td className="wh-mono">£{m.totals.labourCost.toFixed(2)}</td>
-                  <td className="wh-mono">£{m.totals.transportCost.toFixed(2)}</td>
-                  <td className="wh-mono" style={{ color: m.totals.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{m.totals.profit.toFixed(2)}</td>
+                  <td colSpan={6}>Total</td>
+                  <td className="wh-mono">£{activeMonth.totals.jobValue.toFixed(2)}</td>
+                  <td className="wh-mono">£{activeMonth.totals.partsCost.toFixed(2)}</td>
+                  <td className="wh-mono">£{activeMonth.totals.labourCost.toFixed(2)}</td>
+                  <td className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)}</td>
+                  <td className="wh-mono" style={{ color: activeMonth.totals.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{activeMonth.totals.profit.toFixed(2)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -3460,7 +3486,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
             // GP here is the same "job value minus parts" figure the wages
             // % already compares against above — one consistent definition
             // of gross profit used everywhere on this tab, not a second one.
-            const gp = m.totals.jobValue - m.totals.partsCost;
+            const gp = activeMonth.totals.jobValue - activeMonth.totals.partsCost;
             const pct = (v) => (gp > 0 ? `${((v / gp) * 100).toFixed(1)}% of GP` : "—");
             return (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
@@ -3470,11 +3496,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Parts cost</span>
-                  <span className="wh-mono">£{m.totals.partsCost.toFixed(2)} ({pct(m.totals.partsCost)})</span>
+                  <span className="wh-mono">£{activeMonth.totals.partsCost.toFixed(2)} ({pct(activeMonth.totals.partsCost)})</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Transport cost</span>
-                  <span className="wh-mono">£{m.totals.transportCost.toFixed(2)} ({pct(m.totals.transportCost)})</span>
+                  <span className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)} ({pct(activeMonth.totals.transportCost)})</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Non-productives</span>
@@ -3484,7 +3510,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
             );
           })()}
         </div>
-      ))}
+      )}
     </div>
   );
 }
