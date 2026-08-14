@@ -366,6 +366,14 @@ const POSTCODE_AREA_COORDS = {
   EH: [55.95, -3.19], FK: [56.00, -3.78], KY: [56.20, -3.16], DD: [56.46, -2.97], AB: [57.15, -2.10],
   IV: [57.48, -4.22], PH: [56.70, -3.90], TD: [55.60, -2.78], ML: [55.78, -3.99], BT: [54.60, -5.93],
 };
+// Digits only, and drops a leading "44" (with or without a "+") down to the
+// "0" a UK number would normally start with, so "+44 7911 123456" and
+// "07911123456" match the same booking.
+function normalizePhone(raw) {
+  let digits = String(raw || "").replace(/\D/g, "");
+  if (digits.startsWith("44")) digits = "0" + digits.slice(2);
+  return digits;
+}
 function postcodeArea(pc) {
   if (!pc) return null;
   const m = pc.toUpperCase().replace(/\s+/g, "").match(/^([A-Z]{1,2})[0-9]/);
@@ -1194,6 +1202,13 @@ export default function WorkshopHub() {
         .wh-modeswitch { display:flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
         .wh-modebtn { padding:10px 16px; font-size:13px; font-weight:700; background:var(--panel); color:var(--muted); cursor:pointer; display:flex; align-items:center; gap:6px; border:none; }
         .wh-modebtn.active { background: var(--amber); color:#1a1508; }
+        .wb-callerbox { padding:14px 18px 0; }
+        .wb-callerdropdown { position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:60; padding:8px; max-height:360px; overflow-y:auto; }
+        .wb-callerresult { padding:8px; border-radius:8px; cursor:pointer; }
+        .wb-callerresult:hover { background: var(--panel2); }
+        .wb-callerresult + .wb-callerresult { border-top:1px solid var(--line); margin-top:2px; padding-top:10px; }
+        .wb-callerlink { font-size:12px; color:var(--amber2); text-decoration:none; padding:6px 4px; border-radius:6px; }
+        .wb-callerlink:hover { background: var(--panel2); }
         .wb-tabs { display:flex; gap:4px; padding:10px 18px 0; border-bottom:1px solid var(--line); overflow-x:auto; }
         .wb-tab { padding:10px 14px; font-size:13px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; }
         .wb-tab.active { color:var(--amber2); border-bottom-color: var(--amber); }
@@ -1338,6 +1353,11 @@ function OfficeMode({
   const [printStillToFinish, setPrintStillToFinish] = useState(false);
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [bookingRequests, setBookingRequests] = useState([]);
+  // "Who's calling?" — lets office staff check an incoming caller's number
+  // against past bookings before or during the call, and falls back to a
+  // few external lookup links when the number isn't in the system at all.
+  const [callerQuery, setCallerQuery] = useState("");
+  const [callerBoxOpen, setCallerBoxOpen] = useState(false);
   // Set while converting a pending request into a real booking — prefills
   // NewBookingModal without treating it as an edit, and tells the onSave
   // handler below which request to mark converted once it's saved.
@@ -1373,6 +1393,18 @@ function OfficeMode({
     setSelectedDay(b.date);
     setTab("calendar");
   };
+
+  // Matches for the "Who's calling?" box — needs at least 3 digits typed
+  // before it searches, so it doesn't dump the whole booking list on a
+  // single keystroke. Most recent visit first.
+  const callerDigits = normalizePhone(callerQuery);
+  const callerMatches = useMemo(() => {
+    if (callerDigits.length < 3) return [];
+    return bookings
+      .filter((b) => normalizePhone(b.phone).includes(callerDigits))
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 8);
+  }, [bookings, callerDigits]);
 
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
@@ -1416,6 +1448,49 @@ function OfficeMode({
 
   return (
     <div>
+      <div className="wb-callerbox">
+        <div style={{ position: "relative", maxWidth: 320, width: "100%" }}>
+          <Phone size={14} color="var(--muted)" style={{ position: "absolute", left: 12, top: 14 }} />
+          <input
+            className="wb-input"
+            style={{ paddingLeft: 34 }}
+            placeholder="Who's calling? Type their number…"
+            value={callerQuery}
+            onChange={(e) => setCallerQuery(e.target.value)}
+            onFocus={() => setCallerBoxOpen(true)}
+            onBlur={() => setTimeout(() => setCallerBoxOpen(false), 150)}
+          />
+          {callerBoxOpen && callerDigits.length >= 3 && (
+            <div className="wb-callerdropdown wb-panel">
+              {callerMatches.length > 0 ? (
+                callerMatches.map((b) => (
+                  <div
+                    key={b.id}
+                    className="wb-callerresult"
+                    onMouseDown={() => { openBookingOnCalendar(b); setCallerQuery(""); setCallerBoxOpen(false); }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{b.customer_name || "(no name)"}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>{b.reg} · {b.date} · {b.phone}</div>
+                    {b.symptoms && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{b.symptoms}</div>}
+                  </div>
+                ))
+              ) : (
+                <div style={{ padding: 4 }}>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+                    No matching booking. There's no reliable free service to auto-identify a UK mobile — try these instead:
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <a className="wb-callerlink" href={`https://www.google.com/search?q=${encodeURIComponent(callerQuery)}`} target="_blank" rel="noreferrer">Google search the number</a>
+                    <a className="wb-callerlink" href={`https://wa.me/${callerDigits.startsWith("0") ? "44" + callerDigits.slice(1) : callerDigits}`} target="_blank" rel="noreferrer">Check WhatsApp (name/photo if they're on it)</a>
+                    <a className="wb-callerlink" href={`https://www.truecaller.com/search/gb/${callerDigits}`} target="_blank" rel="noreferrer">Truecaller web lookup</a>
+                    <a className="wb-callerlink" href={`https://www.192.com/search/telephone/results/?number=${callerDigits}`} target="_blank" rel="noreferrer">192.com lookup</a>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
       <div className="wb-tabs">
         {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
