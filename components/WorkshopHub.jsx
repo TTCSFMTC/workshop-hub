@@ -427,6 +427,7 @@ function defaultDaysForJobType(jt, brands) {
   const brandName = brands.find((b) => b.id === jt.brandId)?.name || "";
   const name = (jt.name || "").toLowerCase();
   if ((brandName === "Landrover" || brandName === "Jaguar" || brandName === "JLR") && name.includes("timing chain")) return 3;
+  if (brandName === "Ford" && name.includes("wet belt") && (name.includes("transit") || name.includes("ranger"))) return 3;
   if (brandName === "Ford" && name.includes("wet belt")) return 2;
   if (brandName === "Nissan") return 2;
   if (brandName === "Peugeot" && (name.includes("pure tech") || name.includes("wetbelt") || name.includes("wet belt"))) return 2;
