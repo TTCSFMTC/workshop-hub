@@ -196,11 +196,6 @@ export default function PublicBooking() {
       requirements: f.requirements.includes(name) ? f.requirements.filter((r) => r !== name) : [...f.requirements, name],
     }));
   };
-  const allSelected = jobTypes.length > 0 && form.requirements.length === jobTypes.length;
-  const toggleAll = () => {
-    setForm((f) => ({ ...f, requirements: allSelected ? [] : jobTypes.map((jt) => jt.name) }));
-  };
-
   const minBookableISO = addDaysISO(todayISO(), MIN_NOTICE_DAYS);
 
   const openDay = (iso, count) => {
@@ -339,10 +334,6 @@ export default function PublicBooking() {
                   <div>
                     <label className="pb-label">Requirement (select any that apply)</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <div className={`pb-check ${allSelected ? "on" : ""}`} onClick={toggleAll}>
-                        <div style={{ width: 18, height: 18, borderRadius: 4, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{allSelected && <Check size={12} />}</div>
-                        All of the below
-                      </div>
                       {jobTypes.map((jt) => {
                         const on = form.requirements.includes(jt.name);
                         return (
