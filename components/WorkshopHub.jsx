@@ -432,6 +432,8 @@ function defaultDaysForJobType(jt, brands) {
   if (brandName === "Nissan") return 2;
   if (brandName === "Peugeot" && (name.includes("pure tech") || name.includes("wetbelt") || name.includes("wet belt"))) return 2;
   if (brandName === "Vauxhall") return 2;
+  if (brandName === "VAG") return 2;
+  if (brandName === "Renault") return 2;
   return null;
 }
 
