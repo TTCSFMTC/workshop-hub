@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
-  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock,
+  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download,
 } from "lucide-react";
 import {
@@ -51,7 +51,7 @@ const THERMOSTAT_MODEL_MAP = {
   "Discovery 5": "p_thermostat_housing_b",
 };
 const VEHICLE_MODELS = Object.keys(THERMOSTAT_MODEL_MAP);
-const PAYMENT_METHODS = ["Cash", "Debit Card", "Bank Transfer"];
+const PAYMENT_METHODS = ["Cash", "Debit Card", "Bank Transfer", "Payment Assist"];
 const uid = (p) => `${p}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 // Forces a real reason before a stock correction or order change goes
@@ -5250,6 +5250,26 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
   // writes a second for one field, the exact overlapping-write problem this
   // hook exists to avoid, so dictation runs through it the same as typing.
   const [local, setLocal] = useDebouncedField(value, onChange);
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState(null);
+
+  const convertToEnglish = async () => {
+    if (disabled || translating || !local?.trim()) return;
+    setTranslating(true);
+    setTranslateError(null);
+    try {
+      const res = await fetch("/api/office/translate", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: local }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Translation failed");
+      setLocal(data.translated);
+    } catch (e) {
+      setTranslateError(e.message || "Translation failed");
+    } finally {
+      setTranslating(false);
+    }
+  };
 
   const toggleDictate = (lang) => {
     if (disabled) return;
@@ -5289,10 +5309,14 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
             <button className="jc-btn-sm" style={listeningLang === "sq-AL" ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}} onClick={() => toggleDictate("sq-AL")} type="button">
               {listeningLang === "sq-AL" ? <MicOff size={14} /> : <Mic size={14} />} {listeningLang === "sq-AL" ? "Stop" : "Dictate (Albanian)"}
             </button>
+            <button className="jc-btn-sm" disabled={translating || !local?.trim()} onClick={convertToEnglish} type="button" style={translating ? { opacity: 0.6 } : {}}>
+              <Languages size={14} /> {translating ? "Converting…" : "Convert to English"}
+            </button>
           </div>
         )}
       </div>
       <textarea className="jc-textarea" rows={rows} value={local} disabled={disabled} onChange={(e) => setLocal(e.target.value)} placeholder="Tap here, then use your keyboard's dictation button to speak this in…" style={disabled ? { opacity: 0.6 } : {}} />
+      {translateError && <div style={{ fontSize: 12, color: "var(--red)", marginTop: 4 }}>{translateError}</div>}
     </div>
   );
 }
@@ -5488,7 +5512,6 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
         </div>
 
         <div className="jc-card"><div className="jc-section-title">Customer symptoms</div><DictateField value={card.symptoms} onChange={(v) => setField("symptoms", v)} rows={5} /></div>
-        <div className="jc-card"><div className="jc-section-title">Technician interpretation</div><DictateField value={card.technicianInterpretation} onChange={(v) => setField("technicianInterpretation", v)} rows={5} /></div>
 
         <div className="jc-card">
           <div className="jc-section-title">Pre-diagnostic checks</div>
