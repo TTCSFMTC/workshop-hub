@@ -901,6 +901,20 @@ export default function WorkshopHub() {
     await insertStockBatch(newBatch);
   });
 
+  // Same as orderStock, but for a part that doesn't exist in the system yet
+  // — backs the "Add by voice" flow, where a dictated order can name a part
+  // that's never been stocked before. Creates the part and places the order
+  // as one action rather than making the caller round-trip a freshly
+  // inserted part's id back out of withSaveState's fire-and-forget updates.
+  const addPartAndOrder = (name, unit, partNumber, qty, price, dueDate, supplier) => withSaveState(async () => {
+    const partId = uid("p");
+    const part = { id: partId, name, unit: unit || "each", stock: 0, costPrice: 0, partNumber: partNumber || "" };
+    const newBatch = { id: uid("sb"), partId, qtyOrdered: qty, qtyRemaining: qty, price, supplier: supplier || "", status: "ordered", orderedAt: new Date().toISOString(), deliveredAt: null, dueDate: dueDate || null };
+    setRawParts((prev) => [...prev, part]);
+    setStockBatches((prev) => [...prev, newBatch]);
+    await Promise.all([insertPart(part), insertStockBatch(newBatch)]);
+  });
+
   // Marks an order as physically arrived — from this point it counts toward
   // physical stock and joins the FIFO cost queue. Also logs it to price
   // history so the existing reorder-alert "12-month low" feature stays fed
@@ -1532,7 +1546,7 @@ function OfficeMode({
         )}
         {tab === "stock" && (
           <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
-            stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
+            stockBatches={stockBatches} orderStock={orderStock} addPartAndOrder={addPartAndOrder} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
             addAuditLog={addAuditLog} onPrintOutstandingParts={() => setPrintOutstandingParts(true)} />
         )}
@@ -3978,12 +3992,13 @@ function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, upd
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
+function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, addPartAndOrder, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [downloadingPartsPdf, setDownloadingPartsPdf] = useState(false);
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const [voiceOrderOpen, setVoiceOrderOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set()); // per-part rows, shared across brand sections
   // Sections start collapsed too, same reasoning as Job Types and the
   // per-part rows above — several brands' worth of parts at once was right
@@ -4072,7 +4087,16 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <button className="wb-btn-ghost" disabled={downloadingPartsPdf} style={downloadingPartsPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadOutstandingPartsPdf} title="Download the same list as a PDF"><Download size={13} /> {downloadingPartsPdf ? "Generating…" : "Download PDF"}</button>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
+        <button className="wb-btn-ghost" onClick={() => setVoiceOrderOpen(true)}><Mic size={13} /> Add by voice</button>
       </div>
+      {voiceOrderOpen && (
+        <VoiceStockOrderModal
+          stockRows={stockRows}
+          orderStock={orderStock}
+          addPartAndOrder={addPartAndOrder}
+          onClose={() => setVoiceOrderOpen(false)}
+        />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sections.map((section) => {
           const rows = stockRows.filter((r) => section.partIds.has(r.id));
@@ -4240,6 +4264,165 @@ function PartsPriceModal({ parts, onClose }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Speak a part order instead of typing it: dictate the part, its number, the
+// price, and who it's ordered from, let Claude pull those into fields, check
+// them over, then place the order — same end result as the "Order stock" row
+// on the table, just voice-first and able to create a brand-new part too.
+function VoiceStockOrderModal({ stockRows, orderStock, addPartAndOrder, onClose }) {
+  const [listening, setListening] = useState(false);
+  const recogRef = useRef(null);
+  const supported = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  const [transcript, setTranscript] = useState("");
+  const [parsing, setParsing] = useState(false);
+  const [parseError, setParseError] = useState(null);
+  const [fields, setFields] = useState(null); // { partName, partNumber, qty, price, supplier, dueDate }
+  const [placed, setPlaced] = useState(false);
+
+  const toggleListen = () => {
+    if (listening) {
+      recogRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return;
+    const recog = new SR();
+    recog.lang = "en-GB"; recog.continuous = true; recog.interimResults = true;
+    const base = transcript ? transcript + " " : "";
+    recog.onresult = (e) => { let t = ""; for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript; setTranscript(base + t); };
+    recog.onerror = () => setListening(false);
+    recog.onend = () => setListening(false);
+    try { recog.start(); recogRef.current = recog; setListening(true); } catch { setListening(false); }
+  };
+
+  const parse = async () => {
+    if (!transcript.trim() || parsing) return;
+    setParsing(true);
+    setParseError(null);
+    try {
+      const res = await fetch("/api/office/parse-stock-order", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: transcript }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Parsing failed");
+      setFields({
+        partName: data.partName || "", partNumber: data.partNumber || "",
+        qty: data.qty != null ? String(data.qty) : "", price: data.price != null ? String(data.price) : "",
+        supplier: data.supplier || "", dueDate: "",
+      });
+    } catch (e) {
+      setParseError(e.message || "Parsing failed");
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const setFieldsField = (k, v) => setFields((prev) => ({ ...prev, [k]: v }));
+
+  // Same match rule the rest of Stock relies on parts having a stable
+  // identity by: an exact part number wins over an exact name, either
+  // case-insensitive since dictation/AI extraction won't reliably match case.
+  const matched = useMemo(() => {
+    if (!fields) return null;
+    const num = fields.partNumber.trim().toLowerCase();
+    const name = fields.partName.trim().toLowerCase();
+    if (num) {
+      const byNumber = stockRows.find((r) => (r.partNumber || "").trim().toLowerCase() === num);
+      if (byNumber) return byNumber;
+    }
+    if (name) {
+      const byName = stockRows.find((r) => r.name.trim().toLowerCase() === name);
+      if (byName) return byName;
+    }
+    return null;
+  }, [fields, stockRows]);
+
+  const canPlace = fields && fields.partName.trim() && parseFloat(fields.qty) > 0 && parseFloat(fields.price) >= 0;
+
+  const placeOrder = () => {
+    if (!canPlace) return;
+    const qty = parseFloat(fields.qty);
+    const price = parseFloat(fields.price);
+    const supplier = fields.supplier.trim() || null;
+    const dueDate = fields.dueDate || null;
+    if (matched) {
+      orderStock(matched.id, qty, price, dueDate, supplier);
+    } else {
+      addPartAndOrder(fields.partName.trim(), "each", fields.partNumber.trim(), qty, price, dueDate, supplier);
+    }
+    setPlaced(true);
+  };
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+            <Mic size={16} color="var(--amber)" /> Add stock by voice
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+
+        {placed ? (
+          <div style={{ padding: 24, textAlign: "center" }}>
+            <Check size={28} color="var(--green)" style={{ marginBottom: 8 }} />
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Order placed</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>
+              {fields.qty} × {fields.partName} @ £{parseFloat(fields.price).toFixed(2)}{fields.supplier ? ` from ${fields.supplier}` : ""} — it will show as on order until marked received.
+            </div>
+            <button className="wb-btn" onClick={onClose}>Done</button>
+          </div>
+        ) : (
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <div className="jc-label" style={{ marginBottom: 6 }}>
+                Say the part, its part number, the price, and who it is from
+              </div>
+              <textarea
+                className="jc-textarea" rows={3} value={transcript} onChange={(e) => setTranscript(e.target.value)}
+                placeholder={supported ? "Tap the mic and speak, or type it here…" : "Speech recognition isn't supported in this browser — type it here instead…"}
+              />
+              {supported && (
+                <button
+                  className="jc-btn-sm" type="button" style={{ marginTop: 6, ...(listening ? { background: "#3a1210", borderColor: "var(--red)", color: "var(--red)" } : {}) }}
+                  onClick={toggleListen}
+                >
+                  {listening ? <MicOff size={14} /> : <Mic size={14} />} {listening ? "Stop" : "Dictate"}
+                </button>
+              )}
+            </div>
+
+            <button className="wb-btn" onClick={parse} disabled={!transcript.trim() || parsing}>
+              {parsing ? "Reading it back…" : "Read it back"}
+            </button>
+            {parseError && <div style={{ fontSize: 12, color: "var(--red)" }}>{parseError}</div>}
+
+            {fields && (
+              <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 11, color: "var(--muted)" }}>Check this over before it goes on order:</div>
+                <input type="text" className="wb-input" placeholder="Part name" value={fields.partName} onChange={(e) => setFieldsField("partName", e.target.value)} />
+                <div style={{ fontSize: 11, color: matched ? "var(--green)" : "var(--muted)" }}>
+                  {matched ? `Matches existing part: ${matched.name}${matched.partNumber ? ` (${matched.partNumber})` : ""}` : "No match — this will be added as a new part"}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <input type="text" className="wb-input" style={{ width: 140 }} placeholder="Part number" value={fields.partNumber} onChange={(e) => setFieldsField("partNumber", e.target.value)} />
+                  <input type="number" className="wb-input" style={{ width: 80 }} placeholder="qty" value={fields.qty} onChange={(e) => setFieldsField("qty", e.target.value)} />
+                  <input type="number" step="0.01" className="wb-input" style={{ width: 90 }} placeholder="£ price" value={fields.price} onChange={(e) => setFieldsField("price", e.target.value)} />
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <input type="text" className="wb-input" style={{ flex: 1, minWidth: 130 }} placeholder="Ordered from" value={fields.supplier} onChange={(e) => setFieldsField("supplier", e.target.value)} />
+                  <input type="date" className="wb-input" style={{ width: 140 }} title="Due date" value={fields.dueDate} onChange={(e) => setFieldsField("dueDate", e.target.value)} />
+                </div>
+                <button className="wb-btn" disabled={!canPlace} onClick={placeOrder}>Place order</button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
