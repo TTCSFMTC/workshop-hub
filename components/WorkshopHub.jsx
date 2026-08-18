@@ -1212,8 +1212,8 @@ export default function WorkshopHub() {
         .wb-callerresult + .wb-callerresult { border-top:1px solid var(--line); margin-top:2px; padding-top:10px; }
         .wb-callerlink { font-size:12px; color:var(--amber2); text-decoration:none; padding:6px 4px; border-radius:6px; }
         .wb-callerlink:hover { background: var(--panel2); }
-        .wb-tabs { display:flex; gap:1px; padding:8px 8px 0; border-bottom:1px solid var(--line); overflow-x:auto; }
-        .wb-tab { padding:7px 7px; font-size:11.5px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:3px; white-space:nowrap; }
+        .wb-tabs { display:flex; flex-wrap:wrap; gap:2px 1px; padding:8px 8px 0; border-bottom:1px solid var(--line); }
+        .wb-tab { padding:7px 8px; font-size:11.5px; font-weight:600; color:var(--muted); border-bottom:2px solid transparent; cursor:pointer; display:flex; align-items:center; gap:3px; white-space:nowrap; }
         .wb-tab.active { color:var(--amber2); border-bottom-color: var(--amber); }
         .wb-cal-layout { display:grid; grid-template-columns: 1fr 340px; gap:18px; }
         .wb-daypanel-close { display:none; }
