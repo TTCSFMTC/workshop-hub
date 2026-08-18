@@ -4779,6 +4779,9 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [phone, setPhone] = useState(booking?.phone || initialValues?.phone || "");
   const [email, setEmail] = useState(booking?.email || initialValues?.email || "");
   const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
+  const [beltChainStatus, setBeltChainStatus] = useState("idle"); // idle | loading | done | error
+  const [beltChainResult, setBeltChainResult] = useState(null);
+  const [beltChainError, setBeltChainError] = useState("");
   const [symptoms, setSymptoms] = useState(booking?.symptoms || initialValues?.symptoms || "");
   const [business, setBusiness] = useState(booking?.business || initialValues?.business || BUSINESSES[0]);
   const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || initialValues?.jobTypeId || jobTypes[0]?.id || "");
@@ -4864,6 +4867,31 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   };
   const canSave = customerName.trim() && date && jobTypeId;
 
+  // Looks the reg up via /api/office/belt-or-chain (DVSA MOT History API +
+  // our curated engine list) — see belt-or-chain/README.md for the standalone
+  // CLI version this was ported from. Never invents a part number: an engine
+  // not yet in the list comes back as "no match", not a guess.
+  const checkBeltOrChain = async () => {
+    if (!reg.trim()) return;
+    setBeltChainStatus("loading");
+    setBeltChainError("");
+    setBeltChainResult(null);
+    try {
+      const res = await fetch("/api/office/belt-or-chain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reg }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lookup failed");
+      setBeltChainResult(data);
+      setBeltChainStatus("done");
+    } catch (e) {
+      setBeltChainError(e.message);
+      setBeltChainStatus("error");
+    }
+  };
+
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
       <div className="wb-modal" onClick={(e) => e.stopPropagation()}>
@@ -4881,7 +4909,33 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
             <div><label className="wb-label">Customer name</label><input className="wb-input" value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>
             <div><label className="wb-label">Phone</label><input className="wb-input" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
             <div><label className="wb-label">Email</label><input className="wb-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-            <div><label className="wb-label">Vehicle registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} /></div>
+            <div>
+              <label className="wb-label">Vehicle registration</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input className="wb-input" style={{ flex: 1 }} value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} />
+                <button type="button" className="wb-btn-ghost" style={{ whiteSpace: "nowrap" }} onClick={checkBeltOrChain} disabled={!reg.trim() || beltChainStatus === "loading"}>
+                  <Wrench size={12} /> {beltChainStatus === "loading" ? "Checking…" : "Belt/chain?"}
+                </button>
+              </div>
+              {beltChainStatus === "error" && (
+                <div style={{ color: "var(--red)", fontSize: 11, marginTop: 4 }}>{beltChainError}</div>
+              )}
+              {beltChainStatus === "done" && beltChainResult && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
+                  {beltChainResult.make || "?"} {beltChainResult.model || ""}, {beltChainResult.fuelType || "?"}, {beltChainResult.cc ? `${beltChainResult.cc}cc` : "cc unknown"}
+                  {beltChainResult.matches.length === 0 && (
+                    <div style={{ marginTop: 4 }}>No match in the belt/chain list for this engine — add it to the list in the API route if known.</div>
+                  )}
+                  {beltChainResult.matches.map((m, i) => (
+                    <div key={i} style={{ marginTop: 4, padding: 8, border: "1px solid var(--line)", borderRadius: 6 }}>
+                      <div style={{ fontWeight: 700, color: "var(--text)" }}>{m.name} — {m.type === "belt" ? "TIMING BELT" : "TIMING CHAIN"}</div>
+                      <div>Part: {m.partNumber || "not recorded yet"}</div>
+                      {m.notes && <div style={{ marginTop: 2 }}>{m.notes}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
             <div>
               <label className="wb-label">Make</label>
