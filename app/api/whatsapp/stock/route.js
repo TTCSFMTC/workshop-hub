@@ -78,7 +78,13 @@ async function handleVoiceNote({ mediaUrl, contentType, from }) {
     return twiml(`I heard: "${transcript}"\n\nAdd ${parsed.qty} x ${part.name} to stock? Reply YES to confirm or NO to cancel.`);
   } catch (e) {
     console.error("whatsapp stock voice note failed", e);
-    return twiml("Sorry, something went wrong processing that voice note — please try again.");
+    const message = e?.message || String(e);
+    await supabase.from("whatsapp_stock_requests").insert({
+      id: uid("wsr"), from_number: from, transcript: `ERROR: ${message}`.slice(0, 500), status: "unmatched",
+    }).then(() => {}, () => {});
+    // TEMP: surfacing the real error in the reply itself while we debug
+    // this end to end — replace with a generic message once it's working.
+    return twiml(`Sorry, something went wrong: ${message.slice(0, 300)}`);
   }
 }
 
