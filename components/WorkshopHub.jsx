@@ -1233,7 +1233,7 @@ export default function WorkshopHub() {
         .wb-input, .wb-select, .wb-textarea, .jc-input, .jc-textarea, .jc-select { width:100%; background: var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:12px 12px; font-size:16px; font-family:inherit; }
         .wb-input:focus, .wb-select:focus, .wb-textarea:focus, .jc-input:focus, .jc-textarea:focus { outline:none; border-color: var(--amber); }
         .wb-label, .jc-label { font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); margin-bottom:5px; display:block; font-weight:600; }
-        .wb-day { min-height:78px; border:1px solid var(--line); padding:6px; cursor:pointer; }
+        .wb-day { min-height:78px; min-width:0; overflow:hidden; border:1px solid var(--line); padding:6px; cursor:pointer; }
         .wb-day:hover { background: var(--panel2); }
         .wb-day.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
         .wb-day.today .wb-daynum { color: var(--amber2); }
@@ -2246,13 +2246,13 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
       <ReviewFollowUpBanner bookings={bookings} updateBooking={updateBooking} />
       <div className="wb-cal-layout">
       <div className="wb-panel">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={14} /></button>
             <div style={{ fontWeight: 700, fontSize: 15, minWidth: 150, textAlign: "center" }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
             <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month + 1, 1))}><ChevronRight size={14} /></button>
           </div>
-          <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
           {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>{d}</div>)}
