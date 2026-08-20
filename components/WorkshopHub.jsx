@@ -239,7 +239,7 @@ ${b.business}`;
 function reminderMessage(b) {
   const reminder = b.business === "Timing Chain Specialists"
     ? "just a reminder, please make sure your locking wheel nut is left in the centre cupholder ready for our collection driver."
-    : "just a reminder, please bring your locking wheel nut. We'll meet you in reception at 9:30.";
+    : "just a reminder, please bring your locking wheel nut. We'll meet you in reception at 10am, or at the time previously arranged.";
   return `Hello ${firstName(b.customerName)},
 
 I hope you are well, just checking in before we finalise the details — ${reminder} Just let us know if anything has changed since we booked you in.`;
@@ -2360,6 +2360,26 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       <MessageCircle size={15} />
                     </button>
                     <button onClick={() => onEditBooking(b)} title="Edit booking" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
+                    <button
+                      onClick={async () => {
+                        if (!b.email) { alert("This booking has no email address set."); return; }
+                        if (!window.confirm(`Send a "no-show" email to ${b.customerName || "this customer"}?`)) return;
+                        try {
+                          const res = await fetch("/api/office/no-show-email", {
+                            method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ to: b.email, business: b.business, customerName: b.customerName }),
+                          });
+                          if (!res.ok) throw new Error();
+                          alert("No-show email sent.");
+                        } catch {
+                          alert("Failed to send the no-show email — please try again.");
+                        }
+                      }}
+                      title="Customer no-show — send email"
+                      style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}
+                    >
+                      <Mail size={13} />
+                    </button>
                     <button onClick={() => onPrintJob(b)} title="Print job card" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><Printer size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
