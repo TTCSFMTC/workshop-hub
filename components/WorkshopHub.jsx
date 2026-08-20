@@ -647,7 +647,20 @@ export default function WorkshopHub() {
   // flagged there, ordering more fixes every booking after it too.
   const partsForecastShortfalls = useMemo(() => {
     const available = {};
-    parts.forEach((p) => { available[p.id] = p.stock + (partOnOrder[p.id] || 0); });
+    // Pending orders with a known due date only count as available once
+    // the simulated date reaches that due date — a batch due on the 3rd
+    // shouldn't be treated as already covering a job that needs it on the
+    // 1st. Orders with no due date set can't be gated on time, so (as
+    // before) they're assumed available from the start.
+    const pendingByPart = {};
+    parts.forEach((p) => { available[p.id] = p.stock; pendingByPart[p.id] = []; });
+    stockBatches.filter((b) => b.status === "ordered").forEach((b) => {
+      if (!(b.partId in available)) return;
+      if (b.dueDate) pendingByPart[b.partId].push({ dueDate: b.dueDate, qty: b.qtyRemaining });
+      else available[b.partId] += b.qtyRemaining;
+    });
+    Object.values(pendingByPart).forEach((list) => list.sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1)));
+
     const upcoming = bookings
       .filter((b) => !b.workshopCompleted && !b.completed && b.date)
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -655,6 +668,8 @@ export default function WorkshopHub() {
     upcoming.forEach((b) => {
       fullBookingBom(b, jobTypes).forEach((l) => {
         if (!(l.partId in available)) return;
+        const pending = pendingByPart[l.partId];
+        while (pending.length > 0 && pending[0].dueDate <= b.date) available[l.partId] += pending.shift().qty;
         available[l.partId] -= l.qty;
         if (available[l.partId] < 0 && !shortfalls[l.partId]) {
           const part = parts.find((p) => p.id === l.partId);
@@ -670,7 +685,7 @@ export default function WorkshopHub() {
       });
     });
     return Object.values(shortfalls).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  }, [bookings, jobTypes, parts, partOnOrder]);
+  }, [bookings, jobTypes, parts, stockBatches]);
 
   // Shown once per calendar day (not per session, unlike the reorder alert
   // above) — a fresh check each morning of what the diary now needs, without
