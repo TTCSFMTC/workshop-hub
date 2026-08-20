@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
-  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages,
+  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download,
 } from "lucide-react";
 import {
@@ -2344,6 +2344,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <div style={{ fontWeight: 700, fontSize: 13, color: bookingStatus(b).color || "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                   </div>
+                  {b.noShow && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red, #e2574c)", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      <Ban size={12} /> No-show
+                    </div>
+                  )}
                   <TrafficLightButtons booking={b} updateBooking={updateBooking} onMarkArrived={setIntakeBooking} />
                   {/* Left-aligned, directly under the name — not pushed to the far right edge of
                       the card, which was unreachable one-handed on the mobile/iPad layout. */}
@@ -2362,23 +2367,27 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <button onClick={() => onEditBooking(b)} title="Edit booking" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><PenLine size={13} /></button>
                     <button
                       onClick={async () => {
-                        if (!b.email) { alert("This booking has no email address set."); return; }
-                        if (!window.confirm(`Send a "no-show" email to ${b.customerName || "this customer"}?`)) return;
+                        if (b.noShow) {
+                          if (window.confirm(`Un-mark ${b.customerName || "this booking"} as a no-show?`)) updateBooking(b.id, { noShow: false, noShowAt: null });
+                          return;
+                        }
+                        if (!window.confirm(`Mark ${b.customerName || "this booking"} as a no-show${b.email ? " and email them" : ""}?`)) return;
+                        updateBooking(b.id, { noShow: true, noShowAt: Date.now() });
+                        if (!b.email) return;
                         try {
                           const res = await fetch("/api/office/no-show-email", {
                             method: "POST", headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ to: b.email, business: b.business, customerName: b.customerName }),
                           });
                           if (!res.ok) throw new Error();
-                          alert("No-show email sent.");
                         } catch {
-                          alert("Failed to send the no-show email — please try again.");
+                          alert("Marked as a no-show, but the email failed to send — please try again or contact them directly.");
                         }
                       }}
-                      title="Customer no-show — send email"
-                      style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}
+                      title={b.noShow ? "Marked as a no-show — click to un-mark" : "Customer no-show — mark and email"}
+                      style={{ background: "none", border: "none", color: "var(--red, #e2574c)", cursor: "pointer", opacity: b.noShow ? 1 : 0.85 }}
                     >
-                      <Mail size={13} />
+                      <Ban size={13} strokeWidth={b.noShow ? 3 : 2} />
                     </button>
                     <button onClick={() => onPrintJob(b)} title="Print job card" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><Printer size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
