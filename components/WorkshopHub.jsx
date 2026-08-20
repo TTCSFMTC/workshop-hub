@@ -4019,6 +4019,8 @@ function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, upd
 function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
+  const [bulkJobTypeId, setBulkJobTypeId] = useState("");
+  const [bulkQty, setBulkQty] = useState(1);
   const [downloadingPartsPdf, setDownloadingPartsPdf] = useState(false);
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
@@ -4101,6 +4103,28 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
 
   const rowProps = { pendingByPart, daysAgo, renamePart, setHistoryPart, updatePartField, orderAmounts, setOrderAmounts, orderStock, receiveAmounts, setReceiveAmounts, receiveStock, deliverStock, cancelOrder, amendOrder, deletePartClick, addAuditLog };
 
+  // Every part in a job type's recipe arrives together as one order, so
+  // receiving them should be one action too — not clicking "Correct" once
+  // per part. Reuses receiveStock/addAuditLog exactly like the single-part
+  // correction flow below, just looped over the whole BOM with one shared
+  // reason.
+  const bomJobTypes = useMemo(() => jobTypes.filter((jt) => jt.bom.length > 0).sort((a, b) => a.name.localeCompare(b.name)), [jobTypes]);
+  const bulkJobType = jobTypes.find((jt) => jt.id === bulkJobTypeId);
+  const addStockByJobType = () => {
+    if (!bulkJobType) return;
+    const multiplier = Number(bulkQty) || 1;
+    const reason = promptReason(`Why are you adding stock for ${multiplier} x ${bulkJobType.name}?`);
+    if (reason === null) return;
+    bulkJobType.bom.forEach((line) => receiveStock(line.partId, line.qty * multiplier));
+    const partSummary = bulkJobType.bom.map((line) => {
+      const part = stockRows.find((r) => r.id === line.partId);
+      return `${part?.name || line.partId} +${line.qty * multiplier}`;
+    }).join(", ");
+    addAuditLog(`Stock added by job type: ${bulkJobType.name} x${multiplier} (${partSummary})`, reason);
+    setBulkJobTypeId("");
+    setBulkQty(1);
+  };
+
   return (
     <div className="wb-panel">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
@@ -4110,6 +4134,32 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <button className="wb-btn-ghost" disabled={downloadingPartsPdf} style={downloadingPartsPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadOutstandingPartsPdf} title="Download the same list as a PDF"><Download size={13} /> {downloadingPartsPdf ? "Generating…" : "Download PDF"}</button>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
+      </div>
+      <div className="wb-panel" style={{ padding: 12, marginBottom: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+          <Plus size={14} color="var(--amber)" /> Add stock by job type
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+          Received all the parts for a kit? Add every part in that job type's recipe to stock in one go, instead of one by one.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <select className="wb-select" style={{ flex: 1, minWidth: 220 }} value={bulkJobTypeId} onChange={(e) => setBulkJobTypeId(e.target.value)}>
+            <option value="">Select a job type…</option>
+            {bomJobTypes.map((jt) => (
+              <option key={jt.id} value={jt.id}>{jt.name} ({jt.bom.length} part{jt.bom.length !== 1 ? "s" : ""})</option>
+            ))}
+          </select>
+          <input className="wb-input" type="number" min="1" step="1" value={bulkQty} onChange={(e) => setBulkQty(e.target.value)} style={{ width: 70 }} title="How many kits/jobs worth" />
+          <button className="wb-btn" onClick={addStockByJobType} disabled={!bulkJobType}>Add to stock</button>
+        </div>
+        {bulkJobType && (
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+            Will add: {bulkJobType.bom.map((line) => {
+              const part = stockRows.find((r) => r.id === line.partId);
+              return `${line.qty * (Number(bulkQty) || 1)} x ${part?.name || line.partId}`;
+            }).join(", ")}
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sections.map((section) => {
