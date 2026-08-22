@@ -1588,7 +1588,7 @@ function OfficeMode({
         {tab === "profitability" && (
           <ProfitabilityGate>
             <ProfitabilityTab
-              bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
+              bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking}
               bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
@@ -2947,7 +2947,10 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
 // separately so the numbers aren't silently missing jobs.
 function bookingProfit(booking, jobTypes, parts, settings) {
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
-  const partsCost = partsCostForBooking(booking, jobTypes, parts);
+  // A manually-entered parts cost (set from the Profitability tab) always
+  // wins over the auto-computed BOM total — for jobs where the recipe on
+  // file doesn't match what was actually bought for that particular vehicle.
+  const partsCost = booking.partsCostOverride != null ? booking.partsCostOverride : partsCostForBooking(booking, jobTypes, parts);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
   const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
   return { jt, partsCost, jobValue, labourCost, transportCost, vat, profit };
@@ -3123,6 +3126,27 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
     };
   }, [forecast, dailyTarget]);
 
+  // Vehicle counts for the current month — separate from the £-value pace
+  // above, and on a different date basis on purpose. "Booked in" mirrors
+  // the £ forecast (grouped by drop-off date). "Due to finish" groups by
+  // the expected collection date instead — drop-off + days, or the real
+  // completedAt once a job is actually marked done — so a car dropped off
+  // on the 30th with a 3-day job counts as finishing next month, not this
+  // one, and the same addDaysISO(date, days-1) math already used for the
+  // calendar's "required by" date and the Calendar tab's day-span display.
+  const carsThisMonth = useMemo(() => {
+    const currentKey = todayISO().slice(0, 7);
+    const bookedIn = bookings.filter((b) => b.date && b.date.slice(0, 7) === currentKey);
+    const dueToFinish = bookings.filter((b) => {
+      const finishDate = b.completed && b.completedAt
+        ? new Date(b.completedAt).toISOString().slice(0, 10)
+        : (b.date ? addDaysISO(b.date, (b.days || 1) - 1) : null);
+      return finishDate && finishDate.slice(0, 7) === currentKey;
+    });
+    const finishedAlready = dueToFinish.filter((b) => b.completed).length;
+    return { bookedInCount: bookedIn.length, dueToFinishCount: dueToFinish.length, finishedAlready, stillDue: dueToFinish.length - finishedAlready };
+  }, [bookings]);
+
   // Every booking anywhere, any date, with no price entered yet — can't
   // count toward the target above until it's costed, so these need
   // chasing rather than just silently sitting blank.
@@ -3177,6 +3201,18 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
             <div className="wh-mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--green)" }}>£{salesAnalysis.invoicedValue.toFixed(0)}</div>
             <div style={{ fontSize: 12, marginTop: 4, color: salesAnalysis.invoicedVsExpected >= 0 ? "var(--green)" : "var(--red)" }}>
               {salesAnalysis.invoicedVsExpected >= 0 ? "▲" : "▼"} £{Math.abs(salesAnalysis.invoicedVsExpected).toFixed(0)} {salesAnalysis.invoicedVsExpected >= 0 ? "ahead of" : "behind"} pace
+            </div>
+          </div>
+          <div style={{ background: "var(--panel2)", borderRadius: 8, padding: "14px 16px", border: "1px solid var(--line)" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 6 }}>Cars booked in — {currentMonthLabel}</div>
+            <div className="wh-mono" style={{ fontSize: 24, fontWeight: 800 }}>{carsThisMonth.bookedInCount}</div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--muted)" }}>By drop-off date</div>
+          </div>
+          <div style={{ background: "var(--panel2)", borderRadius: 8, padding: "14px 16px", border: "1px solid var(--amber)" }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--amber2)", marginBottom: 6, fontWeight: 700 }}>Cars due to finish — {currentMonthLabel}</div>
+            <div className="wh-mono" style={{ fontSize: 24, fontWeight: 800, color: "var(--amber2)" }}>{carsThisMonth.dueToFinishCount}</div>
+            <div style={{ fontSize: 12, marginTop: 4, color: "var(--muted)" }}>
+              {carsThisMonth.finishedAlready} done · {carsThisMonth.stillDue} still to go — by drop-off + days, or actual completion date once marked done
             </div>
           </div>
         </div>
@@ -3441,7 +3477,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -3484,6 +3520,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
   // built up. Defaults to the most recent month with anything in it.
   const [selectedMonthKey, setSelectedMonthKey] = useState(null);
   const activeMonth = months.monthList.find((m) => m.key === selectedMonthKey) || months.monthList[0] || null;
+
+  // Which row (if any) currently has its Parts/Labour/Transport cells
+  // swapped for inputs — one at a time, reset whenever the selected month
+  // changes so a stale row id from a different month's table can't linger.
+  const [editingRowId, setEditingRowId] = useState(null);
+  // Which row (if any) has its parts breakdown open underneath it — click
+  // the Parts cost figure to see the actual recipe (part × qty × unit cost)
+  // behind that number, and adjust individual quantities from there.
+  const [breakdownRowId, setBreakdownRowId] = useState(null);
+  const partsIndexForProfitability = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
+  const updateBomQtyForBooking = (booking, partId, qty) => {
+    const next = fullBookingBom(booking, jobTypes).map((l) => (l.partId === partId ? { partId, qty } : l));
+    updateBooking(booking.id, { bomQtyOverrides: next });
+  };
 
   const grandTotal = months.monthList.reduce((acc, m) => ({
     jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
@@ -3590,25 +3640,149 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
           )}
           <div style={{ overflowX: "auto" }}>
             <table className="wb-table">
-              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th></tr></thead>
+              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th></tr></thead>
               <tbody>
-                {activeMonth.rows.map((r) => (
-                  <tr key={r.booking.id}>
-                    <td className="wh-mono">{r.booking.date}</td>
-                    <td className="wh-mono">{r.booking.days || 1}</td>
-                    <td>{r.booking.customerName || "Unnamed"}</td>
-                    <td className="wh-mono">{r.booking.reg}</td>
-                    <td>{r.jt?.name || "—"}</td>
-                    <td style={{ color: r.booking.zohoInvoiceId ? "var(--green)" : "var(--muted)", fontWeight: r.booking.zohoInvoiceId ? 700 : 400 }}>
-                      {r.booking.zohoInvoiceId ? "Yes" : "No"}
-                    </td>
-                    <td className="wh-mono">£{r.jobValue.toFixed(2)}</td>
-                    <td className="wh-mono">£{r.partsCost.toFixed(2)}</td>
-                    <td className="wh-mono">£{r.labourCost.toFixed(2)}</td>
-                    <td className="wh-mono">£{r.transportCost.toFixed(2)}</td>
-                    <td className="wh-mono" style={{ color: r.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{r.profit.toFixed(2)}</td>
-                  </tr>
-                ))}
+                {activeMonth.rows.map((r) => {
+                  const editing = editingRowId === r.booking.id;
+                  const breakdownOpen = breakdownRowId === r.booking.id;
+                  const costInputStyle = { width: 78, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--text)", padding: "4px 6px", fontSize: 12, fontFamily: "inherit" };
+                  return (
+                    <React.Fragment key={r.booking.id}>
+                    <tr style={r.booking.costsReviewed ? { background: "rgba(95,184,122,0.07)" } : undefined}>
+                      <td className="wh-mono">{r.booking.date}</td>
+                      <td className="wh-mono">{r.booking.days || 1}</td>
+                      <td>{r.booking.customerName || "Unnamed"}</td>
+                      <td className="wh-mono">{r.booking.reg}</td>
+                      <td>{r.jt?.name || "—"}</td>
+                      <td style={{ color: r.booking.zohoInvoiceId ? "var(--green)" : "var(--muted)", fontWeight: r.booking.zohoInvoiceId ? 700 : 400 }}>
+                        {r.booking.zohoInvoiceId ? "Yes" : "No"}
+                      </td>
+                      <td className="wh-mono">£{r.jobValue.toFixed(2)}</td>
+                      <td className="wh-mono">
+                        {editing ? (
+                          <input
+                            type="number" step="0.01" autoFocus
+                            defaultValue={r.booking.partsCostOverride != null ? r.booking.partsCostOverride : r.partsCost.toFixed(2)}
+                            onBlur={(e) => updateBooking(r.booking.id, { partsCostOverride: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
+                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                            style={costInputStyle}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setBreakdownRowId(breakdownRowId === r.booking.id ? null : r.booking.id)}
+                            title="Click to see what this is made up of"
+                            style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--muted)" }}
+                          >
+                            £{r.partsCost.toFixed(2)}{r.booking.partsCostOverride != null && <span title="Manually entered — not from the parts recipe" style={{ color: "var(--amber)", marginLeft: 3 }}>*</span>}
+                          </span>
+                        )}
+                      </td>
+                      <td className="wh-mono">
+                        {editing ? (
+                          <input
+                            type="number" step="0.01"
+                            defaultValue={r.labourCost.toFixed(2)}
+                            onBlur={(e) => updateBooking(r.booking.id, { labourCost: parseFloat(e.target.value) || 0 })}
+                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                            style={costInputStyle}
+                          />
+                        ) : (
+                          <>£{r.labourCost.toFixed(2)}</>
+                        )}
+                      </td>
+                      <td className="wh-mono">
+                        {editing ? (
+                          <input
+                            type="number" step="0.01"
+                            defaultValue={r.transportCost.toFixed(2)}
+                            onBlur={(e) => updateBooking(r.booking.id, { transportCost: parseFloat(e.target.value) || 0 })}
+                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                            style={costInputStyle}
+                          />
+                        ) : (
+                          <>£{r.transportCost.toFixed(2)}</>
+                        )}
+                      </td>
+                      <td className="wh-mono" style={{ color: r.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{r.profit.toFixed(2)}</td>
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button
+                          onClick={() => updateBooking(r.booking.id, { costsReviewed: !r.booking.costsReviewed })}
+                          title={r.booking.costsReviewed ? "Checked — click to unmark" : "Mark costs as checked"}
+                          style={{
+                            background: r.booking.costsReviewed ? "var(--green)" : "none",
+                            border: r.booking.costsReviewed ? "none" : "1px solid var(--line)",
+                            color: r.booking.costsReviewed ? "#0a1f14" : "var(--muted)",
+                            borderRadius: 6, cursor: "pointer", padding: 5, marginRight: 6,
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          }}
+                        ><Check size={13} /></button>
+                        <button
+                          onClick={() => setEditingRowId(editing ? null : r.booking.id)}
+                          title={editing ? "Done editing" : "Edit parts, labour & transport"}
+                          style={{
+                            background: editing ? "var(--amber)" : "none",
+                            border: editing ? "none" : "1px solid var(--line)",
+                            color: editing ? "#1a1508" : "var(--muted)",
+                            borderRadius: 6, cursor: "pointer", padding: 5,
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          }}
+                        ><PenLine size={13} /></button>
+                      </td>
+                    </tr>
+                    {breakdownOpen && (
+                      <tr>
+                        <td colSpan={12} style={{ background: "var(--panel2)", padding: "12px 16px" }}>
+                          {r.booking.partsCostOverride != null && (
+                            <div style={{ fontSize: 11.5, color: "var(--amber)", marginBottom: 8 }}>
+                              A manual total of £{r.booking.partsCostOverride.toFixed(2)} is currently overriding the recipe below — clear it (pencil icon, empty the Parts cost box) to go back to using this breakdown.
+                            </div>
+                          )}
+                          {fullBookingBom(r.booking, jobTypes).length === 0 ? (
+                            <div style={{ fontSize: 12, color: "var(--muted)" }}>No parts recipe on this job — the parts cost is £0.00 unless manually entered.</div>
+                          ) : (
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                              <thead>
+                                <tr style={{ color: "var(--muted)", textAlign: "left" }}>
+                                  <th style={{ fontWeight: 600, padding: "3px 8px 3px 0" }}>Part</th>
+                                  <th style={{ fontWeight: 600, padding: "3px 8px", width: 90 }}>Qty</th>
+                                  <th style={{ fontWeight: 600, padding: "3px 8px", width: 100 }}>Unit cost</th>
+                                  <th style={{ fontWeight: 600, padding: "3px 0 3px 8px", width: 100, textAlign: "right" }}>Line total</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {fullBookingBom(r.booking, jobTypes).map((l) => {
+                                  const p = partsIndexForProfitability[l.partId];
+                                  return (
+                                    <tr key={l.partId}>
+                                      <td style={{ padding: "3px 8px 3px 0" }}>{p?.name || l.partId}</td>
+                                      <td style={{ padding: "3px 8px" }}>
+                                        <input
+                                          type="number" step="0.01" defaultValue={l.qty}
+                                          onBlur={(e) => updateBomQtyForBooking(r.booking, l.partId, parseFloat(e.target.value) || 0)}
+                                          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                                          style={{ width: 60, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, color: "var(--text)", padding: "3px 5px", fontSize: 12, fontFamily: "inherit" }}
+                                        />
+                                      </td>
+                                      <td className="wh-mono" style={{ padding: "3px 8px" }}>£{(p?.costPrice || 0).toFixed(2)}</td>
+                                      <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{((p?.costPrice || 0) * l.qty).toFixed(2)}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                              <tfoot>
+                                <tr style={{ fontWeight: 700, borderTop: "1px solid var(--line)" }}>
+                                  <td colSpan={3} style={{ padding: "6px 8px 0 0" }}>Recipe total</td>
+                                  <td className="wh-mono" style={{ padding: "6px 0 0 8px", textAlign: "right" }}>£{partsCostForBooking(r.booking, jobTypes, parts).toFixed(2)}</td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr style={{ fontWeight: 700 }}>
@@ -3618,6 +3792,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, bonusRates, add
                   <td className="wh-mono">£{activeMonth.totals.labourCost.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)}</td>
                   <td className="wh-mono" style={{ color: activeMonth.totals.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{activeMonth.totals.profit.toFixed(2)}</td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>
