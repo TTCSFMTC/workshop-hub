@@ -759,15 +759,29 @@ export default function WorkshopHub() {
 
     setBookings((prev) => [...prev, newBooking]);
 
-    // booking_job_types has a foreign key on bookings, so the insert must
-    // land first — firing it in parallel races the FK check and 409s.
-    await insertBooking(newBooking);
-    await Promise.all([
-      ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
-      ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
-      ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
-      ...bomQtyOverrides.map((l) => setBookingBomQtyOverride(newBooking.id, l.partId, l.qty)),
-    ]);
+    try {
+      // booking_job_types has a foreign key on bookings, so the insert must
+      // land first — firing it in parallel races the FK check and 409s.
+      await insertBooking(newBooking);
+      await Promise.all([
+        ...extraIds.map((jtId) => addBookingJobType(newBooking.id, jtId)),
+        ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
+        ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
+        ...bomQtyOverrides.map((l) => setBookingBomQtyOverride(newBooking.id, l.partId, l.qty)),
+      ]);
+    } catch (e) {
+      // The booking went on screen the moment it was added (so office isn't
+      // blocked waiting on the network) but never actually reached Supabase.
+      // Left in place, it would just silently vanish next time anything
+      // triggers a realtime refetch — on this device or any other — with no
+      // indication anything went wrong. Roll it back and say so loudly
+      // instead, so a flaky connection (a brand new device's first request,
+      // in particular) fails obviously and immediately rather than quietly
+      // losing a booking a customer may already have been told is confirmed.
+      setBookings((prev) => prev.filter((b) => b.id !== newBooking.id));
+      alert(`Failed to save the booking for ${newBooking.customerName || "this customer"} — please check your connection and try again. Nothing was saved.`);
+      throw e;
+    }
 
     const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
     if (googleEventId) {
