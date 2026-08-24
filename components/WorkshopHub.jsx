@@ -779,8 +779,9 @@ export default function WorkshopHub() {
       // in particular) fails obviously and immediately rather than quietly
       // losing a booking a customer may already have been told is confirmed.
       setBookings((prev) => prev.filter((b) => b.id !== newBooking.id));
-      // TEMP: surfacing the real error while we track down a live issue —
-      // revert to a plain generic message once it's diagnosed.
+      // Includes the actual error text (not just "something went wrong") —
+      // this is what caught a missing-migration bug within minutes instead
+      // of it looking like a mystery connection issue.
       const detail = [e?.message, e?.details, e?.hint].filter(Boolean).join(" — ") || String(e);
       alert(`Failed to save the booking for ${newBooking.customerName || "this customer"} — nothing was saved.\n\n${detail}`);
       throw e;
