@@ -44,7 +44,7 @@ export async function POST(request) {
     const vehicleModel = [card.make, card.model].filter(Boolean).join(" ");
     const writeup = await generateTechnicalWriteup({
       vehicleReg: card.reg, vehicleModel, jobTypeName,
-      symptoms: card.symptoms, technicianInterpretation: card.technician_interpretation, diagnosisFindings: card.diagnosis_findings,
+      symptoms: card.symptoms, diagnosisFindings: card.diagnosis_findings,
     });
 
     const generatedAt = new Date().toISOString();

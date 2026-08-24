@@ -5738,19 +5738,20 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
   const [writeupGenerating, setWriteupGenerating] = useState(false);
   const [writeupError, setWriteupError] = useState(null);
   const writeupTimerRef = useRef(null);
-  // Seeded with whatever's already in the two fields when the card is
-  // opened, so reopening an unchanged card never re-triggers a generation
-  // — only edits made from this point on will move the content away from
-  // this snapshot and start the debounce.
-  const writeupLastSentRef = useRef(`${card.technicianInterpretation || ""}|${card.diagnosisFindings || ""}`);
+  // Seeded with whatever's already in the field when the card is opened, so
+  // reopening an unchanged card never re-triggers a generation — only edits
+  // made from this point on will move the content away from this snapshot
+  // and start the debounce.
+  const writeupLastSentRef = useRef(card.diagnosisFindings || "");
 
   // Auto-regenerates the technical write-up ~8s after the technician stops
-  // editing either field — long enough to not fire mid-dictation (which
-  // saves on every interim speech result) or between quick edits, short
-  // enough that the write-up is ready well before anyone goes looking for it.
+  // editing Diagnosis & findings — long enough to not fire mid-dictation
+  // (which saves on every interim speech result) or between quick edits,
+  // short enough that the write-up is ready well before anyone goes
+  // looking for it.
   useEffect(() => {
-    const content = `${card.technicianInterpretation || ""}|${card.diagnosisFindings || ""}`;
-    if (!card.technicianInterpretation?.trim() && !card.diagnosisFindings?.trim()) return;
+    const content = card.diagnosisFindings || "";
+    if (!content.trim()) return;
     if (content === writeupLastSentRef.current) return;
 
     if (writeupTimerRef.current) clearTimeout(writeupTimerRef.current);
@@ -5773,7 +5774,7 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
     }, 8000);
 
     return () => clearTimeout(writeupTimerRef.current);
-  }, [card.id, card.technicianInterpretation, card.diagnosisFindings]);
+  }, [card.id, card.diagnosisFindings]);
 
   return (
     <div>
