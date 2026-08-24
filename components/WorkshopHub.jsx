@@ -1622,12 +1622,13 @@ function OfficeMode({
       </div>
       {(showNewBooking || editingBooking || acceptingRequest) && (
         <NewBookingModal
-          jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking}
+          jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking} stockRows={stockRows}
           initialValues={acceptingRequest ? {
             customerName: acceptingRequest.name, phone: acceptingRequest.phone, email: acceptingRequest.email, reg: acceptingRequest.reg,
             business: acceptingRequest.business, date: acceptingRequest.date, pickupAddress: acceptingRequest.address,
             symptoms: [
               acceptingRequest.is_non_runner ? "NON-RUNNER" : null,
+              acceptingRequest.needs_collection_quote ? "NEEDS A QUOTE TO COLLECT" : null,
               acceptingRequest.symptoms || null,
               acceptingRequest.is_emergency
                 ? `Emergency appointment — 2nd choice date ${acceptingRequest.second_date || "—"}`
@@ -5077,7 +5078,7 @@ function SettingsTab({ settings, updateSettingsField }) {
 // booking request) without treating it as an edit of an existing one — kept
 // separate from `booking` so onSave/the "Save changes" vs "Save booking"
 // label still key off whether this is a genuine edit.
-function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, initialValues, onClose, onSave }) {
+function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, initialValues, onClose, onSave, stockRows }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const [pasteText, setPasteText] = useState("");
   const [customerName, setCustomerName] = useState(booking?.customerName || initialValues?.customerName || "");
@@ -5417,17 +5418,34 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => onSave({
-            customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
-            pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
-            distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
-            paymentMethod,
-            jobValue,
-            jobTypePrices: allJobTypeIds.map((id) => ({ jobTypeId: id, price: jobTypePrices[id] || 0 })),
-            // Labour/transport stay calendar-tab-only for an existing booking — editing here must never clobber those.
-            // Timing Chain Replacement gets its standard labour cost alongside the pricing breakdown above; everything else starts at zero.
-            ...(booking ? {} : { labourCost: isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE.labourCost : 0, transportCost: 0 }),
-          })}>{booking ? "Save changes" : "Save booking"}</button>
+          <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => {
+            const payload = {
+              customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
+              pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
+              distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
+              paymentMethod,
+              jobValue,
+              jobTypePrices: allJobTypeIds.map((id) => ({ jobTypeId: id, price: jobTypePrices[id] || 0 })),
+              // Labour/transport stay calendar-tab-only for an existing booking — editing here must never clobber those.
+              // Timing Chain Replacement gets its standard labour cost alongside the pricing breakdown above; everything else starts at zero.
+              ...(booking ? {} : { labourCost: isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE.labourCost : 0, transportCost: 0 }),
+            };
+            // Only for genuinely new bookings, not edits — checks against
+            // what's actually still free (stock + on order, minus what
+            // every other upcoming booking has already claimed), so it
+            // only nags when this booking would truly go uncovered.
+            if (!booking && stockRows) {
+              const short = fullBookingBom(payload, jobTypes)
+                .map((l) => {
+                  const row = stockRows.find((r) => r.id === l.partId);
+                  if (!row || row.availableAfterUpcoming >= l.qty) return null;
+                  return `${row.name}: need ${l.qty}, only ${Math.max(0, row.availableAfterUpcoming)} available (stock + on order, after other bookings)`;
+                })
+                .filter(Boolean);
+              if (short.length > 0 && !window.confirm(`This booking needs parts that aren't fully covered right now:\n\n${short.join("\n")}\n\nHave these been ordered? Continue anyway?`)) return;
+            }
+            onSave(payload);
+          }}>{booking ? "Save changes" : "Save booking"}</button>
         </div>
       </div>
     </div>
