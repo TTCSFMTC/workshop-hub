@@ -2964,7 +2964,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
               </div>
             </div>
           )}
-          {booking.workshopCompleted && (
+          {(booking.workshopCompleted || booking.paymentMethod === "Payment Assist") && (
             booking.zohoInvoiceId ? (
               <a href={booking.zohoInvoiceUrl} target="_blank" rel="noopener noreferrer" className="wb-btn-ghost" style={{ textDecoration: "none", textAlign: "center", color: "var(--green)" }}>
                 <Check size={12} style={{ display: "inline", marginRight: 4 }} />Zoho invoice {booking.zohoInvoiceNumber ? `#${booking.zohoInvoiceNumber}` : ""} created
