@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
-  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban,
+  Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download,
 } from "lucide-react";
 import {
@@ -1392,6 +1392,7 @@ function OfficeMode({
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [selectedDay, setSelectedDay] = useState(todayISO());
   const [showNewBooking, setShowNewBooking] = useState(false);
+  const [showProvisionalBooking, setShowProvisionalBooking] = useState(false);
   const [editingBooking, setEditingBooking] = useState(null);
   const [printJob, setPrintJob] = useState(null);
   const [printJobs, setPrintJobs] = useState(null);
@@ -1551,7 +1552,7 @@ function OfficeMode({
       <div className="wb-body">
         {tab === "calendar" && (
           <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
-            onNewBooking={() => setShowNewBooking(true)} onEditBooking={(b) => setEditingBooking(b)} onPrintJob={setPrintJob}
+            onNewBooking={() => setShowNewBooking(true)} onProvisionalBooking={() => setShowProvisionalBooking(true)} onEditBooking={(b) => setEditingBooking(b)} onPrintJob={setPrintJob}
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
             jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
             holidays={holidays} />
@@ -1620,6 +1621,13 @@ function OfficeMode({
         )}
         {tab === "settings" && <SettingsTab settings={settings} updateSettingsField={updateSettingsField} />}
       </div>
+      {showProvisionalBooking && (
+        <ProvisionalBookingModal
+          jobTypes={jobTypes} brands={brands} defaultDate={selectedDay}
+          onClose={() => setShowProvisionalBooking(false)}
+          onSave={(b) => { addBooking(b); setShowProvisionalBooking(false); setSelectedDay(b.date); }}
+        />
+      )}
       {(showNewBooking || editingBooking || acceptingRequest) && (
         <NewBookingModal
           jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking} stockRows={stockRows}
@@ -2262,7 +2270,7 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirmed }) {
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onProvisionalBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
@@ -2290,7 +2298,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
       <div className="wb-cal-layout">
       <div className="wb-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-          <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
+            <button className="wb-btn-ghost" onClick={onProvisionalBooking} title="Hold a date offered to a customer who hasn't confirmed yet"><Bookmark size={14} /> Provisional</button>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={14} /></button>
             <div style={{ fontWeight: 700, fontSize: 15, minWidth: 150, textAlign: "center" }}>{monthCursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
@@ -2335,11 +2346,15 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <span
                       key={b.id}
                       className={`wb-chip ${b.business === "Timing Chain Specialists" ? "tcs" : ""}`}
-                      style={{
-                        ...(st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : {}),
-                        ...(isDropOffDay ? { border: "2px solid #2979ff" } : {}),
-                      }}
-                      title={isDropOffDay ? "Drop-off day" : st.label}
+                      style={
+                        b.provisional
+                          ? { background: "#ffffff", color: "#1a1a1a", border: "1px solid #d0d0d0" }
+                          : {
+                              ...(st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : {}),
+                              ...(isDropOffDay ? { border: "2px solid #2979ff" } : {}),
+                            }
+                      }
+                      title={b.provisional ? "Provisional — not yet confirmed" : isDropOffDay ? "Drop-off day" : st.label}
                     >
                       {b.customerName || "Booking"}
                     </span>
@@ -2350,7 +2365,8 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <div className="wb-day-dots">
                     {dayBk.slice(0, 8).map((b) => {
                       const st = bookingStatus(b);
-                      return <span key={b.id} className="wb-day-dot" style={st.color ? { background: st.color } : undefined} title={b.customerName || "Booking"} />;
+                      const style = b.provisional ? { background: "#ffffff", border: "1px solid #999" } : st.color ? { background: st.color } : undefined;
+                      return <span key={b.id} className="wb-day-dot" style={style} title={b.provisional ? "Provisional — not yet confirmed" : b.customerName || "Booking"} />;
                     })}
                     {dayBk.length > 8 && <span className="wb-day-more">+{dayBk.length - 8}</span>}
                   </div>
@@ -2373,11 +2389,16 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const extraJts = (b.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
             const combinedParts = fullBookingBom(b, jobTypes);
             return (
-              <div key={b.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
+              <div key={b.id} style={{ border: b.provisional ? "1px solid #fff" : "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: bookingStatus(b).color || "var(--text)" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: b.provisional ? "#fff" : bookingStatus(b).color || "var(--text)" }}>
                     {b.customerName || "Unnamed"}
                   </div>
+                  {b.provisional && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      <Bookmark size={12} /> Provisional — not yet confirmed
+                    </div>
+                  )}
                   {b.noShow && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red, #e2574c)", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       <Ban size={12} /> No-show
@@ -5074,6 +5095,79 @@ function SettingsTab({ settings, updateSettingsField }) {
   );
 }
 
+// A date/slot offered to a customer who hasn't confirmed yet — deliberately
+// much lighter than the full New Booking form (no contact details, price,
+// or symptoms, none of which exist at this stage) and saved with
+// provisional:true so it renders white on the calendar (see the .wb-chip
+// override below) instead of the usual status colours, making it obvious
+// at a glance which slots are only tentatively held. A provisional booking
+// is a real row in `bookings` like any other — it still counts toward
+// that day so office doesn't double-book it — and can be filled in and
+// unmarked later via the ordinary Edit booking flow.
+function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSave }) {
+  const [business, setBusiness] = useState(BUSINESSES[0]);
+  const [reg, setReg] = useState("");
+  const [make, setMake] = useState("");
+  const [model, setModel] = useState("");
+  const [jobTypeId, setJobTypeId] = useState("");
+  const [date, setDate] = useState(defaultDate || todayISO());
+  const [days, setDays] = useState(1);
+
+  const canSave = reg.trim() && jobTypeId && date;
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Bookmark size={16} /> Provisional booking</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            For a date you've offered but the customer hasn't confirmed — holds the slot on the calendar in white so you don't forget it or overbook the day.
+          </div>
+          <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+          <div><label className="wb-label">Registration</label><input className="wb-input" value={reg} onChange={(e) => setReg(e.target.value.toUpperCase())} placeholder="e.g. YH19 KLM" /></div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label className="wb-label">Make</label>
+              <select className="wb-select" value={make} onChange={(e) => setMake(e.target.value)}>
+                <option value="">Not set</option>
+                {brands.map((b) => <option key={b.id} value={b.name}>{b.name}</option>)}
+              </select>
+            </div>
+            <div><label className="wb-label">Model</label><input className="wb-input" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. Discovery Sport" /></div>
+          </div>
+          <div>
+            <label className="wb-label">Job type</label>
+            <select className="wb-select" value={jobTypeId} onChange={(e) => setJobTypeId(e.target.value)}>
+              <option value="">Select…</option>
+              {jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label className="wb-label">Date offered</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+            <div><label className="wb-label">Days</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))} /></div>
+          </div>
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
+          <button
+            className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+            onClick={() => onSave({
+              business, reg: reg.trim(), vehicleModel: [make, model.trim()].filter(Boolean).join(" ").trim(),
+              customerName: reg.trim(), phone: "", email: "", symptoms: "", jobTypeId, date, days,
+              jobValue: 0, labourCost: 0, transportCost: 0,
+              pickupRequired: false, pickupAddress: "", postcode: "", distanceMiles: null,
+              provisional: true,
+            })}
+          >Save provisional</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // initialValues prefills a brand-new booking (e.g. from an accepted public
 // booking request) without treating it as an edit of an existing one — kept
 // separate from `booking` so onSave/the "Save changes" vs "Save booking"
@@ -5085,6 +5179,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [phone, setPhone] = useState(booking?.phone || initialValues?.phone || "");
   const [email, setEmail] = useState(booking?.email || initialValues?.email || "");
   const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
+  const [provisional, setProvisional] = useState(booking?.provisional || false);
   const [beltChainStatus, setBeltChainStatus] = useState("idle"); // idle | loading | done | error
   const [beltChainResult, setBeltChainResult] = useState(null);
   const [beltChainError, setBeltChainError] = useState("");
@@ -5243,6 +5338,12 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
               )}
             </div>
             <div><label className="wb-label">Business</label><select className="wb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>{BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+            <div style={{ display: "flex", alignItems: "flex-end" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                <input type="checkbox" checked={provisional} onChange={(e) => setProvisional(e.target.checked)} />
+                <Bookmark size={13} /> Provisional (not yet confirmed)
+              </label>
+            </div>
             <div>
               <label className="wb-label">Make</label>
               <select className="wb-select" value={vehicleMake} onChange={(e) => setVehicleMake(e.target.value)}>
@@ -5421,6 +5522,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => {
             const payload = {
               customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
+              provisional,
               pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
               distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
               paymentMethod,
