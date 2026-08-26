@@ -6,8 +6,9 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt,
 } from "lucide-react";
+import { QuotesTab } from "./QuotesTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
@@ -21,6 +22,7 @@ import {
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
   fetchSuppliers, insertSupplier, updateSupplier, deleteSupplier,
   fetchSupplierInvoices, updateSupplierInvoice, deleteSupplierInvoice,
+  fetchQuotes, updateQuote, deleteQuote,
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
@@ -499,6 +501,7 @@ export default function WorkshopHub() {
   const [auditLog, setAuditLog] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [supplierInvoices, setSupplierInvoices] = useState([]);
+  const [quotes, setQuotes] = useState([]);
   const [mode, setMode] = useState("workshop");
   const [saveState, setSaveState] = useState("idle");
 
@@ -540,6 +543,13 @@ export default function WorkshopHub() {
       } catch (e) {
         console.error("Failed to load supplier invoice data", e);
       }
+      // Same isolation reasoning as suppliers/supplierInvoices above — the
+      // Quotes tab is newer than the rest of the schema.
+      try {
+        setQuotes(await fetchQuotes());
+      } catch (e) {
+        console.error("Failed to load quotes data", e);
+      }
       setReady(true);
     })();
   }, []);
@@ -570,6 +580,7 @@ export default function WorkshopHub() {
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
       subscribeTable("suppliers", async () => setSuppliers(await fetchSuppliers())),
       subscribeTable("supplier_invoices", async () => setSupplierInvoices(await fetchSupplierInvoices())),
+      subscribeTable("quotes", async () => setQuotes(await fetchQuotes())),
     ];
     return () => unsubs.forEach((u) => u());
   }, [ready]);
@@ -1080,6 +1091,16 @@ export default function WorkshopHub() {
     await deleteSupplierInvoice(id);
   });
 
+  const updateQuoteFn = (id, patch) => withSaveState(async () => {
+    setQuotes((prev) => prev.map((q) => (q.id === id ? { ...q, ...patch } : q)));
+    await updateQuote(id, patch);
+  });
+
+  const removeQuoteFn = (id) => withSaveState(async () => {
+    setQuotes((prev) => prev.filter((q) => q.id !== id));
+    await deleteQuote(id);
+  });
+
   const addHolidayFn = (name, dateFrom, dateTo) => withSaveState(async () => {
     const holiday = { id: uid("hol"), name, dateFrom, dateTo };
     setHolidays((prev) => [...prev, holiday]);
@@ -1356,6 +1377,7 @@ export default function WorkshopHub() {
           jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
           suppliers={suppliers} addSupplier={addSupplierFn} updateSupplierField={updateSupplierFn} removeSupplier={removeSupplierFn}
           supplierInvoices={supplierInvoices} updateSupplierInvoiceField={updateSupplierInvoiceFn} removeSupplierInvoice={removeSupplierInvoiceFn}
+          quotes={quotes} updateQuoteField={updateQuoteFn} removeQuote={removeQuoteFn}
         />
       ) : (
         <WorkshopMode
@@ -1387,6 +1409,7 @@ function OfficeMode({
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
   suppliers, addSupplier, updateSupplierField, removeSupplier,
   supplierInvoices, updateSupplierInvoiceField, removeSupplierInvoice,
+  quotes, updateQuoteField, removeQuote,
 }) {
   const [tab, setTab] = useState("calendar");
   const [monthCursor, setMonthCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1538,13 +1561,16 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
             {key === "requests" && bookingRequests.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{bookingRequests.length}</span>}
             {key === "supplierinvoices" && supplierInvoices.filter((i) => i.status === "needs_review").length > 0 && (
               <span className="wb-badge-low" style={{ marginLeft: 4 }}>{supplierInvoices.filter((i) => i.status === "needs_review").length}</span>
+            )}
+            {key === "quotes" && quotes.filter((q) => q.status === "needs_review").length > 0 && (
+              <span className="wb-badge-low" style={{ marginLeft: 4 }}>{quotes.filter((q) => q.status === "needs_review").length}</span>
             )}
           </div>
         ))}
@@ -1578,6 +1604,9 @@ function OfficeMode({
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
             addAuditLog={addAuditLog} onPrintOutstandingParts={() => setPrintOutstandingParts(true)} />
+        )}
+        {tab === "quotes" && (
+          <QuotesTab quotes={quotes} updateQuoteField={updateQuoteField} removeQuote={removeQuote} />
         )}
         {tab === "supplierinvoices" && (
           <SupplierInvoicesTab
