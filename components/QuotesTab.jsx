@@ -1,8 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
-import { ClipboardPaste, Send, Trash2, X, Plus, FileText } from "lucide-react";
+import React, { useRef, useState } from "react";
+import { ClipboardPaste, Send, Trash2, X, Plus, FileText, Upload } from "lucide-react";
 import { BUSINESSES } from "@/lib/constants";
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
 
 const STATUS_LABEL = {
   needs_review: { label: "Needs review", color: "var(--amber2)" },
@@ -203,16 +212,27 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
             />
           </div>
 
-          <button
-            onClick={() => setShowScript((s) => !s)}
-            style={{ background: "none", border: "none", color: "var(--amber2)", fontSize: 12, cursor: "pointer", marginTop: 10, display: "flex", alignItems: "center", gap: 4 }}
-          >
-            <FileText size={13} /> {showScript ? "Hide" : "View"} original script
-          </button>
-          {showScript && (
-            <pre style={{ marginTop: 8, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6, padding: 10, fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}>
-              {quote.sourceScript}
-            </pre>
+          {quote.sourcePdfUrl ? (
+            <a
+              href={quote.sourcePdfUrl} target="_blank" rel="noreferrer"
+              style={{ color: "var(--amber2)", fontSize: 12, marginTop: 10, display: "flex", alignItems: "center", gap: 4, width: "fit-content" }}
+            >
+              <FileText size={13} /> View source PDF
+            </a>
+          ) : (
+            <>
+              <button
+                onClick={() => setShowScript((s) => !s)}
+                style={{ background: "none", border: "none", color: "var(--amber2)", fontSize: 12, cursor: "pointer", marginTop: 10, display: "flex", alignItems: "center", gap: 4 }}
+              >
+                <FileText size={13} /> {showScript ? "Hide" : "View"} original script
+              </button>
+              {showScript && (
+                <pre style={{ marginTop: 8, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6, padding: 10, fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}>
+                  {quote.sourceScript}
+                </pre>
+              )}
+            </>
           )}
         </div>
       )}
@@ -226,6 +246,7 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const fileInputRef = useRef(null);
 
   const generate = async () => {
     if (!scriptText.trim()) { setError("Paste the script first."); return; }
@@ -250,6 +271,34 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
     }
   };
 
+  const uploadPdf = async (file) => {
+    if (!file) return;
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setError("Only PDF files are supported for upload.");
+      return;
+    }
+    setGenerating(true);
+    setError("");
+    setStatus(`Reading ${file.name}…`);
+    try {
+      const base64 = await fileToBase64(file);
+      const res = await fetch("/api/office/quotes/generate-from-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, base64, business }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || "Couldn't generate a quote from that PDF"); setStatus(""); return; }
+      setStatus("Quote generated below — review it before posting to Zoho.");
+    } catch {
+      setError("Something went wrong — try again.");
+      setStatus("");
+    } finally {
+      setGenerating(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   const sorted = [...quotes].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   return (
@@ -259,8 +308,9 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
           <ClipboardPaste size={16} color="var(--amber)" /> Paste a script
         </div>
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-          Paste the quote a Claude or ChatGPT conversation drafted — parts, prices, labour — and it&apos;s turned into a
-          structured quote with VAT worked out, ready to review and post to Zoho as an Estimate.
+          Paste the quote a Claude or ChatGPT conversation drafted — parts, prices, labour — or upload a PDF (a
+          supplier quote, a printed price sheet) instead. Either way it&apos;s turned into a structured quote with
+          VAT worked out, ready to review and post to Zoho as an Estimate.
         </div>
         <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
           <div>
@@ -277,10 +327,21 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
           onChange={(e) => setScriptText(e.target.value)}
           placeholder="Paste the quote Claude or ChatGPT drafted here — parts, prices, labour, whatever it wrote"
         />
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
           <button className="wb-btn" style={{ width: "auto" }} disabled={generating} onClick={generate}>
             {generating ? "Generating…" : "Generate quote"}
           </button>
+          <label className="wb-btn-ghost" style={{ display: "inline-flex", width: "auto", cursor: generating ? "not-allowed" : "pointer", opacity: generating ? 0.5 : 1 }}>
+            <Upload size={14} /> Upload a PDF instead
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf"
+              disabled={generating}
+              style={{ display: "none" }}
+              onChange={(e) => uploadPdf(e.target.files?.[0])}
+            />
+          </label>
           {status && <span style={{ color: "var(--green)", fontSize: 12, fontWeight: 700 }}>{status}</span>}
           {error && <span style={{ color: "var(--red)", fontSize: 12 }}>{error}</span>}
         </div>
