@@ -2335,7 +2335,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   </div>
                 )}
                 <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 5).map((b) => {
+                {dayBk.slice(0, 8).map((b) => {
                   const st = bookingStatus(b);
                   // The drop-off day (a multi-day booking's first day) gets
                   // a bright blue border on top of the normal status/yellow
@@ -2360,7 +2360,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     </span>
                   );
                 })}
-                {dayBk.length > 5 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 5} more</span>}
+                {dayBk.length > 8 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 8} more</span>}
                 {dayBk.length > 0 && (
                   <div className="wb-day-dots">
                     {dayBk.slice(0, 8).map((b) => {
