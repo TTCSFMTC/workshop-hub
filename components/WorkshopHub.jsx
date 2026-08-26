@@ -2865,17 +2865,45 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
     if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
     window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking, settings.transportContactName)), "_blank");
   };
+  // "1x Timing Chain Kit, 1x Camshaft Adjuster, ..." for one job type's own
+  // recipe, substituting any per-booking quantity override — same source
+  // data as the "Parts used" list shown on the card, just formatted for
+  // Zoho's line item description box instead.
+  const describeJobTypeBom = (jobTypeId) => {
+    const jtObj = jobTypes.find((j) => j.id === jobTypeId);
+    if (!jtObj) return "";
+    return jtObj.bom
+      .map((l) => {
+        const override = (booking.bomQtyOverrides || []).find((o) => o.partId === l.partId);
+        const qty = override ? override.qty : l.qty;
+        return `${qty}x ${parts.find((p) => p.id === l.partId)?.name || l.partId}`;
+      })
+      .join(", ");
+  };
   const createZohoInvoice = async () => {
     setCreatingInvoice(true);
     try {
       // One invoice line per job type on the booking (Timing Chain Replacement,
       // Piston Cooling Jet Solenoid, etc. each priced separately) — never split
-      // further into the individual parts within a job type. A booking saved
+      // further into the individual parts within a job type, but each line's
+      // own parts list goes into Zoho's description field. A booking saved
       // before the pricing breakdown existed falls back to one line for the
-      // whole total.
+      // whole total, described with the full combined parts list.
       const lineItems = booking.jobTypePrices?.length
-        ? booking.jobTypePrices.map((p) => ({ name: jobTypes.find((j) => j.id === p.jobTypeId)?.name || p.jobTypeId, amount: p.price }))
-        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue }];
+        ? booking.jobTypePrices.map((p, i) => {
+            // One-off extra parts (added straight from Stock, not tied to
+            // any specific job type) have nowhere more specific to go, so
+            // they're folded into the last line's description.
+            const extra = i === booking.jobTypePrices.length - 1 && (booking.extraParts || []).length > 0
+              ? booking.extraParts.map((l) => `${l.qty}x ${parts.find((p2) => p2.id === l.partId)?.name || l.partId}`).join(", ")
+              : "";
+            return {
+              name: jobTypes.find((j) => j.id === p.jobTypeId)?.name || p.jobTypeId,
+              amount: p.price,
+              description: [describeJobTypeBom(p.jobTypeId), extra].filter(Boolean).join(", "),
+            };
+          })
+        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue, description: fullBookingBom(booking, jobTypes).map((l) => `${l.qty}x ${parts.find((p) => p.id === l.partId)?.name || l.partId}`).join(", ") }];
       const res = await fetch("/api/office/zoho-invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
