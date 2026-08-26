@@ -3,21 +3,11 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { extractQuoteFromScript } from "@/lib/anthropic";
+import { normalizeLineItems, computeQuoteTotals } from "@/lib/quotes";
 
 async function requireSession() {
   const cookieStore = await cookies();
   return isValidSession(cookieStore.get(SESSION_COOKIE)?.value);
-}
-
-// Subtotal/VAT/total are always derived here from the line items rather
-// than trusted from whatever the model reported — keeps the numbers
-// internally consistent even if the source script's own arithmetic was off,
-// and matches however office ends up editing individual lines afterwards.
-function computeTotals(lineItems, vatRate) {
-  const subtotal = lineItems.reduce((sum, l) => sum + (l.quantity || 1) * (l.unit_price || 0), 0);
-  const roundedSubtotal = Math.round(subtotal * 100) / 100;
-  const vat = Math.round(roundedSubtotal * (vatRate / 100) * 100) / 100;
-  return { subtotal: roundedSubtotal, vat, total: Math.round((roundedSubtotal + vat) * 100) / 100 };
 }
 
 // Accepts pasted "script" text — the reply from a Claude/ChatGPT
@@ -42,20 +32,13 @@ export async function POST(request) {
     return NextResponse.json({ error: "Couldn't read that script — try again, or check it actually contains a priced quote" }, { status: 500 });
   }
 
-  const lineItems = (extracted.line_items || []).map((l) => ({
-    type: l.type === "labour" ? "labour" : "part",
-    description: l.description || "",
-    quantity: l.quantity || 1,
-    unit_price: l.unit_price ?? 0,
-    amount: Math.round((l.quantity || 1) * (l.unit_price ?? 0) * 100) / 100,
-  }));
-
+  const lineItems = normalizeLineItems(extracted.line_items);
   if (lineItems.length === 0) {
     return NextResponse.json({ error: "No priced parts or labour found in that script" }, { status: 400 });
   }
 
   const vatRate = extracted.vat_rate ?? 20;
-  const { subtotal, vat, total } = computeTotals(lineItems, vatRate);
+  const { subtotal, vat, total } = computeQuoteTotals(lineItems, vatRate);
 
   const { data, error } = await supabaseAdmin.from("quotes").insert({
     business,
