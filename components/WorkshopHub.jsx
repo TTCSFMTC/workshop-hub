@@ -2865,19 +2865,20 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
     if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
     window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking, settings.transportContactName)), "_blank");
   };
-  // "1x Timing Chain Kit, 1x Camshaft Adjuster, ..." for one job type's own
-  // recipe, substituting any per-booking quantity override — same source
-  // data as the "Parts used" list shown on the card, just formatted for
-  // Zoho's line item description box instead.
+  // "Timing Chain Kit, Camshaft Adjuster, ..." for one job type's own
+  // recipe — same source data as the "Parts used" list shown on the card,
+  // just names only (no quantities) for Zoho's line item description box.
+  // A part overridden to 0 for this specific vehicle is left out entirely,
+  // same as it would be everywhere else the BOM is shown.
   const describeJobTypeBom = (jobTypeId) => {
     const jtObj = jobTypes.find((j) => j.id === jobTypeId);
     if (!jtObj) return "";
     return jtObj.bom
-      .map((l) => {
+      .filter((l) => {
         const override = (booking.bomQtyOverrides || []).find((o) => o.partId === l.partId);
-        const qty = override ? override.qty : l.qty;
-        return `${qty}x ${parts.find((p) => p.id === l.partId)?.name || l.partId}`;
+        return override ? override.qty > 0 : true;
       })
+      .map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId)
       .join(", ");
   };
   const createZohoInvoice = async () => {
@@ -2895,7 +2896,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
             // any specific job type) have nowhere more specific to go, so
             // they're folded into the last line's description.
             const extra = i === booking.jobTypePrices.length - 1 && (booking.extraParts || []).length > 0
-              ? booking.extraParts.map((l) => `${l.qty}x ${parts.find((p2) => p2.id === l.partId)?.name || l.partId}`).join(", ")
+              ? booking.extraParts.map((l) => parts.find((p2) => p2.id === l.partId)?.name || l.partId).join(", ")
               : "";
             return {
               name: jobTypes.find((j) => j.id === p.jobTypeId)?.name || p.jobTypeId,
@@ -2903,7 +2904,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
               description: [describeJobTypeBom(p.jobTypeId), extra].filter(Boolean).join(", "),
             };
           })
-        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue, description: fullBookingBom(booking, jobTypes).map((l) => `${l.qty}x ${parts.find((p) => p.id === l.partId)?.name || l.partId}`).join(", ") }];
+        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue, description: fullBookingBom(booking, jobTypes).map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId).join(", ") }];
       const res = await fetch("/api/office/zoho-invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
