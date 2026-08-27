@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { extractQuoteFromScript } from "@/lib/anthropic";
-import { normalizeLineItems, computeQuoteTotals } from "@/lib/quotes";
+import { normalizeLineItems, computeQuoteTotals, withManualLabour } from "@/lib/quotes";
 
 async function requireSession() {
   const cookieStore = await cookies();
@@ -32,9 +32,9 @@ export async function POST(request) {
     return NextResponse.json({ error: "Couldn't read that script — try again, or check it actually contains a priced quote" }, { status: 500 });
   }
 
-  const lineItems = normalizeLineItems(extracted.line_items);
+  const lineItems = withManualLabour(normalizeLineItems(extracted.line_items), body?.labourRate, body?.labourHours);
   if (lineItems.length === 0) {
-    return NextResponse.json({ error: "No priced parts or labour found in that script" }, { status: 400 });
+    return NextResponse.json({ error: "No priced parts or labour found — paste a script with pricing in it, or fill in the labour rate/hours" }, { status: 400 });
   }
 
   const vatRate = extracted.vat_rate ?? 20;
@@ -45,6 +45,7 @@ export async function POST(request) {
     customer_name: extracted.customer_name || null,
     customer_email: extracted.customer_email || null,
     customer_phone: extracted.customer_phone || null,
+    customer_address: extracted.customer_address || null,
     vehicle_description: extracted.vehicle || null,
     source_script: scriptText,
     line_items: lineItems,

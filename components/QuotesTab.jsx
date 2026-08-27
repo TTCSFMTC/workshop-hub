@@ -44,6 +44,7 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
   const [customerName, setCustomerName] = useState(quote.customerName);
   const [vehicleDescription, setVehicleDescription] = useState(quote.vehicleDescription);
   const [customerEmail, setCustomerEmail] = useState(quote.customerEmail);
+  const [customerAddress, setCustomerAddress] = useState(quote.customerAddress);
   const [notes, setNotes] = useState(quote.notes);
 
   const posted = quote.status === "posted";
@@ -122,6 +123,15 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
             >
               {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="wb-label">Address</label>
+            <input
+              className="wb-input" style={{ width: 220 }} value={customerAddress} disabled={posted}
+              onChange={(e) => setCustomerAddress(e.target.value)}
+              onBlur={() => updateQuoteField(quote.id, { customerAddress })}
+              placeholder="Customer address"
+            />
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -255,6 +265,8 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
 export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
   const [scriptText, setScriptText] = useState("");
   const [business, setBusiness] = useState(BUSINESSES[0]);
+  const [labourRate, setLabourRate] = useState("");
+  const [labourHours, setLabourHours] = useState("");
   const [generating, setGenerating] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -269,12 +281,14 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
       const res = await fetch("/api/office/quotes/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptText, business }),
+        body: JSON.stringify({ scriptText, business, labourRate, labourHours }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Couldn't generate a quote from that"); setStatus(""); return; }
       setStatus("Quote generated below — review it before posting to Zoho.");
       setScriptText("");
+      setLabourRate("");
+      setLabourHours("");
     } catch {
       setError("Something went wrong — try again.");
       setStatus("");
@@ -297,11 +311,13 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
       const res = await fetch("/api/office/quotes/generate-from-pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, base64, business }),
+        body: JSON.stringify({ filename: file.name, base64, business, labourRate, labourHours }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Couldn't generate a quote from that PDF"); setStatus(""); return; }
       setStatus("Quote generated below — review it before posting to Zoho.");
+      setLabourRate("");
+      setLabourHours("");
     } catch {
       setError("Something went wrong — try again.");
       setStatus("");
@@ -320,17 +336,38 @@ export function QuotesTab({ quotes, updateQuoteField, removeQuote }) {
           <ClipboardPaste size={16} color="var(--amber)" /> Paste a script
         </div>
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
-          Paste the quote a Claude or ChatGPT conversation drafted — parts, prices, labour — or upload a PDF (a
-          supplier quote, a printed price sheet) instead. Either way it&apos;s turned into a structured quote with
-          VAT worked out, ready to review and post to Zoho as an Estimate.
+          Paste the quote a Claude or ChatGPT conversation drafted — parts, prices, labour — or upload a PDF instead
+          (a supplier quote, a printed price sheet, or a warranty/insurance schedule — customer, vehicle and address
+          get pulled from it even if it has no pricing in it). Either way it&apos;s turned into a structured quote
+          with VAT worked out, ready to review and post to Zoho as an Estimate.
         </div>
-        <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
           <div>
             <label className="wb-label">Business</label>
             <select className="wb-input" style={{ width: 200 }} value={business} onChange={(e) => setBusiness(e.target.value)}>
               {BUSINESSES.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
           </div>
+          <div>
+            <label className="wb-label">Labour rate (£/hr, ex VAT)</label>
+            <input
+              type="number" step="0.01" className="wb-input" style={{ width: 140 }}
+              value={labourRate} onChange={(e) => setLabourRate(e.target.value)}
+              placeholder="e.g. 75"
+            />
+          </div>
+          <div>
+            <label className="wb-label">Labour hours</label>
+            <input
+              type="number" step="0.25" className="wb-input" style={{ width: 100 }}
+              value={labourHours} onChange={(e) => setLabourHours(e.target.value)}
+              placeholder="e.g. 3"
+            />
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+          Fill in the labour rate and hours to add that as its own line item on top of whatever&apos;s extracted —
+          leave blank to skip. A quote can be generated from labour alone (e.g. a schedule PDF with no pricing).
         </div>
         <textarea
           className="wb-input"
