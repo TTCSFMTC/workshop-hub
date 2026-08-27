@@ -37,6 +37,14 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
   const [vatRate, setVatRate] = useState(quote.vatRate);
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState("");
+  // Buffered locally so typing isn't fighting the live-sync round-trip —
+  // updateQuoteField writes to Supabase and the realtime subscription can
+  // echo a fresh `quote` prop back mid-keystroke, which would otherwise
+  // stomp on whatever's still being typed. Only committed on blur.
+  const [customerName, setCustomerName] = useState(quote.customerName);
+  const [vehicleDescription, setVehicleDescription] = useState(quote.vehicleDescription);
+  const [customerEmail, setCustomerEmail] = useState(quote.customerEmail);
+  const [notes, setNotes] = useState(quote.notes);
 
   const posted = quote.status === "posted";
   const status = STATUS_LABEL[quote.status] || STATUS_LABEL.needs_review;
@@ -82,24 +90,27 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
           <div>
             <label className="wb-label">Customer</label>
             <input
-              className="wb-input" style={{ width: 150 }} value={quote.customerName} disabled={posted}
-              onChange={(e) => updateQuoteField(quote.id, { customerName: e.target.value })}
+              className="wb-input" style={{ width: 150 }} value={customerName} disabled={posted}
+              onChange={(e) => setCustomerName(e.target.value)}
+              onBlur={() => updateQuoteField(quote.id, { customerName })}
               placeholder="Customer name"
             />
           </div>
           <div>
             <label className="wb-label">Vehicle</label>
             <input
-              className="wb-input" style={{ width: 130 }} value={quote.vehicleDescription} disabled={posted}
-              onChange={(e) => updateQuoteField(quote.id, { vehicleDescription: e.target.value })}
+              className="wb-input" style={{ width: 130 }} value={vehicleDescription} disabled={posted}
+              onChange={(e) => setVehicleDescription(e.target.value)}
+              onBlur={() => updateQuoteField(quote.id, { vehicleDescription })}
               placeholder="Reg / make / model"
             />
           </div>
           <div>
             <label className="wb-label">Email</label>
             <input
-              className="wb-input" style={{ width: 170 }} value={quote.customerEmail} disabled={posted}
-              onChange={(e) => updateQuoteField(quote.id, { customerEmail: e.target.value })}
+              className="wb-input" style={{ width: 170 }} value={customerEmail} disabled={posted}
+              onChange={(e) => setCustomerEmail(e.target.value)}
+              onBlur={() => updateQuoteField(quote.id, { customerEmail })}
               placeholder="Email"
             />
           </div>
@@ -206,8 +217,9 @@ function QuoteCard({ quote, updateQuoteField, removeQuote }) {
           <div style={{ marginTop: 10 }}>
             <label className="wb-label">Notes</label>
             <textarea
-              className="wb-input" style={{ width: "100%", minHeight: 50 }} value={quote.notes} disabled={posted}
-              onChange={(e) => updateQuoteField(quote.id, { notes: e.target.value })}
+              className="wb-input" style={{ width: "100%", minHeight: 50 }} value={notes} disabled={posted}
+              onChange={(e) => setNotes(e.target.value)}
+              onBlur={() => updateQuoteField(quote.id, { notes })}
               placeholder="Notes to include on the quote (optional)"
             />
           </div>
