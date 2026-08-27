@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { extractQuoteFromPdf } from "@/lib/anthropic";
-import { normalizeLineItems, computeQuoteTotals } from "@/lib/quotes";
+import { normalizeLineItems, computeQuoteTotals, withManualLabour } from "@/lib/quotes";
 import { uploadFileAndShare } from "@/lib/googleDrive";
 
 async function requireSession() {
@@ -12,10 +12,11 @@ async function requireSession() {
 }
 
 // Same idea as the pasted-script route, but for an uploaded PDF — a
-// supplier's quote, a printed parts/price sheet, whatever office would
-// rather upload than retype. The PDF itself is archived to Drive (same
-// pattern as Supplier Invoices) so it stays available for reference from
-// the quote card.
+// supplier's quote, a printed parts/price sheet, or a warranty/insurance
+// company's schedule (which usually carries customer/vehicle/address
+// details but no pricing at all — the manual labour rate/hours fields
+// cover that case). The PDF itself is archived to Drive (same pattern as
+// Supplier Invoices) so it stays available for reference from the quote card.
 export async function POST(request) {
   if (!(await requireSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -37,12 +38,12 @@ export async function POST(request) {
       extracted = await extractQuoteFromPdf({ pdfBase64: body.base64 });
     } catch (extractError) {
       console.error("quote PDF extraction failed", extractError);
-      return NextResponse.json({ error: `Couldn't read ${body.filename} — try again, or check it actually contains a priced quote` }, { status: 500 });
+      return NextResponse.json({ error: `Couldn't read ${body.filename} — try again` }, { status: 500 });
     }
 
-    const lineItems = normalizeLineItems(extracted.line_items);
+    const lineItems = withManualLabour(normalizeLineItems(extracted.line_items), body?.labourRate, body?.labourHours);
     if (lineItems.length === 0) {
-      return NextResponse.json({ error: `No priced parts or labour found in ${body.filename}` }, { status: 400 });
+      return NextResponse.json({ error: `No priced parts or labour found in ${body.filename} — fill in the labour rate/hours if this PDF has no pricing in it (e.g. a schedule)` }, { status: 400 });
     }
 
     const vatRate = extracted.vat_rate ?? 20;
@@ -53,6 +54,7 @@ export async function POST(request) {
       customer_name: extracted.customer_name || null,
       customer_email: extracted.customer_email || null,
       customer_phone: extracted.customer_phone || null,
+      customer_address: extracted.customer_address || null,
       vehicle_description: extracted.vehicle || null,
       source_pdf_url: pdfUrl,
       source_pdf_drive_file_id: driveFileId,
