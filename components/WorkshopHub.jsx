@@ -17,6 +17,7 @@ import {
   insertFixedCost, updateFixedCost, deleteFixedCost,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
+  insertBookingExtraCost, removeBookingExtraCost as removeBookingExtraCostRow,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier, updateStockBatch,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
@@ -404,11 +405,28 @@ const DEFAULT_SETTINGS = {
   workingDaysPerMonth: 25,
 };
 
-// Standard pricing for a Timing Chain Replacement — pre-filled on new
-// bookings of this job type, and offered as a one-click fix for existing
-// bookings of this type that were never priced.
+// Standard pricing for a JLR Ingenium Diesel Timing Chain Replacement —
+// pre-filled on new bookings of this specific job type, and offered as a
+// one-click fix for existing bookings of this type that were never priced.
+// Renamed from plain "Timing Chain Replacement" — keep this matching the
+// current name, or it silently stops firing again like it did last time.
 const STANDARD_TIMING_CHAIN_PRICE = { jobValue: 1495, labourCost: 220 };
-const isTimingChainReplacement = (jt) => jt?.name === "Timing Chain Replacement";
+const isTimingChainReplacement = (jt) => jt?.name === "Ingenium Diesel Timing Chain Replacement";
+
+// Standard labour-only default, pre-filled on a new booking's "Labour £"
+// box the moment a job type is picked (see NewBookingModal) — separate
+// from STANDARD_TIMING_CHAIN_PRICE above, which also sets a job value and
+// only applies to one specific job type. This covers any job type whose
+// name/brand matches, so it keeps working as new job types get added.
+function defaultLabourCostForJobType(jt, brands) {
+  if (!jt) return null;
+  const brandName = brands.find((b) => b.id === jt.brandId)?.name || "";
+  const name = (jt.name || "").toLowerCase();
+  if (brandName === "JLR" && name.includes("timing chain")) return 220;
+  if (brandName === "Ford" && name.includes("wet belt")) return 120;
+  if (name.includes("timing belt")) return 110;
+  return null;
+}
 
 // Staff wages — basic monthly salary equates to a 40hr week, plus flat
 // rates for weekend work on top (bonus rates are configurable per job
@@ -827,6 +845,21 @@ export default function WorkshopHub() {
       ...batchUpdates.map((u) => updateStockBatchQtyRemaining(u.batchId, u.qtyRemaining)),
       deleteBookingFromGoogle(b?.googleEventId),
     ]);
+  });
+
+  // Ad-hoc costs added to a booking as they come in — a part bought outside
+  // the standard recipe, a call-out, anything Parts/Labour/Transport don't
+  // already cover. Kept as an itemised list rather than folded into one of
+  // those three boxes, so what was actually added (and why) stays visible
+  // rather than just inflating a number.
+  const addBookingExtraCost = (bookingId, description, amount) => withSaveState(async () => {
+    const entry = { id: uid("bec"), bookingId, description, amount, createdAt: new Date().toISOString() };
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, extraCosts: [...(b.extraCosts || []), entry] } : b)));
+    await insertBookingExtraCost(entry);
+  });
+  const removeBookingExtraCost = (bookingId, costId) => withSaveState(async () => {
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, extraCosts: (b.extraCosts || []).filter((c) => c.id !== costId) } : b)));
+    await removeBookingExtraCostRow(costId);
   });
 
   const updateBooking = (id, patch) => withSaveState(async () => {
@@ -1365,6 +1398,7 @@ export default function WorkshopHub() {
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
+          addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
           stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
@@ -1395,7 +1429,7 @@ export default function WorkshopHub() {
 // ============================================================
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
-  bookings, addBooking, removeBooking, updateBooking, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
+  bookings, addBooking, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
   stockBatches, orderStock, deliverStock, cancelOrder, amendOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   updatePriceHistorySupplier, updateStockBatchSupplier,
@@ -1580,6 +1614,7 @@ function OfficeMode({
           <CalendarTab monthCursor={monthCursor} setMonthCursor={setMonthCursor} bookings={bookings} selectedDay={selectedDay} setSelectedDay={setSelectedDay}
             onNewBooking={() => setShowNewBooking(true)} onProvisionalBooking={() => setShowProvisionalBooking(true)} onEditBooking={(b) => setEditingBooking(b)} onPrintJob={setPrintJob}
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
+            addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
             jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
             holidays={holidays} />
         )}
@@ -1637,6 +1672,7 @@ function OfficeMode({
           <ProfitabilityGate>
             <ProfitabilityTab
               bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking}
+              addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
               bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
@@ -2299,7 +2335,7 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirmed }) {
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onProvisionalBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onProvisionalBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
@@ -2518,7 +2554,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     </div>
                   </div>
                 )}
-                <JobCostBlock booking={b} jt={jt} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking} />
+                <JobCostBlock booking={b} jt={jt} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking} addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost} />
                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                   Find this vehicle by reg (<strong className="wh-mono">{b.reg || "no reg"}</strong>) under Workshop mode to open its job card.
                 </div>
@@ -2871,16 +2907,16 @@ function partsCostForBooking(booking, jobTypes, parts) {
   return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
 }
 // Shared by the per-booking cost block and the Profitability tab's rollup.
-function computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered }) {
+function computeProfit({ jobValue, labourCost, transportCost, partsCost, extraCostsTotal, vatRegistered }) {
   const vat = vatRegistered ? jobValue - jobValue / 1.2 : 0;
-  return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost };
+  return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost - (extraCostsTotal || 0) };
 }
 
 // Job value/labour/parts cost and profit used to be visible here — this is
 // now pricing entry and transport/invoicing only. Profit stays visible in
 // one place, the password-gated Profitability tab, rather than to anyone
 // scanning a booking on the calendar.
-function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking }) {
+function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost }) {
   const [open, setOpen] = useState(false);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
@@ -2968,6 +3004,35 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking })
           )}
           {needsQuote && <button className="wb-btn-ghost" onClick={draftQuoteEmail}><Mail size={12} /> Draft transport quote request</button>}
           <div>
+            <label className="wb-label">Additional costs</label>
+            {(booking.extraCosts || []).length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 6 }}>
+                {booking.extraCosts.map((c) => (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: "5px 8px" }}>
+                    <span>{c.description}</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="wh-mono">£{c.amount.toFixed(2)}</span>
+                      <X size={12} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeBookingExtraCost(booking.id, c.id)} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              className="wb-btn-ghost"
+              onClick={() => {
+                const description = prompt("What's the additional cost for?");
+                if (!description || !description.trim()) return;
+                const amountStr = prompt(`£ amount for "${description.trim()}":`);
+                const amount = parseFloat(amountStr);
+                if (!amount || amount <= 0) return;
+                addBookingExtraCost(booking.id, description.trim(), amount);
+              }}
+            >
+              <Plus size={12} /> Add cost
+            </button>
+          </div>
+          <div>
             <label className="wb-label">Payment method (agreed)</label>
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
               {PAYMENT_METHODS.map((m) => (
@@ -3050,8 +3115,9 @@ function bookingProfit(booking, jobTypes, parts, settings) {
   // file doesn't match what was actually bought for that particular vehicle.
   const partsCost = booking.partsCostOverride != null ? booking.partsCostOverride : partsCostForBooking(booking, jobTypes, parts);
   const jobValue = booking.jobValue || 0, labourCost = booking.labourCost || 0, transportCost = booking.transportCost || 0;
-  const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, vatRegistered: settings.vatRegistered });
-  return { jt, partsCost, jobValue, labourCost, transportCost, vat, profit };
+  const extraCostsTotal = (booking.extraCosts || []).reduce((sum, c) => sum + (c.amount || 0), 0);
+  const { vat, profit } = computeProfit({ jobValue, labourCost, transportCost, partsCost, extraCostsTotal, vatRegistered: settings.vatRegistered });
+  return { jt, partsCost, jobValue, labourCost, transportCost, extraCostsTotal, vat, profit };
 }
 
 // How many of each job type have actually been completed — main job AND
@@ -3575,7 +3641,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -3592,8 +3658,9 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
       const totals = rows.reduce((acc, r) => ({
         jobValue: acc.jobValue + r.jobValue, partsCost: acc.partsCost + r.partsCost,
         labourCost: acc.labourCost + r.labourCost, transportCost: acc.transportCost + r.transportCost,
+        extraCostsTotal: acc.extraCostsTotal + r.extraCostsTotal,
         vat: acc.vat + r.vat, profit: acc.profit + r.profit,
-      }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, vat: 0, profit: 0 });
+      }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, vat: 0, profit: 0 });
       const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
       // Same main+extra job type counting as the all-time breakdown below,
       // just scoped to this one month — this is the number that actually
@@ -3636,20 +3703,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
   const grandTotal = months.monthList.reduce((acc, m) => ({
     jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
     labourCost: acc.labourCost + m.totals.labourCost, transportCost: acc.transportCost + m.totals.transportCost,
-    profit: acc.profit + m.totals.profit,
-  }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, profit: 0 });
+    extraCostsTotal: acc.extraCostsTotal + m.totals.extraCostsTotal, profit: acc.profit + m.totals.profit,
+  }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, profit: 0 });
 
   // All-time, across every month — see jobTypeCompletionCounts above.
   const jobTypeBreakdown = useMemo(() => jobTypeCompletionCounts(bookings, jobTypes), [bookings, jobTypes]);
 
   const exportExcel = () => {
-    const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Profit"]];
+    const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Extra costs", "Profit"]];
     months.monthList.forEach((m) => {
-      m.rows.forEach((r) => rows.push([m.label, r.booking.date, r.booking.customerName || "Unnamed", r.booking.reg || "", r.jt?.name || "", r.jobValue, r.partsCost, r.labourCost, r.transportCost, r.profit]));
-      rows.push([m.label + " total", "", "", "", "", m.totals.jobValue, m.totals.partsCost, m.totals.labourCost, m.totals.transportCost, m.totals.profit]);
+      m.rows.forEach((r) => rows.push([m.label, r.booking.date, r.booking.customerName || "Unnamed", r.booking.reg || "", r.jt?.name || "", r.jobValue, r.partsCost, r.labourCost, r.transportCost, r.extraCostsTotal, r.profit]));
+      rows.push([m.label + " total", "", "", "", "", m.totals.jobValue, m.totals.partsCost, m.totals.labourCost, m.totals.transportCost, m.totals.extraCostsTotal, m.totals.profit]);
       rows.push([]);
     });
-    rows.push(["Grand total", "", "", "", "", grandTotal.jobValue, grandTotal.partsCost, grandTotal.labourCost, grandTotal.transportCost, grandTotal.profit]);
+    rows.push(["Grand total", "", "", "", "", grandTotal.jobValue, grandTotal.partsCost, grandTotal.labourCost, grandTotal.transportCost, grandTotal.extraCostsTotal, grandTotal.profit]);
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Profitability");
@@ -3738,12 +3805,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
           )}
           <div style={{ overflowX: "auto" }}>
             <table className="wb-table">
-              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th></tr></thead>
+              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th></tr></thead>
               <tbody>
                 {activeMonth.rows.map((r) => {
                   const editing = editingRowId === r.booking.id;
                   const breakdownOpen = breakdownRowId === r.booking.id;
                   const costInputStyle = { width: 78, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--text)", padding: "4px 6px", fontSize: 12, fontFamily: "inherit" };
+                  // A part with no cost price recorded quietly understates
+                  // this job's real parts cost (and overstates its profit)
+                  // — flag it rather than let it pass as a silent zero.
+                  // Moot once a manual parts total overrides the recipe.
+                  const hasUncostedPart = r.booking.partsCostOverride == null && fullBookingBom(r.booking, jobTypes).some((l) => {
+                    const p = partsIndexForProfitability[l.partId];
+                    return !p || !p.costPrice;
+                  });
                   return (
                     <React.Fragment key={r.booking.id}>
                     <tr style={r.booking.costsReviewed ? { background: "rgba(95,184,122,0.07)" } : undefined}>
@@ -3768,10 +3843,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                         ) : (
                           <span
                             onClick={() => setBreakdownRowId(breakdownRowId === r.booking.id ? null : r.booking.id)}
-                            title="Click to see what this is made up of"
-                            style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--muted)" }}
+                            title={hasUncostedPart ? "One or more parts on this job have no cost price recorded — click to see the recipe" : "Click to see what this is made up of"}
+                            style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--muted)", color: hasUncostedPart ? "var(--red)" : undefined }}
                           >
                             £{r.partsCost.toFixed(2)}{r.booking.partsCostOverride != null && <span title="Manually entered — not from the parts recipe" style={{ color: "var(--amber)", marginLeft: 3 }}>*</span>}
+                            {hasUncostedPart && <AlertTriangle size={11} style={{ display: "inline", marginLeft: 4, verticalAlign: "-1px" }} />}
                           </span>
                         )}
                       </td>
@@ -3801,6 +3877,15 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                           <>£{r.transportCost.toFixed(2)}</>
                         )}
                       </td>
+                      <td className="wh-mono">
+                        <span
+                          onClick={() => setBreakdownRowId(breakdownRowId === r.booking.id ? null : r.booking.id)}
+                          title="Click to view/add itemised extra costs"
+                          style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--muted)" }}
+                        >
+                          £{r.extraCostsTotal.toFixed(2)}
+                        </span>
+                      </td>
                       <td className="wh-mono" style={{ color: r.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{r.profit.toFixed(2)}</td>
                       <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                         <button
@@ -3829,7 +3914,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                     </tr>
                     {breakdownOpen && (
                       <tr>
-                        <td colSpan={12} style={{ background: "var(--panel2)", padding: "12px 16px" }}>
+                        <td colSpan={13} style={{ background: "var(--panel2)", padding: "12px 16px" }}>
                           {r.booking.partsCostOverride != null && (
                             <div style={{ fontSize: 11.5, color: "var(--amber)", marginBottom: 8 }}>
                               A manual total of £{r.booking.partsCostOverride.toFixed(2)} is currently overriding the recipe below — clear it (pencil icon, empty the Parts cost box) to go back to using this breakdown.
@@ -3850,9 +3935,13 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                               <tbody>
                                 {fullBookingBom(r.booking, jobTypes).map((l) => {
                                   const p = partsIndexForProfitability[l.partId];
+                                  const uncosted = !p || !p.costPrice;
                                   return (
                                     <tr key={l.partId}>
-                                      <td style={{ padding: "3px 8px 3px 0" }}>{p?.name || l.partId}</td>
+                                      <td style={{ padding: "3px 8px 3px 0", color: uncosted ? "var(--red)" : undefined }}>
+                                        {p?.name || l.partId}
+                                        {uncosted && <span title="No cost price recorded for this part — set one on the Stock tab" style={{ marginLeft: 4 }}><AlertTriangle size={11} style={{ display: "inline", verticalAlign: "-1px" }} /></span>}
+                                      </td>
                                       <td style={{ padding: "3px 8px" }}>
                                         <input
                                           type="number" step="0.01" defaultValue={l.qty}
@@ -3861,7 +3950,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                           style={{ width: 60, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, color: "var(--text)", padding: "3px 5px", fontSize: 12, fontFamily: "inherit" }}
                                         />
                                       </td>
-                                      <td className="wh-mono" style={{ padding: "3px 8px" }}>£{(p?.costPrice || 0).toFixed(2)}</td>
+                                      <td className="wh-mono" style={{ padding: "3px 8px", color: uncosted ? "var(--red)" : undefined }}>£{(p?.costPrice || 0).toFixed(2)}</td>
                                       <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{((p?.costPrice || 0) * l.qty).toFixed(2)}</td>
                                     </tr>
                                   );
@@ -3875,6 +3964,35 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                               </tfoot>
                             </table>
                           )}
+                          <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+                            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>Additional costs</div>
+                            {(r.booking.extraCosts || []).length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+                                {r.booking.extraCosts.map((c) => (
+                                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5 }}>
+                                    <span>{c.description}</span>
+                                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                      <span className="wh-mono">£{c.amount.toFixed(2)}</span>
+                                      <X size={12} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => removeBookingExtraCost(r.booking.id, c.id)} />
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <button
+                              className="wb-btn-ghost" style={{ padding: "6px 12px", minHeight: 30 }}
+                              onClick={() => {
+                                const description = prompt("What's the additional cost for?");
+                                if (!description || !description.trim()) return;
+                                const amountStr = prompt(`£ amount for "${description.trim()}":`);
+                                const amount = parseFloat(amountStr);
+                                if (!amount || amount <= 0) return;
+                                addBookingExtraCost(r.booking.id, description.trim(), amount);
+                              }}
+                            >
+                              <Plus size={12} /> Add cost
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -3889,6 +4007,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                   <td className="wh-mono">£{activeMonth.totals.partsCost.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.labourCost.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)}</td>
+                  <td className="wh-mono">£{activeMonth.totals.extraCostsTotal.toFixed(2)}</td>
                   <td className="wh-mono" style={{ color: activeMonth.totals.profit >= 0 ? "var(--green)" : "var(--red)" }}>£{activeMonth.totals.profit.toFixed(2)}</td>
                   <td></td>
                 </tr>
@@ -3914,6 +4033,10 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Transport cost</span>
                   <span className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)} ({pct(activeMonth.totals.transportCost)})</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
+                  <span>Extra costs</span>
+                  <span className="wh-mono">£{activeMonth.totals.extraCostsTotal.toFixed(2)} ({pct(activeMonth.totals.extraCostsTotal)})</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Non-productives</span>
@@ -5588,7 +5711,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
               jobTypePrices: allJobTypeIds.map((id) => ({ jobTypeId: id, price: jobTypePrices[id] || 0 })),
               // Labour/transport stay calendar-tab-only for an existing booking — editing here must never clobber those.
               // Timing Chain Replacement gets its standard labour cost alongside the pricing breakdown above; everything else starts at zero.
-              ...(booking ? {} : { labourCost: isTimingChainReplacement(jobTypes.find((j) => j.id === jobTypeId)) ? STANDARD_TIMING_CHAIN_PRICE.labourCost : 0, transportCost: 0 }),
+              ...(booking ? {} : { labourCost: defaultLabourCostForJobType(jobTypes.find((j) => j.id === jobTypeId), brands) ?? 0, transportCost: 0 }),
             };
             // Only for genuinely new bookings, not edits — checks against
             // what's actually still free (stock + on order, minus what
