@@ -17,6 +17,7 @@ import {
   insertFixedCost, updateFixedCost, deleteFixedCost,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
+  setBookingBomCostOverride, removeBookingBomCostOverride,
   insertBookingExtraCost, removeBookingExtraCost as removeBookingExtraCostRow,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier, updateStockBatch,
@@ -585,6 +586,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_extra_parts", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_bom_qty_overrides", async () => setBookings(await fetchBookings())),
+      subscribeTable("booking_bom_cost_overrides", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("job_approvals", async () => setJobApprovals(await fetchJobApprovals())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
@@ -867,8 +869,8 @@ export default function WorkshopHub() {
     setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
     // bookings-table patch never includes extraJobTypeIds/extraParts/jobTypePrices/
-    // bomQtyOverrides — those live in their own junction tables, reconciled separately below.
-    const { extraJobTypeIds, extraParts, jobTypePrices, bomQtyOverrides, ...rowPatch } = patch;
+    // bomQtyOverrides/bomCostOverrides — those live in their own junction tables, reconciled separately below.
+    const { extraJobTypeIds, extraParts, jobTypePrices, bomQtyOverrides, bomCostOverrides, ...rowPatch } = patch;
 
     // Stock is only taken out (or given back) at the workshop-completed
     // transition, not at booking time — see addBooking. Three cases:
@@ -939,6 +941,11 @@ export default function WorkshopHub() {
       const beforeOverrides = before?.bomQtyOverrides || [];
       const removed = beforeOverrides.filter((l) => !bomQtyOverrides.some((n) => n.partId === l.partId));
       jobs.push(...bomQtyOverrides.map((l) => setBookingBomQtyOverride(id, l.partId, l.qty)), ...removed.map((l) => removeBookingBomQtyOverride(id, l.partId)));
+    }
+    if (bomCostOverrides) {
+      const beforeOverrides = before?.bomCostOverrides || [];
+      const removed = beforeOverrides.filter((l) => !bomCostOverrides.some((n) => n.partId === l.partId));
+      jobs.push(...bomCostOverrides.map((l) => setBookingBomCostOverride(id, l.partId, l.cost)), ...removed.map((l) => removeBookingBomCostOverride(id, l.partId)));
     }
     await Promise.all(jobs.filter(Boolean));
 
@@ -2903,8 +2910,18 @@ function fullBookingBom(booking, jobTypes) {
   (booking.bomQtyOverrides || []).forEach((l) => { qtyByPart[l.partId] = l.qty; });
   return Object.entries(qtyByPart).filter((l) => l[1] > 0).map(([partId, qty]) => ({ partId, qty }));
 }
+// A part's cost price is derived from stock batches and shared across every
+// booking that uses it — fine most of the time, but sometimes a specific job
+// paid a genuinely different price for a part (a one-off, or a part that's
+// never been costed at all). This override — same shape/pattern as
+// bomQtyOverrides — lets office correct just that one line on the
+// Profitability breakdown without touching the part's real cost record.
+function unitCostForBomLine(booking, partId, part) {
+  const override = (booking.bomCostOverrides || []).find((o) => o.partId === partId);
+  return override != null ? override.cost : (part?.costPrice || 0);
+}
 function partsCostForBooking(booking, jobTypes, parts) {
-  return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + (p?.costPrice || 0) * l.qty; }, 0);
+  return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + unitCostForBomLine(booking, l.partId, p) * l.qty; }, 0);
 }
 // Shared by the per-booking cost block and the Profitability tab's rollup.
 function computeProfit({ jobValue, labourCost, transportCost, partsCost, extraCostsTotal, vatRegistered }) {
@@ -3710,6 +3727,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
     const next = fullBookingBom(booking, jobTypes).map((l) => (l.partId === partId ? { partId, qty } : l));
     updateBooking(booking.id, { bomQtyOverrides: next });
   };
+  const updateBomCostForBooking = (booking, partId, cost) => {
+    const next = (booking.bomCostOverrides || []).filter((o) => o.partId !== partId);
+    next.push({ partId, cost });
+    updateBooking(booking.id, { bomCostOverrides: next });
+  };
   const sortedRows = useMemo(() => {
     if (!activeMonth) return [];
     const rows = [...activeMonth.rows];
@@ -3854,7 +3876,8 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                   // Moot once a manual parts total overrides the recipe.
                   const hasUncostedPart = r.booking.partsCostOverride == null && fullBookingBom(r.booking, jobTypes).some((l) => {
                     const p = partsIndexForProfitability[l.partId];
-                    return !p || !p.costPrice;
+                    const hasOverride = (r.booking.bomCostOverrides || []).some((o) => o.partId === l.partId);
+                    return !hasOverride && (!p || !p.costPrice);
                   });
                   return (
                     <React.Fragment key={r.booking.id}>
@@ -3990,12 +4013,14 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                               <tbody>
                                 {fullBookingBom(r.booking, jobTypes).map((l) => {
                                   const p = partsIndexForProfitability[l.partId];
-                                  const uncosted = !p || !p.costPrice;
+                                  const override = (r.booking.bomCostOverrides || []).find((o) => o.partId === l.partId);
+                                  const unitCost = unitCostForBomLine(r.booking, l.partId, p);
+                                  const uncosted = !override && (!p || !p.costPrice);
                                   return (
                                     <tr key={l.partId}>
                                       <td style={{ padding: "3px 8px 3px 0", color: uncosted ? "var(--red)" : undefined }}>
                                         {p?.name || l.partId}
-                                        {uncosted && <span title="No cost price recorded for this part — set one on the Stock tab" style={{ marginLeft: 4 }}><AlertTriangle size={11} style={{ display: "inline", verticalAlign: "-1px" }} /></span>}
+                                        {uncosted && <span title="No cost price recorded for this part — set one on the Stock tab, or enter a cost for this job only" style={{ marginLeft: 4 }}><AlertTriangle size={11} style={{ display: "inline", verticalAlign: "-1px" }} /></span>}
                                       </td>
                                       <td style={{ padding: "3px 8px" }}>
                                         <input
@@ -4005,8 +4030,19 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                           style={{ width: 60, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, color: "var(--text)", padding: "3px 5px", fontSize: 12, fontFamily: "inherit" }}
                                         />
                                       </td>
-                                      <td className="wh-mono" style={{ padding: "3px 8px", color: uncosted ? "var(--red)" : undefined }}>£{(p?.costPrice || 0).toFixed(2)}</td>
-                                      <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{((p?.costPrice || 0) * l.qty).toFixed(2)}</td>
+                                      <td style={{ padding: "3px 8px" }}>
+                                        <input
+                                          type="number" step="0.01" defaultValue={unitCost.toFixed(2)}
+                                          title={override != null ? "Manually entered — not this part's recorded cost price" : "This part's recorded cost price — edit to override for this job only"}
+                                          onBlur={(e) => updateBomCostForBooking(r.booking, l.partId, e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
+                                          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                                          style={{
+                                            width: 70, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, padding: "3px 5px", fontSize: 12, fontFamily: "inherit",
+                                            color: override != null ? "var(--amber)" : uncosted ? "var(--red)" : "var(--text)",
+                                          }}
+                                        />
+                                      </td>
+                                      <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{(unitCost * l.qty).toFixed(2)}</td>
                                     </tr>
                                   );
                                 })}
