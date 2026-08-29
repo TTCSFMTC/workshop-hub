@@ -1,12 +1,20 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { BUSINESSES } from "@/lib/constants";
-import { sendBookingRequestNotification } from "@/lib/resend";
+import { sendBookingRequestNotification, sendTransportRequestEmail } from "@/lib/resend";
 import { techsOffOn, capForTechsOff, realBookingCountForDate } from "@/lib/bookingCapacity";
 
 const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// A chain job at the workshop always takes 3 days regardless of which
+// specific chain/kit it is — collection and/or delivery each add a day on
+// top of that (a day to fetch it, a separate day to run it back), never
+// blocking any extra calendar capacity themselves (see migration_053) —
+// purely so the customer and office both know what to expect up front.
+const WORKSHOP_DAYS = 3;
+const estimatedDaysFor = (transportType) =>
+  transportType === "collect_deliver" ? WORKSHOP_DAYS + 2 : transportType === "collect" ? WORKSHOP_DAYS + 1 : WORKSHOP_DAYS;
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const addDaysISO = (iso, days) => {
   const [y, m, d] = iso.split("-").map(Number);
@@ -31,6 +39,15 @@ export async function POST(request) {
   const isNonRunner = !!body.isNonRunner;
   const symptoms = (body.symptoms || "").trim();
   const termsAccepted = !!body.termsAccepted;
+  // Collection/delivery is only ever offered for a Timing Chain Specialists
+  // chain job — anything else sent from the client is ignored rather than
+  // trusted, same reasoning as recomputing estimatedDays server-side below
+  // instead of accepting whatever the client sends.
+  const isChainJob = requirements.some((r) => r.toLowerCase().includes("chain"));
+  const transportEligible = business === "Timing Chain Specialists" && isChainJob && !isEmergency && !isOther;
+  const requestedTransportType = ["collect", "collect_deliver"].includes(body.transportType) ? body.transportType : "none";
+  const transportType = transportEligible ? requestedTransportType : "none";
+  const estimatedDays = transportEligible ? estimatedDaysFor(transportType) : null;
 
   if (!name || !phone || !reg) {
     return NextResponse.json({ error: "Name, phone, and registration are required." }, { status: 400 });
@@ -145,8 +162,10 @@ export async function POST(request) {
       .insert({
         name, address, phone, email, reg, business, date, requirements, other_details: isOther ? otherDetails : null,
         is_non_runner: isNonRunner, symptoms, terms_accepted_at: new Date().toISOString(),
+        transport_type: transportType, estimated_days: estimatedDays,
+        transport_status: transportType === "none" ? "not_required" : "pending",
       })
-      .select("id")
+      .select("id, transport_token")
       .single();
     if (insertError) throw insertError;
 
@@ -162,13 +181,36 @@ export async function POST(request) {
     // error for the customer — office can still see it was submitted via
     // the Booking Requests tab even if the email never arrives.
     try {
-      const needsReview = isOther || requirements.some((r) => r.toLowerCase().includes("chain"));
+      const needsReview = isOther || isChainJob;
       await sendBookingRequestNotification({
         name, business, phone, email, reg, date, requirements, needsReview, otherDetails: isOther ? otherDetails : undefined,
-        isNonRunner, symptoms,
+        isNonRunner, symptoms, transportType, estimatedDays,
       });
     } catch (emailError) {
       console.error("booking request email failed", emailError);
+    }
+
+    // Transport only ever gets asked once we know the request itself is
+    // valid and has a slot — no point troubling them over a day that was
+    // about to be declined anyway for being full.
+    if (transportType !== "none") {
+      try {
+        const { data: settingsRow } = await supabaseAdmin.from("settings").select("transport_contact_name, transport_contact_email").eq("id", true).maybeSingle();
+        if (settingsRow?.transport_contact_email) {
+          const base = request.nextUrl.origin;
+          await sendTransportRequestEmail({
+            to: settingsRow.transport_contact_email,
+            transportContactName: settingsRow.transport_contact_name,
+            name, reg, address, business, date, transportType, estimatedDays,
+            approveUrl: `${base}/transport-response/${data.transport_token}?action=approve`,
+            declineUrl: `${base}/transport-response/${data.transport_token}?action=decline`,
+          });
+        } else {
+          console.error("collection requested but no transport_contact_email configured in Settings");
+        }
+      } catch (transportEmailError) {
+        console.error("transport request email failed", transportEmailError);
+      }
     }
 
     return NextResponse.json({ ok: true });
