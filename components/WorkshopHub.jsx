@@ -3732,7 +3732,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
     next.push({ partId, cost });
     updateBooking(booking.id, { bomCostOverrides: next });
   };
-  const clearAllBomCostOverrides = (booking) => updateBooking(booking.id, { bomCostOverrides: [] });
+  const revertToRecipeTotal = (booking) => updateBooking(booking.id, { bomCostOverrides: [], partsCostOverride: null });
   const sortedRows = useMemo(() => {
     if (!activeMonth) return [];
     const rows = [...activeMonth.rows];
@@ -4068,17 +4068,15 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                 <tr style={{ fontWeight: 700, borderTop: "1px solid var(--line)" }}>
                                   <td colSpan={3} style={{ padding: "6px 8px 0 0" }}>
                                     Recipe total
-                                    {(r.booking.bomCostOverrides || []).length > 0 && (
-                                      <button
-                                        onClick={() => clearAllBomCostOverrides(r.booking)}
-                                        title="Clear every manually entered unit cost on this job and go back to recorded cost prices"
-                                        style={{
-                                          marginLeft: 10, background: "none", border: "1px solid var(--line)", color: "var(--amber)",
-                                          borderRadius: 6, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600,
-                                          display: "inline-flex", alignItems: "center", gap: 4, verticalAlign: "middle",
-                                        }}
-                                      ><RotateCcw size={11} /> Revert to recipe total</button>
-                                    )}
+                                    <button
+                                      onClick={() => revertToRecipeTotal(r.booking)}
+                                      title="Clear any manually entered parts total and unit costs on this job and go back to recorded cost prices"
+                                      style={{
+                                        marginLeft: 10, background: "none", border: "1px solid var(--line)", color: "var(--amber)",
+                                        borderRadius: 6, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600,
+                                        display: "inline-flex", alignItems: "center", gap: 4, verticalAlign: "middle",
+                                      }}
+                                    ><RotateCcw size={11} /> Revert to recipe total</button>
                                   </td>
                                   <td className="wh-mono" style={{ padding: "6px 0 0 8px", textAlign: "right" }}>£{partsCostForBooking(r.booking, jobTypes, parts).toFixed(2)}</td>
                                 </tr>
