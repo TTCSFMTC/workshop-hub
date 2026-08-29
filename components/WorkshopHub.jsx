@@ -1344,6 +1344,7 @@ export default function WorkshopHub() {
         }
         .wb-badge-low { background:#3a1210; color:var(--red); border:1px solid #5a2320; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
         .wb-badge-ok { background:#10281a; color:var(--green); border:1px solid #1f4530; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; }
+        .wb-badge-pending { background:#2b2410; color:var(--amber2); border:1px solid #4a3d18; font-size:10px; padding:2px 7px; border-radius:20px; font-weight:700; white-space:nowrap; }
         .wb-modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:flex-start; justify-content:center; padding:30px 14px; z-index:50; overflow-y:auto; }
         .wb-modal { background: var(--panel); border:1px solid var(--line); border-radius:10px; width:100%; max-width:640px; }
         table.wb-table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -4337,7 +4338,15 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
             <button onClick={(e) => { e.stopPropagation(); setHistoryPart(r); }} title="Price history" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><History size={14} /></button>
           </div>
         </td>
-        <td>{r.needsOrder ? <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span> : <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>}</td>
+        <td>
+          {!r.needsOrder ? (
+            <span className="wb-badge-ok"><Check size={10} style={{ display: "inline", marginRight: 3 }} />OK</span>
+          ) : r.onOrder > 0 ? (
+            <span className="wb-badge-pending"><Truck size={10} style={{ display: "inline", marginRight: 3 }} />Ordered — not arrived</span>
+          ) : (
+            <span className="wb-badge-low"><AlertTriangle size={10} style={{ display: "inline", marginRight: 3 }} />Reorder</span>
+          )}
+        </td>
       </tr>
       {open && (
         <tr>
