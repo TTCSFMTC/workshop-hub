@@ -3699,11 +3699,37 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
   // just which booking the popover is open for; the popover itself owns its
   // description/amount fields.
   const [addCostRowId, setAddCostRowId] = useState(null);
+  // Which column the job table is sorted by — defaults to the same
+  // most-recent-first date order the month's rows already come pre-sorted
+  // in, so switching months doesn't visibly reorder anything until office
+  // actually clicks a header.
+  const [sortBy, setSortBy] = useState({ key: "date", dir: "desc" });
+  const toggleSort = (key) => setSortBy((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   const partsIndexForProfitability = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
   const updateBomQtyForBooking = (booking, partId, qty) => {
     const next = fullBookingBom(booking, jobTypes).map((l) => (l.partId === partId ? { partId, qty } : l));
     updateBooking(booking.id, { bomQtyOverrides: next });
   };
+  const sortedRows = useMemo(() => {
+    if (!activeMonth) return [];
+    const rows = [...activeMonth.rows];
+    const dir = sortBy.dir === "asc" ? 1 : -1;
+    const val = (r) => {
+      switch (sortBy.key) {
+        case "date": return r.booking.date || "";
+        case "customer": return (r.booking.customerName || "").toLowerCase();
+        case "reg": return (r.booking.reg || "").toLowerCase();
+        default: return "";
+      }
+    };
+    rows.sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+    return rows;
+  }, [activeMonth, sortBy]);
 
   const grandTotal = months.monthList.reduce((acc, m) => ({
     jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
@@ -3810,9 +3836,15 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
           )}
           <div style={{ overflowX: "auto" }}>
             <table className="wb-table">
-              <thead><tr><th>Date</th><th>Days</th><th>Customer</th><th>Reg</th><th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th></tr></thead>
+              <thead><tr>
+                <SortableTh label="Date" sortKey="date" sortBy={sortBy} onClick={toggleSort} />
+                <th>Days</th>
+                <SortableTh label="Customer" sortKey="customer" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Reg" sortKey="reg" sortBy={sortBy} onClick={toggleSort} />
+                <th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th>
+              </tr></thead>
               <tbody>
-                {activeMonth.rows.map((r) => {
+                {sortedRows.map((r) => {
                   const editing = editingRowId === r.booking.id;
                   const breakdownOpen = breakdownRowId === r.booking.id;
                   const costInputStyle = { width: 78, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 6, color: "var(--text)", padding: "4px 6px", fontSize: 12, fontFamily: "inherit" };
@@ -4077,6 +4109,26 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
         />
       )}
     </div>
+  );
+}
+
+// A clickable table header that sorts the Profitability job table by that
+// column — date order for Date, alphabetical for Customer/Reg. Clicking the
+// already-active column flips direction instead of resetting it.
+function SortableTh({ label, sortKey, sortBy, onClick }) {
+  const active = sortBy.key === sortKey;
+  return (
+    <th style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }} onClick={() => onClick(sortKey)}>
+      {label}
+      <ChevronDown
+        size={11}
+        style={{
+          display: "inline-block", marginLeft: 3, verticalAlign: "-1px",
+          opacity: active ? 1 : 0.3,
+          transform: active && sortBy.dir === "asc" ? "rotate(180deg)" : "none",
+        }}
+      />
+    </th>
   );
 }
 
