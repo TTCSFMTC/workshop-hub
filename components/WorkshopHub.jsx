@@ -3732,10 +3732,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
     next.push({ partId, cost });
     updateBooking(booking.id, { bomCostOverrides: next });
   };
-  const clearBomCostOverride = (booking, partId) => {
-    const next = (booking.bomCostOverrides || []).filter((o) => o.partId !== partId);
-    updateBooking(booking.id, { bomCostOverrides: next });
-  };
+  const clearAllBomCostOverrides = (booking) => updateBooking(booking.id, { bomCostOverrides: [] });
   const sortedRows = useMemo(() => {
     if (!activeMonth) return [];
     const rows = [...activeMonth.rows];
@@ -3888,7 +3885,13 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                     <tr style={r.booking.costsReviewed ? { background: "rgba(95,184,122,0.07)" } : undefined}>
                       <td className="wh-mono">{r.booking.date}</td>
                       <td className="wh-mono">{r.booking.days || 1}</td>
-                      <td>{r.booking.customerName || "Unnamed"}</td>
+                      <td
+                        onClick={() => setBreakdownRowId(breakdownRowId === r.booking.id ? null : r.booking.id)}
+                        title="Click to see the parts cost breakdown"
+                        style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "var(--muted)" }}
+                      >
+                        {r.booking.customerName || "Unnamed"}
+                      </td>
                       <td className="wh-mono">{r.booking.reg}</td>
                       <td>{r.jt?.name || "—"}</td>
                       <td style={{ color: r.booking.zohoInvoiceId ? "var(--green)" : "var(--muted)", fontWeight: r.booking.zohoInvoiceId ? 700 : 400 }}>
@@ -3964,7 +3967,16 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                           }}
                         ><Check size={13} /></button>
                         <button
-                          onClick={() => setEditingRowId(editing ? null : r.booking.id)}
+                          onClick={() => {
+                            const next = editing ? null : r.booking.id;
+                            setEditingRowId(next);
+                            // Always opens the parts breakdown alongside the
+                            // editable totals — previously this only opened
+                            // if you separately clicked the Parts cost
+                            // figure, so it looked like the pencil "didn't
+                            // always" open it when really it just never did.
+                            if (next) setBreakdownRowId(next);
+                          }}
                           title={editing ? "Done editing" : "Edit parts, labour & transport"}
                           style={{
                             background: editing ? "var(--amber)" : "none",
@@ -4035,27 +4047,17 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                         />
                                       </td>
                                       <td style={{ padding: "3px 8px" }}>
-                                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                          <input
-                                            key={override != null ? `${l.partId}-o${override.cost}` : `${l.partId}-r`}
-                                            type="number" step="0.01" defaultValue={unitCost.toFixed(2)}
-                                            title={override != null ? "Manually entered — not this part's recorded cost price" : "This part's recorded cost price — edit to override for this job only"}
-                                            onBlur={(e) => updateBomCostForBooking(r.booking, l.partId, e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
-                                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                                            style={{
-                                              width: 70, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, padding: "3px 5px", fontSize: 12, fontFamily: "inherit",
-                                              color: override != null ? "var(--amber)" : uncosted ? "var(--red)" : "var(--text)",
-                                            }}
-                                          />
-                                          {override != null && (
-                                            <X
-                                              size={12}
-                                              title="Revert to this part's recorded cost price"
-                                              style={{ cursor: "pointer", color: "var(--muted)", flexShrink: 0 }}
-                                              onClick={() => clearBomCostOverride(r.booking, l.partId)}
-                                            />
-                                          )}
-                                        </div>
+                                        <input
+                                          key={override != null ? `${l.partId}-o${override.cost}` : `${l.partId}-r`}
+                                          type="number" step="0.01" defaultValue={unitCost.toFixed(2)}
+                                          title={override != null ? "Manually entered — not this part's recorded cost price" : "This part's recorded cost price — edit to override for this job only"}
+                                          onBlur={(e) => updateBomCostForBooking(r.booking, l.partId, e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
+                                          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                                          style={{
+                                            width: 70, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, padding: "3px 5px", fontSize: 12, fontFamily: "inherit",
+                                            color: override != null ? "var(--amber)" : uncosted ? "var(--red)" : "var(--text)",
+                                          }}
+                                        />
                                       </td>
                                       <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{(unitCost * l.qty).toFixed(2)}</td>
                                     </tr>
@@ -4064,7 +4066,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                               </tbody>
                               <tfoot>
                                 <tr style={{ fontWeight: 700, borderTop: "1px solid var(--line)" }}>
-                                  <td colSpan={3} style={{ padding: "6px 8px 0 0" }}>Recipe total</td>
+                                  <td colSpan={3} style={{ padding: "6px 8px 0 0" }}>
+                                    Recipe total
+                                    {(r.booking.bomCostOverrides || []).length > 0 && (
+                                      <button
+                                        onClick={() => clearAllBomCostOverrides(r.booking)}
+                                        title="Clear every manually entered unit cost on this job and go back to recorded cost prices"
+                                        style={{
+                                          marginLeft: 10, background: "none", border: "1px solid var(--line)", color: "var(--amber)",
+                                          borderRadius: 6, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600,
+                                          display: "inline-flex", alignItems: "center", gap: 4, verticalAlign: "middle",
+                                        }}
+                                      ><RotateCcw size={11} /> Revert to recipe total</button>
+                                    )}
+                                  </td>
                                   <td className="wh-mono" style={{ padding: "6px 0 0 8px", textAlign: "right" }}>£{partsCostForBooking(r.booking, jobTypes, parts).toFixed(2)}</td>
                                 </tr>
                               </tfoot>
