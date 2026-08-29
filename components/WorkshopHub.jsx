@@ -3694,6 +3694,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
   // the Parts cost figure to see the actual recipe (part × qty × unit cost)
   // behind that number, and adjust individual quantities from there.
   const [breakdownRowId, setBreakdownRowId] = useState(null);
+  // Quick-add for a non-parts cost (e.g. recovery, a sublet job) straight
+  // from the row action buttons, without first opening the full breakdown —
+  // just which booking the popover is open for; the popover itself owns its
+  // description/amount fields.
+  const [addCostRowId, setAddCostRowId] = useState(null);
   const partsIndexForProfitability = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
   const updateBomQtyForBooking = (booking, partId, qty) => {
     const next = fullBookingBom(booking, jobTypes).map((l) => (l.partId === partId ? { partId, qty } : l));
@@ -3910,11 +3915,29 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                             display: "inline-flex", alignItems: "center", justifyContent: "center",
                           }}
                         ><PenLine size={13} /></button>
+                        <button
+                          onClick={() => setAddCostRowId(r.booking.id)}
+                          title="Add a non-parts cost (e.g. recovery, sublet work)"
+                          style={{
+                            background: "none", border: "1px solid var(--line)", color: "var(--muted)",
+                            borderRadius: 6, cursor: "pointer", padding: 5, marginLeft: 6,
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          }}
+                        ><PoundSterling size={13} /></button>
                       </td>
                     </tr>
                     {breakdownOpen && (
                       <tr>
-                        <td colSpan={13} style={{ background: "var(--panel2)", padding: "12px 16px" }}>
+                        <td colSpan={13} style={{ background: "var(--panel2)", padding: "12px 16px", position: "relative" }}>
+                          <button
+                            onClick={() => setBreakdownRowId(null)}
+                            title="Collapse"
+                            style={{
+                              position: "absolute", top: 10, right: 12, background: "none", border: "1px solid var(--line)",
+                              color: "var(--muted)", borderRadius: 6, cursor: "pointer", padding: 4,
+                              display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            }}
+                          ><ChevronDown size={13} style={{ transform: "rotate(180deg)" }} /></button>
                           {r.booking.partsCostOverride != null && (
                             <div style={{ fontSize: 11.5, color: "var(--amber)", marginBottom: 8 }}>
                               A manual total of £{r.booking.partsCostOverride.toFixed(2)} is currently overriding the recipe below — clear it (pencil icon, empty the Parts cost box) to go back to using this breakdown.
@@ -4047,6 +4070,40 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
           })()}
         </div>
       )}
+      {addCostRowId && (
+        <AddExtraCostModal
+          onClose={() => setAddCostRowId(null)}
+          onAdd={(description, amount) => { addBookingExtraCost(addCostRowId, description, amount); setAddCostRowId(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddExtraCostModal({ onClose, onAdd }) {
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const canAdd = description.trim() && parseFloat(amount) > 0;
+  const submit = () => { if (!canAdd) return; onAdd(description.trim(), parseFloat(amount)); };
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Add a cost</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label className="wb-label">Description</label>
+            <input className="wb-input" autoFocus value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Recovery, sublet work" />
+          </div>
+          <div>
+            <label className="wb-label">Cost (£)</label>
+            <input className="wb-input" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} placeholder="0.00" />
+          </div>
+          <button className="wb-btn" disabled={!canAdd} style={!canAdd ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={submit}>Add cost</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -5126,6 +5183,11 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
               {req.is_non_runner && (
                 <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                   <AlertTriangle size={12} /> Non-runner
+                </div>
+              )}
+              {req.needs_collection_quote && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber, #f5a623)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  <AlertTriangle size={12} /> Needs a quote to collect
                 </div>
               )}
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
