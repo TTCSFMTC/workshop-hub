@@ -3732,6 +3732,10 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
     next.push({ partId, cost });
     updateBooking(booking.id, { bomCostOverrides: next });
   };
+  const clearBomCostOverride = (booking, partId) => {
+    const next = (booking.bomCostOverrides || []).filter((o) => o.partId !== partId);
+    updateBooking(booking.id, { bomCostOverrides: next });
+  };
   const sortedRows = useMemo(() => {
     if (!activeMonth) return [];
     const rows = [...activeMonth.rows];
@@ -4031,16 +4035,27 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                         />
                                       </td>
                                       <td style={{ padding: "3px 8px" }}>
-                                        <input
-                                          type="number" step="0.01" defaultValue={unitCost.toFixed(2)}
-                                          title={override != null ? "Manually entered — not this part's recorded cost price" : "This part's recorded cost price — edit to override for this job only"}
-                                          onBlur={(e) => updateBomCostForBooking(r.booking, l.partId, e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
-                                          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                                          style={{
-                                            width: 70, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, padding: "3px 5px", fontSize: 12, fontFamily: "inherit",
-                                            color: override != null ? "var(--amber)" : uncosted ? "var(--red)" : "var(--text)",
-                                          }}
-                                        />
+                                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                          <input
+                                            key={override != null ? `${l.partId}-o${override.cost}` : `${l.partId}-r`}
+                                            type="number" step="0.01" defaultValue={unitCost.toFixed(2)}
+                                            title={override != null ? "Manually entered — not this part's recorded cost price" : "This part's recorded cost price — edit to override for this job only"}
+                                            onBlur={(e) => updateBomCostForBooking(r.booking, l.partId, e.target.value === "" ? 0 : (parseFloat(e.target.value) || 0))}
+                                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                                            style={{
+                                              width: 70, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 5, padding: "3px 5px", fontSize: 12, fontFamily: "inherit",
+                                              color: override != null ? "var(--amber)" : uncosted ? "var(--red)" : "var(--text)",
+                                            }}
+                                          />
+                                          {override != null && (
+                                            <X
+                                              size={12}
+                                              title="Revert to this part's recorded cost price"
+                                              style={{ cursor: "pointer", color: "var(--muted)", flexShrink: 0 }}
+                                              onClick={() => clearBomCostOverride(r.booking, l.partId)}
+                                            />
+                                          )}
+                                        </div>
                                       </td>
                                       <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{(unitCost * l.qty).toFixed(2)}</td>
                                     </tr>
