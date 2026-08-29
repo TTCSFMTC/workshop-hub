@@ -6266,7 +6266,94 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
             <Toggle label="Road test completed" on={card.postChecks.roadTestCompleted} onClick={() => setNested("postChecks", "roadTestCompleted", !card.postChecks.roadTestCompleted)} />
           </div>
         </div>
+
+        <HandoverSection card={card} onUpdate={onUpdate} />
       </div>
+    </div>
+  );
+}
+
+// The legal handover/collection sign-off — a signed acknowledgement, taken
+// when the customer collects the vehicle, that they've inspected it and are
+// happy with the work completed and its condition. Distinct from the
+// drop-off signature captured by IntakeConfirmationModal (that's taken on
+// arrival, before any work starts) — this is the other end of the job.
+function HandoverSection({ card, onUpdate }) {
+  const canvasRef = useRef(null);
+  const drawingRef = useRef(false);
+  const [hasDrawn, setHasDrawn] = useState(false);
+  const [name, setName] = useState(card.customerName || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * ratio; canvas.height = 160 * ratio; ctx.scale(ratio, ratio);
+    ctx.strokeStyle = "#e7e3da"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+  }, []);
+
+  const getPos = (e) => { const canvas = canvasRef.current; const rect = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - rect.left, y: p.clientY - rect.top }; };
+  const start = (e) => { e.preventDefault(); drawingRef.current = true; const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); };
+  const move = (e) => { if (!drawingRef.current) return; e.preventDefault(); const ctx = canvasRef.current.getContext("2d"); const p = getPos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); setHasDrawn(true); };
+  const end = () => { drawingRef.current = false; };
+  const clearSig = () => { const canvas = canvasRef.current; canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height); setHasDrawn(false); };
+
+  const confirm = async () => {
+    if (!hasDrawn) { alert("Please have the customer sign before confirming."); return; }
+    if (!name.trim()) { alert("Please add the customer's printed name."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const signatureDataUrl = canvasRef.current.toDataURL("image/png");
+      const res = await fetch("/api/office/handover-confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobCardId: card.id, signatureName: name.trim(), signatureDataUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save the handover confirmation");
+      onUpdate({ signature: signatureDataUrl, signatureName: name.trim(), signatureDate: new Date().toISOString(), handoverPdfUrl: data.pdfUrl });
+    } catch (e) {
+      setError(e.message || "Failed to save the handover confirmation — check your connection and try again.");
+    }
+    setSaving(false);
+  };
+
+  if (card.signature) {
+    return (
+      <div className="jc-card">
+        <div className="jc-section-title"><Check size={14} style={{ color: "var(--green)" }} /> Handover confirmed</div>
+        <div style={{ fontSize: 13, color: "var(--green)", marginBottom: 4 }}>
+          Signed by {card.signatureName || "customer"}{card.signatureDate && ` on ${new Date(card.signatureDate).toLocaleString("en-GB")}`}
+        </div>
+        {card.handoverPdfUrl && <a href={card.handoverPdfUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber)", fontSize: 13 }}>Open the signed confirmation (PDF)</a>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="jc-card">
+      <div className="jc-section-title"><PenLine size={14} /> Handover</div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
+        Complete this with the customer present at collection — a legal acknowledgement that they've inspected the vehicle and are happy with the work and its condition.
+      </div>
+      <div style={{ fontSize: 12.5, marginBottom: 12 }}>
+        I confirm that I have inspected the vehicle and am satisfied with the work completed and the condition of the vehicle. I acknowledge that I have received the vehicle back into my possession.
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <label className="jc-label">Customer printed name</label>
+        <input className="jc-input" value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+      <canvas ref={canvasRef} style={{ width: "100%", height: 160, background: "var(--panel2)", border: "1px dashed var(--line)", borderRadius: 10, touchAction: "none" }}
+        onPointerDown={start} onPointerMove={move} onPointerUp={end} onPointerLeave={end} />
+      <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+        <button className="wb-btn-ghost" onClick={clearSig} disabled={saving}><RotateCcw size={14} /> Clear</button>
+        <button className="jc-btn-sm" onClick={confirm} disabled={saving}>{saving ? "Saving…" : "Confirm handover"}</button>
+      </div>
+      {error && <div style={{ marginTop: 10, fontSize: 12, color: "var(--red)" }}>{error}</div>}
     </div>
   );
 }
