@@ -4521,14 +4521,21 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
 
   const live = useMemo(() => {
     const totals = months.monthList.find((m) => m.key === month)?.totals
-      || { jobValue: 0, vat: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0 };
+      || { jobValue: 0, vat: 0, partsCost: 0, transportCost: 0, extraCostsTotal: 0 };
     const wages = computeStaffWagesForMonth(month, staffWages, bonusRates, bookings);
     const fixedCostsTotal = fixedCosts.reduce((sum, f) => sum + (f.amount || 0), 0);
-    const grossProfit = totals.jobValue - totals.vat - totals.partsCost - totals.labourCost - totals.transportCost - totals.extraCostsTotal;
-    const netProfit = grossProfit - wages.totalOutlay - fixedCostsTotal;
+    // Gross profit here is deliberately the exact same "quoted − VAT − parts"
+    // figure used everywhere else on this tab — not a second definition.
+    // The per-booking "Labour £" box doesn't get deducted again down here:
+    // that figure is really just Ernesto/Ervin's time, and their actual pay
+    // is already the Staff wages line below — subtracting both would be
+    // counting the same wages twice, once estimated per job and once for
+    // real at the end of the month.
+    const grossProfit = totals.jobValue - totals.vat - totals.partsCost;
+    const netProfit = grossProfit - totals.transportCost - totals.extraCostsTotal - wages.totalOutlay - fixedCostsTotal;
     return {
-      revenue: totals.jobValue, vat: totals.vat, partsCost: totals.partsCost, labourCost: totals.labourCost,
-      transportCost: totals.transportCost, extraCostsTotal: totals.extraCostsTotal, grossProfit,
+      revenue: totals.jobValue, vat: totals.vat, partsCost: totals.partsCost, grossProfit,
+      transportCost: totals.transportCost, extraCostsTotal: totals.extraCostsTotal,
       staffWagesTotal: wages.totalOutlay,
       staffWagesRows: wages.monthRows.map((w) => ({ name: w.name, total: wages.rowTotal(w) })),
       bonusPotTotal: wages.totalBonusPot,
@@ -4582,10 +4589,9 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
       {line("Revenue (quoted)", shown.revenue)}
       {line("VAT", shown.vat, { negative: true })}
       {line("Parts cost", shown.partsCost, { negative: true })}
-      {line("Labour cost", shown.labourCost, { negative: true })}
+      {line("Gross profit", shown.grossProfit, { bold: true, rule: true })}
       {line("Transport cost", shown.transportCost, { negative: true })}
       {line("Extra costs", shown.extraCostsTotal, { negative: true })}
-      {line("Gross profit", shown.grossProfit, { bold: true, rule: true })}
       {line("Staff wages (incl. bonus)", shown.staffWagesTotal, { negative: true })}
       {line("Fixed costs", shown.fixedCostsTotal, { negative: true })}
       {line("Net profit", shown.netProfit, { bold: true, rule: true, color: shown.netProfit >= 0 ? "var(--green)" : "var(--red)" })}
