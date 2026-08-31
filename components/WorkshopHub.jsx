@@ -15,6 +15,7 @@ import {
   insertHoliday, deleteHoliday,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
+  fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   setBookingBomCostOverride, removeBookingBomCostOverride,
@@ -518,6 +519,7 @@ export default function WorkshopHub() {
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
   const [fixedCosts, setFixedCosts] = useState([]);
+  const [plSnapshots, setPlSnapshots] = useState([]);
   const [auditLog, setAuditLog] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [supplierInvoices, setSupplierInvoices] = useState([]);
@@ -549,6 +551,7 @@ export default function WorkshopHub() {
         setBonusRates(d.bonusRates);
         setStaffWages(d.staffWages);
         setFixedCosts(d.fixedCosts);
+        setPlSnapshots(d.plSnapshots);
         setAuditLog(d.auditLog);
       } catch (e) {
         console.error("Failed to load Workshop Hub data", e);
@@ -597,6 +600,7 @@ export default function WorkshopHub() {
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
+      subscribeTable("pl_snapshots", async () => setPlSnapshots(await fetchPLSnapshots())),
       subscribeTable("audit_log", async () => setAuditLog(await fetchAuditLog())),
       subscribeTable("settings", async () => { const s = await fetchSettings(); if (s) setSettings({ ...DEFAULT_SETTINGS, ...s }); }),
       subscribeTable("suppliers", async () => setSuppliers(await fetchSuppliers())),
@@ -1216,6 +1220,20 @@ export default function WorkshopHub() {
     await deleteFixedCost(id);
   });
 
+  // Freezing a month saves its whole computed P&L as one JSON snapshot —
+  // upserted on month, so re-freezing (a correction found after the fact)
+  // just overwrites the same row rather than accumulating duplicates.
+  const freezePLSnapshotFn = (month, snapshot) => withSaveState(async () => {
+    const existing = plSnapshots.find((s) => s.month === month);
+    const row = { id: existing?.id || uid("pls"), month, snapshot, frozenAt: new Date().toISOString() };
+    setPlSnapshots((prev) => [...prev.filter((s) => s.month !== month), row]);
+    await upsertPLSnapshot(row);
+  });
+  const unfreezePLSnapshotFn = (id) => withSaveState(async () => {
+    setPlSnapshots((prev) => prev.filter((s) => s.id !== id));
+    await deletePLSnapshot(id);
+  });
+
   const addBomLineFn = (jtId, partId) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((jt) => {
       if (jt.id !== jtId || jt.bom.some((l) => l.partId === partId)) return jt;
@@ -1409,6 +1427,7 @@ export default function WorkshopHub() {
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
+          plSnapshots={plSnapshots} freezePLSnapshot={freezePLSnapshotFn} unfreezePLSnapshot={unfreezePLSnapshotFn}
           bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
           settings={settings} updateSettingsField={updateSettingsField}
@@ -1453,6 +1472,7 @@ function OfficeMode({
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
+  plSnapshots, freezePLSnapshot, unfreezePLSnapshot,
   suppliers, addSupplier, updateSupplierField, removeSupplier,
   supplierInvoices, updateSupplierInvoiceField, removeSupplierInvoice,
   quotes, updateQuoteField, removeQuote,
@@ -1699,6 +1719,7 @@ function OfficeMode({
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               onPrintWagesStatement={setPrintWagesMonth}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
+              plSnapshots={plSnapshots} freezePLSnapshot={freezePLSnapshot} unfreezePLSnapshot={unfreezePLSnapshot}
             />
           </ProfitabilityGate>
         )}
@@ -3342,6 +3363,19 @@ function computeBonusJobs(bookings, bonusRates, jobTypes, month) {
   return jobs;
 }
 
+// Same basic + weekend + bonus-share math as StaffWagesSection's own inline
+// version — pulled out here so the Profit & Loss section can compute a
+// month's total wage outlay without duplicating that logic by hand.
+function computeStaffWagesForMonth(month, staffWages, bonusRates, bookings) {
+  const monthRows = staffWages.filter((w) => w.month === month);
+  const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
+  const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
+  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
+  const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
+  return { monthRows, bonusCounts, totalBonusPot, bonusPerPerson, totalOutlay, rowTotal };
+}
+
 function jobTypeCompletionCounts(bookings, jobTypes) {
   const counts = {};
   bookings.filter((b) => b.completed && (b.jobValue || 0) > 0).forEach((b) => {
@@ -3839,7 +3873,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -4001,6 +4035,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
       <FixedCostsSection
         fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
         latestMonth={months.monthList[0] || null}
+      />
+
+      <ProfitAndLossSection
+        months={months} bonusRates={bonusRates} staffWages={staffWages} fixedCosts={fixedCosts}
+        bookings={bookings} plSnapshots={plSnapshots} freezePLSnapshot={freezePLSnapshot} unfreezePLSnapshot={unfreezePLSnapshot}
       />
 
       {jobTypeBreakdown.length > 0 && (
@@ -4464,6 +4503,136 @@ function FixedCostsSection({ fixedCosts, addFixedCost, updateFixedCost, removeFi
           <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>No completed, priced jobs yet to compare against.</div>
         )}
       </div>
+    </div>
+  );
+}
+
+// The bottom line — pulls together everything else on this tab (revenue,
+// VAT, direct job costs, staff wages, fixed costs) into one monthly P&L,
+// and lets office "freeze" a month once it's done: saves the whole computed
+// picture as a snapshot, so it stays exactly as it was for future reference
+// even if a booking or a fixed cost gets edited afterwards. Any month with
+// no snapshot yet just shows live, still-moving figures.
+function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, bookings, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
+  const [month, setMonth] = useState(() => todayISO().slice(0, 7));
+  const [showDetail, setShowDetail] = useState(false);
+  const monthLabel = new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const snapshot = plSnapshots.find((s) => s.month === month);
+
+  const live = useMemo(() => {
+    const totals = months.monthList.find((m) => m.key === month)?.totals
+      || { jobValue: 0, vat: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0 };
+    const wages = computeStaffWagesForMonth(month, staffWages, bonusRates, bookings);
+    const fixedCostsTotal = fixedCosts.reduce((sum, f) => sum + (f.amount || 0), 0);
+    const grossProfit = totals.jobValue - totals.vat - totals.partsCost - totals.labourCost - totals.transportCost - totals.extraCostsTotal;
+    const netProfit = grossProfit - wages.totalOutlay - fixedCostsTotal;
+    return {
+      revenue: totals.jobValue, vat: totals.vat, partsCost: totals.partsCost, labourCost: totals.labourCost,
+      transportCost: totals.transportCost, extraCostsTotal: totals.extraCostsTotal, grossProfit,
+      staffWagesTotal: wages.totalOutlay,
+      staffWagesRows: wages.monthRows.map((w) => ({ name: w.name, total: wages.rowTotal(w) })),
+      bonusPotTotal: wages.totalBonusPot,
+      fixedCostsTotal, fixedCostsRows: fixedCosts.map((f) => ({ name: f.name, amount: f.amount })),
+      netProfit,
+    };
+  }, [month, months, staffWages, bonusRates, bookings, fixedCosts]);
+
+  const shown = snapshot ? snapshot.snapshot : live;
+  const isFrozen = !!snapshot;
+
+  const doFreeze = () => {
+    if (snapshot && !confirm(`${monthLabel} was already frozen on ${new Date(snapshot.frozenAt).toLocaleString("en-GB")}. Re-freeze with today's live figures?`)) return;
+    freezePLSnapshot(month, live);
+  };
+  const doUnfreeze = () => {
+    if (!snapshot) return;
+    if (!confirm(`Unfreeze ${monthLabel}? This deletes the saved snapshot — the section goes back to showing live, still-moving figures.`)) return;
+    unfreezePLSnapshot(snapshot.id);
+  };
+
+  const frozenMonths = [...plSnapshots].sort((a, b) => b.month.localeCompare(a.month));
+  const line = (label, value, opts = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontWeight: opts.bold ? 700 : 400, borderTop: opts.rule ? "1px solid var(--line)" : undefined, marginTop: opts.rule ? 6 : 0, paddingTop: opts.rule ? 10 : 5 }}>
+      <span style={{ color: opts.bold ? undefined : "var(--muted)" }}>{label}</span>
+      <span className="wh-mono" style={{ color: opts.color }}>{opts.negative && value > 0 ? "−" : ""}£{value.toFixed(2)}</span>
+    </div>
+  );
+
+  return (
+    <div className="wb-panel" style={{ borderColor: isFrozen ? "var(--green)" : undefined }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <FileText size={16} color="var(--amber)" /> Profit & Loss — {monthLabel}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="month" className="wb-input" style={{ maxWidth: 160 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+          {isFrozen ? (
+            <button className="wb-btn-ghost" onClick={doUnfreeze} style={{ color: "var(--red)" }} title="Delete the saved snapshot and go back to live figures"><Lock size={13} /> Unfreeze</button>
+          ) : (
+            <button className="wb-btn" onClick={doFreeze} title="Save this month's figures permanently"><Lock size={13} /> Freeze month</button>
+          )}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: isFrozen ? "var(--green)" : "var(--muted)", marginBottom: 14 }}>
+        {isFrozen
+          ? `Frozen on ${new Date(snapshot.frozenAt).toLocaleString("en-GB")} — showing the saved figures from then, not live data.`
+          : "Live figures for this month — not frozen yet, so these will keep moving as bookings/wages/costs change."}
+      </div>
+
+      {line("Revenue (quoted)", shown.revenue)}
+      {line("VAT", shown.vat, { negative: true })}
+      {line("Parts cost", shown.partsCost, { negative: true })}
+      {line("Labour cost", shown.labourCost, { negative: true })}
+      {line("Transport cost", shown.transportCost, { negative: true })}
+      {line("Extra costs", shown.extraCostsTotal, { negative: true })}
+      {line("Gross profit", shown.grossProfit, { bold: true, rule: true })}
+      {line("Staff wages (incl. bonus)", shown.staffWagesTotal, { negative: true })}
+      {line("Fixed costs", shown.fixedCostsTotal, { negative: true })}
+      {line("Net profit", shown.netProfit, { bold: true, rule: true, color: shown.netProfit >= 0 ? "var(--green)" : "var(--red)" })}
+
+      <button className="wb-btn-ghost" style={{ marginTop: 14 }} onClick={() => setShowDetail((v) => !v)}>
+        <ChevronDown size={13} style={{ transform: showDetail ? "rotate(180deg)" : "none" }} /> {showDetail ? "Hide" : "Show"} detail
+      </button>
+      {showDetail && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Staff wages (bonus pot £{shown.bonusPotTotal.toFixed(2)})</div>
+            {shown.staffWagesRows.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Nobody on this month's list.</div>}
+            {shown.staffWagesRows.map((w, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
+                <span>{w.name}</span><span className="wh-mono">£{w.total.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Fixed costs</div>
+            {shown.fixedCostsRows.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>None set up.</div>}
+            {shown.fixedCostsRows.map((f, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0" }}>
+                <span>{f.name}</span><span className="wh-mono">£{f.amount.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {frozenMonths.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>Frozen months</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {frozenMonths.map((s) => (
+              <button
+                key={s.id}
+                className={s.month === month ? "wb-btn" : "wb-btn-ghost"}
+                style={{ padding: "6px 12px", minHeight: 32, fontSize: 12 }}
+                onClick={() => setMonth(s.month)}
+              >
+                {new Date(`${s.month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
