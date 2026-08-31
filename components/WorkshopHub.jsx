@@ -1364,16 +1364,19 @@ export default function WorkshopHub() {
         .print-job-cards { display: none; }
         .print-still-to-finish { display: none; }
         .print-outstanding-parts { display: none; }
+        .print-wages-statement { display: none; }
         @media print {
           body * { visibility: hidden; }
           .print-job-card, .print-job-card *,
           .print-job-cards, .print-job-cards *,
           .print-still-to-finish, .print-still-to-finish *,
-          .print-outstanding-parts, .print-outstanding-parts * { visibility: visible; }
+          .print-outstanding-parts, .print-outstanding-parts *,
+          .print-wages-statement, .print-wages-statement * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-still-to-finish { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-outstanding-parts { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-wages-statement { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
@@ -1463,6 +1466,7 @@ function OfficeMode({
   const [printJobs, setPrintJobs] = useState(null);
   const [printStillToFinish, setPrintStillToFinish] = useState(false);
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
+  const [printWagesMonth, setPrintWagesMonth] = useState(null);
   const [bookingRequests, setBookingRequests] = useState([]);
   // "Who's calling?" — lets office staff check an incoming caller's number
   // against past bookings before or during the call, and falls back to a
@@ -1556,6 +1560,15 @@ function OfficeMode({
     window.addEventListener("afterprint", clear);
     return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
   }, [printOutstandingParts]);
+
+  // Same pattern again, for the end-of-month wages & commission statement.
+  useEffect(() => {
+    if (!printWagesMonth) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintWagesMonth(null);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printWagesMonth]);
 
   return (
     <div>
@@ -1683,6 +1696,7 @@ function OfficeMode({
               addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
               bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+              onPrintWagesStatement={setPrintWagesMonth}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
             />
           </ProfitabilityGate>
@@ -1742,6 +1756,7 @@ function OfficeMode({
       {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} />}
       {printStillToFinish && <JobsStillToFinishPrintout rows={stillToFinishRows(bookings, jobTypes)} />}
       {printOutstandingParts && <OutstandingPartsPrintout rows={outstandingPartsRows(stockBatches, parts)} />}
+      {printWagesMonth && <WagesStatementPrintout month={printWagesMonth} bookings={bookings} bonusRates={bonusRates} staffWages={staffWages} jobTypes={jobTypes} />}
       {showReorderAlert && pendingReorder.length > 0 && (
         <ReorderAlertModal
           items={pendingReorder}
@@ -1911,6 +1926,122 @@ function OutstandingPartsPrintout({ rows }) {
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// End-of-month wages & commission statement — basic wages/efficiency and
+// the team bonus pot exactly as shown on screen, plus (since the on-screen
+// pot is just a count per bonus type) the actual jobs behind each count:
+// customer, reg, and which job type earned it.
+function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTypes }) {
+  const monthRows = staffWages.filter((w) => w.month === month);
+  const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
+  const bonusJobs = computeBonusJobs(bookings, bonusRates, jobTypes, month);
+  const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
+  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
+  const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
+  const monthLabel = new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+  return (
+    <div className="print-wages-statement">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Wages & commission statement — {monthLabel}</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 20 }}>Printed {new Date().toLocaleString("en-GB")}</div>
+
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Staff wages & efficiency</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 20 }}>
+          <thead>
+            <tr>
+              {["Name", "Basic £", "Weekend full days", "Weekend half days", "Bonus share", "Total £"].map((h) => (
+                <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {monthRows.map((w) => (
+              <tr key={w.id}>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc", fontWeight: 700 }}>{w.name}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{(w.basic || 0).toFixed(2)}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{w.weekendFullDays || 0}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{w.weekendHalfDays || 0}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{bonusPerPerson.toFixed(2)}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc", fontWeight: 700 }}>£{rowTotal(w).toFixed(2)}</td>
+              </tr>
+            ))}
+            {monthRows.length === 0 && (
+              <tr><td colSpan={6} style={{ padding: "10px 8px", color: "#555" }}>Nobody added for this month.</td></tr>
+            )}
+          </tbody>
+          {monthRows.length > 0 && (
+            <tfoot>
+              <tr style={{ fontWeight: 700 }}>
+                <td colSpan={5} style={{ padding: "6px 8px 0 0", borderTop: "2px solid #000" }}>Total wage outlay</td>
+                <td style={{ padding: "6px 8px 0", borderTop: "2px solid #000" }}>£{totalOutlay.toFixed(2)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Team bonus pot</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 8 }}>
+          <thead>
+            <tr>
+              {["Bonus type", "Count", "Rate", "Subtotal"].map((h) => (
+                <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bonusRates.map((br) => {
+              const count = bonusCounts[br.id] || 0;
+              return (
+                <tr key={br.id}>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{br.name}</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{count}</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{br.rate.toFixed(2)}</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{(count * br.rate).toFixed(2)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{ fontWeight: 700 }}>
+              <td colSpan={3} style={{ padding: "6px 8px 0 0", borderTop: "2px solid #000" }}>Total bonus pot — split {monthRows.length || 0} way{monthRows.length === 1 ? "" : "s"} (£{bonusPerPerson.toFixed(2)} each)</td>
+              <td style={{ padding: "6px 8px 0", borderTop: "2px solid #000" }}>£{totalBonusPot.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        {bonusRates.map((br) => {
+          const jobs = bonusJobs[br.id] || [];
+          if (jobs.length === 0) return null;
+          return (
+            <div key={br.id} style={{ marginBottom: 16, breakInside: "avoid" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{br.name} — jobs this month</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {["Customer", "Reg", "Job"].map((h) => (
+                      <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #000", padding: "4px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.map((j, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.customerName}</td>
+                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.reg}</td>
+                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.jobTypeName}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -3165,6 +3296,28 @@ function computeBonusCounts(bookings, bonusRates, month) {
   return counts;
 }
 
+// Same qualifying criteria as computeBonusCounts, but the actual jobs
+// behind each count — for the printable wages statement, which needs to
+// show which customer/reg/job type each bonus was earned on rather than
+// just a number.
+function computeBonusJobs(bookings, bonusRates, jobTypes, month) {
+  const jobs = {};
+  bonusRates.forEach((br) => { jobs[br.id] = []; });
+  bookings.forEach((b) => {
+    if (!b.completed || !(b.jobValue > 0) || !b.zohoInvoiceId) return;
+    const completedMonth = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : (b.date || "").slice(0, 7);
+    if (completedMonth !== month) return;
+    const ids = [b.jobTypeId, ...(b.extraJobTypeIds || [])].filter(Boolean);
+    bonusRates.forEach((br) => {
+      const matchedId = ids.find((id) => (br.jobTypeIds || []).includes(id));
+      if (!matchedId) return;
+      const jt = jobTypes.find((j) => j.id === matchedId);
+      jobs[br.id].push({ customerName: b.customerName || "Unnamed", reg: b.reg || "", jobTypeName: jt?.name || "" });
+    });
+  });
+  return jobs;
+}
+
 function jobTypeCompletionCounts(bookings, jobTypes) {
   const counts = {};
   bookings.filter((b) => b.completed && (b.jobValue || 0) > 0).forEach((b) => {
@@ -3474,7 +3627,7 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
 // as a share of margin. One month at a time rather than a table per
 // historical month, since this is edited like a spreadsheet as the month
 // goes rather than browsed after the fact.
-function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, bookings, jobTypes }) {
+function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, bookings, jobTypes }) {
   const [month, setMonth] = useState(() => todayISO().slice(0, 7));
   const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
 
@@ -3532,7 +3685,10 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
       <div className="wb-panel">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
           <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><User size={16} color="var(--amber)" /> Staff wages & efficiency</div>
-          <input type="month" className="wb-input" style={{ maxWidth: 160 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="month" className="wb-input" style={{ maxWidth: 160 }} value={month} onChange={(e) => setMonth(e.target.value)} />
+            <button className="wb-btn-ghost" onClick={() => onPrintWagesStatement(month)} title="Print the wages & commission statement for this month"><Printer size={13} /> Print statement</button>
+          </div>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="wb-table">
@@ -3659,7 +3815,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
     const completed = priced.filter((b) => b.completed);
@@ -3814,6 +3970,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
       <StaffWagesSection
         months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
         staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
+        onPrintWagesStatement={onPrintWagesStatement}
         bookings={bookings} jobTypes={jobTypes}
       />
 
