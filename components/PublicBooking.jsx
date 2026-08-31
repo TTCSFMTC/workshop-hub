@@ -7,6 +7,15 @@ import { BUSINESSES } from "@/lib/constants";
 
 const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
+// Matches WORKSHOP_DAYS / estimatedDaysFor in app/api/public/book/route.js —
+// shown here purely so the customer sees the same total before submitting;
+// the server recomputes it independently rather than trusting this value.
+const WORKSHOP_DAYS = 3;
+const TRANSPORT_OPTIONS = [
+  { value: "none", label: "I'll drop it off and collect it myself", days: WORKSHOP_DAYS },
+  { value: "collect", label: "Please collect it — I'll collect it from the workshop", days: WORKSHOP_DAYS + 1 },
+  { value: "collect_deliver", label: "Please collect it and deliver it back to me", days: WORKSHOP_DAYS + 2 },
+];
 const CONTACT_PHONE = "07521543379";
 const TERMS_URL = "https://www.warrington4x4.co.uk/terms-and-conditions";
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -104,6 +113,32 @@ const TermsGate = ({ termsViewed, setTermsViewed, termsAccepted, setTermsAccepte
   </div>
 );
 
+// Only shown for a Timing Chain Specialists chain job — see isChainJob in
+// PublicBooking() and the matching server-side check in
+// app/api/public/book/route.js, which recomputes eligibility itself rather
+// than trusting whatever the client sends.
+const TransportChoice = ({ transportType, setTransportType }) => (
+  <div>
+    <label className="pb-label">How will your vehicle get to us?</label>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {TRANSPORT_OPTIONS.map((opt) => {
+        const on = transportType === opt.value;
+        return (
+          <div key={opt.value} className={`pb-check ${on ? "on" : ""}`} onClick={() => setTransportType(opt.value)}>
+            <div style={{ width: 18, height: 18, borderRadius: 9, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              {on && <div style={{ width: 8, height: 8, borderRadius: 4, background: "currentColor" }} />}
+            </div>
+            <div>
+              <div>{opt.label}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{opt.days} days total, workshop to workshop</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
 const ResultAndSubmit = ({ result, canSubmit, submitting, submit, termsViewed, setTermsViewed, termsAccepted, setTermsAccepted }) => (
   <>
     <TermsGate termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
@@ -161,6 +196,7 @@ export default function PublicBooking() {
   const [form, setForm] = useState({ name: "", address: "", phone: "", email: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "", isNonRunner: false, symptoms: "" });
   const [emergencyDate1, setEmergencyDate1] = useState("");
   const [emergencyDate2, setEmergencyDate2] = useState("");
+  const [transportType, setTransportType] = useState("none"); // "none" | "collect" | "collect_deliver" — chain jobs only, see TransportChoice
   const [termsViewed, setTermsViewed] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -197,6 +233,11 @@ export default function PublicBooking() {
     }));
   };
   const minBookableISO = addDaysISO(todayISO(), MIN_NOTICE_DAYS);
+  // Same "chain" substring match the server uses for needsReview/transport
+  // eligibility — keeping this in sync matters less than it looks, since
+  // the server never trusts transportType unless it agrees anyway.
+  const isChainJob = form.requirements.some((r) => r.toLowerCase().includes("chain"));
+  const showTransportChoice = path === "standard" && form.business === "Timing Chain Specialists" && isChainJob;
 
   const openDay = (iso, count) => {
     // Days inside the notice window are still selectable (previously blocked
@@ -214,6 +255,7 @@ export default function PublicBooking() {
     setSelectedDay(null);
     setForm({ name: "", address: "", phone: "", email: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "", isNonRunner: false, symptoms: "" });
     setEmergencyDate1(""); setEmergencyDate2("");
+    setTransportType("none");
     setTermsViewed(false); setTermsAccepted(false);
   };
 
@@ -238,7 +280,7 @@ export default function PublicBooking() {
     const payload =
       path === "emergency" ? { ...base, isEmergency: true, date: emergencyDate1, secondDate: emergencyDate2 } :
       path === "other" ? { ...base, date: selectedDay, requirements: ["Other"], otherDetails: form.otherDetails.trim() } :
-      { ...base, date: selectedDay, requirements: form.requirements };
+      { ...base, date: selectedDay, requirements: form.requirements, transportType: showTransportChoice ? transportType : "none" };
     try {
       const res = await fetch("/api/public/book", {
         method: "POST",
@@ -345,6 +387,7 @@ export default function PublicBooking() {
                       })}
                     </div>
                   </div>
+                  {showTransportChoice && <TransportChoice transportType={transportType} setTransportType={setTransportType} />}
                   <ResultAndSubmit result={result} canSubmit={canSubmit} submitting={submitting} submit={submit} termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
                 </div>
               </div>

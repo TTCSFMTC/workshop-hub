@@ -401,6 +401,7 @@ const DEFAULT_SETTINGS = {
   transportCompanies: [{ name: "Transport company 1", email: "" }, { name: "Transport company 2", email: "" }],
   transportContactName: "Paul",
   transportContactPhone: "",
+  transportContactEmail: "",
   monthlyTarget: 40000,
   nonProductivesCost: 5000,
   workingDaysPerMonth: 25,
@@ -5472,6 +5473,22 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
                   <AlertTriangle size={12} /> Needs a quote to collect
                 </div>
               )}
+              {req.transport_type && req.transport_type !== "none" && (
+                <div
+                  style={{
+                    fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, marginBottom: 8,
+                    textTransform: "uppercase", letterSpacing: "0.04em",
+                    color: req.transport_status === "approved" ? "var(--green, #5fb87a)" : req.transport_status === "declined" ? "var(--red)" : "var(--amber, #f5a623)",
+                  }}
+                >
+                  <Truck size={12} />
+                  {req.transport_type === "collect_deliver" ? "Collect & deliver" : "Collect only"}
+                  {" — "}
+                  {req.estimated_days ? `${req.estimated_days} days` : ""}
+                  {" — transport "}
+                  {req.transport_status === "approved" ? "confirmed" : req.transport_status === "declined" ? "declined" : "awaiting reply"}
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{req.name} <span style={{ color: "var(--muted)", fontWeight: 400 }}>— {req.business}</span></div>
@@ -5610,10 +5627,14 @@ function SettingsTab({ settings, updateSettingsField }) {
       </div>
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Transport pricing contact</div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>Who "Transport required" on a booking sends a WhatsApp price-check to.</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+          Who "Transport required" on a booking sends a WhatsApp price-check to, and who a Timing Chain Specialists
+          public collection/delivery request emails for a yes/no.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
           <input className="wb-input" value={settings.transportContactName} onChange={(e) => updateSettingsField({ transportContactName: e.target.value })} placeholder="Name" />
           <input className="wb-input" value={settings.transportContactPhone} onChange={(e) => updateSettingsField({ transportContactPhone: e.target.value })} placeholder="Phone, e.g. 07911 123456" />
+          <input className="wb-input" type="email" value={settings.transportContactEmail} onChange={(e) => updateSettingsField({ transportContactEmail: e.target.value })} placeholder="Email, for collection requests" />
         </div>
       </div>
     </div>
