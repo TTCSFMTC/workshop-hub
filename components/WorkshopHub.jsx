@@ -3688,7 +3688,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
           <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><User size={16} color="var(--amber)" /> Staff wages & efficiency</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input type="month" className="wb-input" style={{ maxWidth: 160 }} value={month} onChange={(e) => setMonth(e.target.value)} />
-            <button className="wb-btn-ghost" onClick={() => onPrintWagesStatement(month)} title="Print the wages & commission statement for this month"><Printer size={13} /> Print statement</button>
+            <button className="wb-btn" onClick={() => onPrintWagesStatement(month)} title="Print the wages & commission statement for this month"><Printer size={13} /> Print statement</button>
           </div>
         </div>
         <div style={{ overflowX: "auto" }}>
