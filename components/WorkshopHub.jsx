@@ -3683,7 +3683,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
 
   const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
   const monthTotals = months.monthList.find((m) => m.key === month)?.totals;
-  const grossMinusParts = monthTotals ? monthTotals.jobValue - monthTotals.partsCost : 0;
+  const grossMinusParts = monthTotals ? monthTotals.jobValue - monthTotals.vat - monthTotals.partsCost : 0;
   const pct = grossMinusParts > 0 ? (totalOutlay / grossMinusParts) * 100 : null;
 
   const addPerson = () => {
@@ -3754,7 +3754,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
           {monthTotals ? (
             <div className="wh-mono" style={{ fontSize: 13, color: pct !== null && pct > 100 ? "var(--red)" : "var(--green)" }}>
-              £{totalOutlay.toFixed(2)} wages is {pct !== null ? `${pct.toFixed(1)}%` : "—"} of £{grossMinusParts.toFixed(2)} gross profit (job value minus parts) for this month.
+              £{totalOutlay.toFixed(2)} wages is {pct !== null ? `${pct.toFixed(1)}%` : "—"} of £{grossMinusParts.toFixed(2)} gross profit (job value minus VAT minus parts) for this month.
             </div>
           ) : (
             <div style={{ fontSize: 12, color: "var(--muted)" }}>No completed, priced jobs for this month yet, so there's no gross profit to compare wages against.</div>
@@ -3938,20 +3938,20 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
   const grandTotal = months.monthList.reduce((acc, m) => ({
     jobValue: acc.jobValue + m.totals.jobValue, partsCost: acc.partsCost + m.totals.partsCost,
     labourCost: acc.labourCost + m.totals.labourCost, transportCost: acc.transportCost + m.totals.transportCost,
-    extraCostsTotal: acc.extraCostsTotal + m.totals.extraCostsTotal, profit: acc.profit + m.totals.profit,
-  }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, profit: 0 });
+    extraCostsTotal: acc.extraCostsTotal + m.totals.extraCostsTotal, vat: acc.vat + m.totals.vat, profit: acc.profit + m.totals.profit,
+  }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, vat: 0, profit: 0 });
 
   // All-time, across every month — see jobTypeCompletionCounts above.
   const jobTypeBreakdown = useMemo(() => jobTypeCompletionCounts(bookings, jobTypes), [bookings, jobTypes]);
 
   const exportExcel = () => {
-    const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "Parts cost", "Labour", "Transport", "Extra costs", "Profit"]];
+    const rows = [["Month", "Date", "Customer", "Registration", "Job type", "Quoted", "VAT", "Parts cost", "Labour", "Transport", "Extra costs", "Profit"]];
     months.monthList.forEach((m) => {
-      m.rows.forEach((r) => rows.push([m.label, r.booking.date, r.booking.customerName || "Unnamed", r.booking.reg || "", r.jt?.name || "", r.jobValue, r.partsCost, r.labourCost, r.transportCost, r.extraCostsTotal, r.profit]));
-      rows.push([m.label + " total", "", "", "", "", m.totals.jobValue, m.totals.partsCost, m.totals.labourCost, m.totals.transportCost, m.totals.extraCostsTotal, m.totals.profit]);
+      m.rows.forEach((r) => rows.push([m.label, r.booking.date, r.booking.customerName || "Unnamed", r.booking.reg || "", r.jt?.name || "", r.jobValue, r.vat, r.partsCost, r.labourCost, r.transportCost, r.extraCostsTotal, r.profit]));
+      rows.push([m.label + " total", "", "", "", "", m.totals.jobValue, m.totals.vat, m.totals.partsCost, m.totals.labourCost, m.totals.transportCost, m.totals.extraCostsTotal, m.totals.profit]);
       rows.push([]);
     });
-    rows.push(["Grand total", "", "", "", "", grandTotal.jobValue, grandTotal.partsCost, grandTotal.labourCost, grandTotal.transportCost, grandTotal.extraCostsTotal, grandTotal.profit]);
+    rows.push(["Grand total", "", "", "", "", grandTotal.jobValue, grandTotal.vat, grandTotal.partsCost, grandTotal.labourCost, grandTotal.transportCost, grandTotal.extraCostsTotal, grandTotal.profit]);
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, "Profitability");
@@ -4046,7 +4046,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                 <th>Days</th>
                 <SortableTh label="Customer" sortKey="customer" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Reg" sortKey="reg" sortBy={sortBy} onClick={toggleSort} />
-                <th>Job type</th><th>Invoiced</th><th>Quoted</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th>
+                <th>Job type</th><th>Invoiced</th><th>Quoted</th><th>VAT</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th>
               </tr></thead>
               <tbody>
                 {sortedRows.map((r) => {
@@ -4080,6 +4080,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                         {r.booking.zohoInvoiceId ? "Yes" : "No"}
                       </td>
                       <td className="wh-mono">£{r.jobValue.toFixed(2)}</td>
+                      <td className="wh-mono" style={{ color: "var(--muted)" }}>£{r.vat.toFixed(2)}</td>
                       <td className="wh-mono">
                         {editing ? (
                           <input
@@ -4181,7 +4182,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                     </tr>
                     {breakdownOpen && (
                       <tr>
-                        <td colSpan={13} style={{ background: "var(--panel2)", padding: "12px 16px", position: "relative" }}>
+                        <td colSpan={14} style={{ background: "var(--panel2)", padding: "12px 16px", position: "relative" }}>
                           <button
                             onClick={() => setBreakdownRowId(null)}
                             title="Collapse"
@@ -4305,6 +4306,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                 <tr style={{ fontWeight: 700 }}>
                   <td colSpan={6}>Total</td>
                   <td className="wh-mono">£{activeMonth.totals.jobValue.toFixed(2)}</td>
+                  <td className="wh-mono">£{activeMonth.totals.vat.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.partsCost.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.labourCost.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.transportCost.toFixed(2)}</td>
@@ -4316,16 +4318,22 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
             </table>
           </div>
           {(() => {
-            // GP here is the same "job value minus parts" figure the wages
-            // % already compares against above — one consistent definition
-            // of gross profit used everywhere on this tab, not a second one.
-            const gp = activeMonth.totals.jobValue - activeMonth.totals.partsCost;
+            // GP here is the same "job value minus VAT minus parts" figure
+            // the wages % already compares against above — one consistent
+            // definition of gross profit used everywhere on this tab, not
+            // a second one. Net of VAT since VAT was never really revenue
+            // to begin with — it's owed to HMRC, not part of the margin.
+            const gp = activeMonth.totals.jobValue - activeMonth.totals.vat - activeMonth.totals.partsCost;
             const pct = (v) => (gp > 0 ? `${((v / gp) * 100).toFixed(1)}% of GP` : "—");
             return (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>Gross profit (quoted − parts)</span>
+                  <span>Gross profit (quoted − VAT − parts)</span>
                   <span className="wh-mono" style={{ fontWeight: 700 }}>£{gp.toFixed(2)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
+                  <span>VAT</span>
+                  <span className="wh-mono">£{activeMonth.totals.vat.toFixed(2)} ({pct(activeMonth.totals.vat)})</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", color: "var(--muted)" }}>
                   <span>Parts cost</span>
@@ -4414,7 +4422,7 @@ function AddExtraCostModal({ onClose, onAdd }) {
 // profit purely for a sense of scale.
 function FixedCostsSection({ fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, latestMonth }) {
   const total = fixedCosts.reduce((sum, f) => sum + (f.amount || 0), 0);
-  const gp = latestMonth ? latestMonth.totals.jobValue - latestMonth.totals.partsCost : 0;
+  const gp = latestMonth ? latestMonth.totals.jobValue - latestMonth.totals.vat - latestMonth.totals.partsCost : 0;
   const pct = latestMonth && gp > 0 ? (total / gp) * 100 : null;
 
   const addCost = () => {
