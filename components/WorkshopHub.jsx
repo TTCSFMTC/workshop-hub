@@ -2019,25 +2019,48 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
         {bonusRates.map((br) => {
           const jobs = bonusJobs[br.id] || [];
           if (jobs.length === 0) return null;
+          // Batched by specific job type — e.g. every diesel Ingenium
+          // together, then every Eco Blue together — rather than mixed in
+          // whatever order they were completed. Uses the same order the
+          // bonus rate's own job type list is configured in (diesel
+          // Ingeniums first, etc.) rather than inventing a new one.
+          const typeNames = [];
+          const seen = new Set();
+          (br.jobTypeIds || []).forEach((jtId) => {
+            const name = jobTypes.find((j) => j.id === jtId)?.name;
+            if (name && !seen.has(name)) { seen.add(name); typeNames.push(name); }
+          });
+          jobs.forEach((j) => { if (!seen.has(j.jobTypeName)) { seen.add(j.jobTypeName); typeNames.push(j.jobTypeName); } });
+
           return (
             <div key={br.id} style={{ marginBottom: 16, breakInside: "avoid" }}>
               <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>{br.name} — jobs this month</div>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead>
                   <tr>
-                    {["Customer", "Reg", "Job"].map((h) => (
+                    {["Customer", "Reg"].map((h) => (
                       <th key={h} style={{ textAlign: "left", borderBottom: "1px solid #000", padding: "4px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((j, i) => (
-                    <tr key={i}>
-                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.customerName}</td>
-                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.reg}</td>
-                      <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.jobTypeName}</td>
-                    </tr>
-                  ))}
+                  {typeNames.map((typeName) => {
+                    const typeJobs = jobs.filter((j) => j.jobTypeName === typeName);
+                    if (typeJobs.length === 0) return null;
+                    return (
+                      <React.Fragment key={typeName}>
+                        <tr>
+                          <td colSpan={2} style={{ padding: "6px 8px 3px", fontWeight: 700, fontSize: 10.5, background: "#f5f5f5" }}>{typeName} ({typeJobs.length})</td>
+                        </tr>
+                        {typeJobs.map((j, i) => (
+                          <tr key={i}>
+                            <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.customerName}</td>
+                            <td style={{ padding: "4px 8px", borderBottom: "1px solid #eee" }}>{j.reg}</td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
