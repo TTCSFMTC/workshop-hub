@@ -6762,6 +6762,14 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
             <div style={{ fontSize: 13 }}>
               <a href={card.technicalWriteupUrl} target="_blank" rel="noreferrer" style={{ color: "var(--amber)" }}>Open the current PDF</a>
               {card.technicalWriteupUpdatedAt && <span style={{ color: "var(--muted)", marginLeft: 8, fontSize: 11 }}>Updated {new Date(card.technicalWriteupUpdatedAt).toLocaleString("en-GB")}</span>}
+              {booking?.zohoInvoiceId && (
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    className="jc-btn-sm"
+                    onClick={() => window.open(`/api/office/invoice-with-writeup?bookingId=${booking.id}`, "_blank")}
+                  ><Printer size={13} /> Print invoice + write-up together</button>
+                </div>
+              )}
             </div>
           )}
           {!writeupGenerating && !card.technicalWriteupUrl && <div style={{ fontSize: 12, color: "var(--muted)" }}>Nothing generated yet — add some notes above.</div>}
