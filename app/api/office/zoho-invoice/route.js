@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { findOrCreateContact, createInvoice } from "@/lib/zoho";
-import { ZOHO_ORG_IDS, REVIEW_LINKS, BANK_DETAILS } from "@/lib/constants";
+import { ZOHO_ORG_IDS, ZOHO_VAT_TAX_IDS, REVIEW_LINKS, BANK_DETAILS } from "@/lib/constants";
 
 async function requireSession() {
   const cookieStore = await cookies();
@@ -27,7 +27,16 @@ export async function POST(request) {
   try {
     const contactId = await findOrCreateContact(orgId, { name: customerName, phone });
     const notes = `Bank transfer details:\n${BANK_DETAILS.accountName}\nSort code: ${BANK_DETAILS.sortCode}\nAccount number: ${BANK_DETAILS.accountNumber}\n\nThank you for your business — we'd really appreciate a quick Google review: ${REVIEW_LINKS[business] || ""}`;
-    const invoice = await createInvoice(orgId, { contactId, lineItems, reference: reg, notes });
+    // The price on the booking (and each job type's own price) is what the
+    // customer was quoted — VAT-inclusive. Zoho adds VAT on top of whatever
+    // rate a line has, so each one needs reverse-calculating down to its
+    // ex-VAT amount first, or the invoice would charge VAT on top of a
+    // price that already had it baked in. Same tax rate Quotes already use.
+    const taxId = ZOHO_VAT_TAX_IDS[business];
+    const taxAdjustedLineItems = taxId
+      ? lineItems.map((l) => ({ ...l, amount: Math.round((l.amount / 1.2) * 100) / 100 }))
+      : lineItems;
+    const invoice = await createInvoice(orgId, { contactId, lineItems: taxAdjustedLineItems, reference: reg, notes, taxId });
     return NextResponse.json({
       invoiceId: invoice.invoice_id,
       invoiceNumber: invoice.invoice_number,
