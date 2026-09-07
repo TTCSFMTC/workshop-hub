@@ -4559,13 +4559,31 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
   // the same "potential vs actually landed" split the Forecast tab already
   // shows for the current month, just reused here so it reads alongside the
   // formal P&L instead of only living on a separate tab.
+  //
+  // "Booked in" is everything with a drop-off date in the month (for
+  // context, same as the Forecast tab's own gauge). The forecast itself is
+  // built the other way round — by expected FINISH date (drop-off + days-1,
+  // or the real completedAt once a job's actually done), same math as the
+  // Forecast tab's "due to finish" car count — so a car dropped off right at
+  // month end with a multi-day job forecasts into the month it finishes in,
+  // not the one it arrived in. Every job finishing this month is in exactly
+  // one of three states, so the forecast is just those three added up:
+  // already invoiced, sat in the workshop being worked on, or not arrived
+  // yet but scheduled to finish by then.
   const monthEstimate = useMemo(() => {
-    const rows = bookings.filter((b) => b.date && b.date.slice(0, 7) === month);
-    const bookedValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
-    const invoicedValue = rows.reduce((sum, b) => sum + (b.zohoInvoiceId ? (b.jobValue || 0) : 0), 0);
-    const inWorkshopValue = rows.reduce((sum, b) => sum + (!b.zohoInvoiceId && b.arrived ? (b.jobValue || 0) : 0), 0);
-    const notYetArrivedValue = Math.max(0, bookedValue - invoicedValue - inWorkshopValue);
-    return { bookedValue, invoicedValue, inWorkshopValue, notYetArrivedValue, forecastValue: invoicedValue + inWorkshopValue };
+    const bookedRows = bookings.filter((b) => b.date && b.date.slice(0, 7) === month);
+    const bookedValue = bookedRows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+
+    const finishingRows = bookings.filter((b) => {
+      const finishDate = b.completed && b.completedAt
+        ? new Date(b.completedAt).toISOString().slice(0, 10)
+        : (b.date ? addDaysISO(b.date, (b.days || 1) - 1) : null);
+      return finishDate && finishDate.slice(0, 7) === month;
+    });
+    const invoicedValue = finishingRows.reduce((sum, b) => sum + (b.zohoInvoiceId ? (b.jobValue || 0) : 0), 0);
+    const inWorkshopValue = finishingRows.reduce((sum, b) => sum + (!b.zohoInvoiceId && b.arrived ? (b.jobValue || 0) : 0), 0);
+    const dueToCompleteValue = finishingRows.reduce((sum, b) => sum + (!b.zohoInvoiceId && !b.arrived ? (b.jobValue || 0) : 0), 0);
+    return { bookedValue, invoicedValue, inWorkshopValue, dueToCompleteValue, forecastValue: invoicedValue + inWorkshopValue + dueToCompleteValue };
   }, [bookings, month]);
 
   const doFreeze = () => {
@@ -4612,10 +4630,10 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
           In <strong>{monthLabel}</strong> you have potentially <strong className="wh-mono">£{monthEstimate.bookedValue.toFixed(0)}</strong> booked in the month,{" "}
           <strong className="wh-mono">£{monthEstimate.invoicedValue.toFixed(0)}</strong> invoiced,{" "}
           <strong className="wh-mono">£{monthEstimate.inWorkshopValue.toFixed(0)}</strong> currently in the workshop
-          {monthEstimate.notYetArrivedValue > 0 && <> and <strong className="wh-mono">£{monthEstimate.notYetArrivedValue.toFixed(0)}</strong> yet to arrive</>} —
+          {monthEstimate.dueToCompleteValue > 0 && <> and <strong className="wh-mono">£{monthEstimate.dueToCompleteValue.toFixed(0)}</strong> due to finish based on schedule</>} —
           therefore current forecast is <strong className="wh-mono" style={{ color: "var(--amber2)" }}>£{monthEstimate.forecastValue.toFixed(0)}</strong>.
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-            Forecast = invoiced + in the workshop — the two parts that have actually happened. Booked-in includes everything on the books for the month, even jobs that haven't arrived yet.
+            Forecast = invoiced + in the workshop + due to finish by their scheduled finish date — every job expected to finish this month, whichever stage it's at. Booked-in above is everything on the books by drop-off date instead, just for context.
           </div>
         </div>
       )}
