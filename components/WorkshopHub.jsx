@@ -2997,6 +2997,7 @@ function FollowUpBanner({ bookings, updateBooking }) {
     window.open(whatsappLink(b.phone, followUpMessage(b)), "_blank");
     updateBooking(b.id, { followupSent: true });
   };
+  const dismiss = (b) => updateBooking(b.id, { followupSent: true });
 
   return (
     <div className="wb-panel" style={{ borderColor: "var(--green)" }}>
@@ -3009,9 +3010,12 @@ function FollowUpBanner({ bookings, updateBooking }) {
             <div style={{ fontSize: 13 }}>
               <strong>{b.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>— collected {fmtDate(new Date(b.completedAt).toISOString().slice(0, 10))}</span>
             </div>
-            <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
-              <MessageCircle size={13} /> Send WhatsApp follow-up
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => dismiss(b)} title="Mark as followed up without sending a WhatsApp message">Dismiss</button>
+              <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => send(b)}>
+                <MessageCircle size={13} /> Send WhatsApp follow-up
+              </button>
+            </div>
           </div>
         ))}
       </div>
