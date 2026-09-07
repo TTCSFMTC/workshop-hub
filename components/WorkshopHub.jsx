@@ -4553,6 +4553,21 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
   const shown = snapshot ? snapshot.snapshot : live;
   const isFrozen = !!snapshot;
 
+  // The formal figures above only recognise revenue once a job's actually
+  // been collected — same "completed" jobs the rest of Profitability uses —
+  // so an in-progress month necessarily looks thin until it closes. This is
+  // the same "potential vs actually landed" split the Forecast tab already
+  // shows for the current month, just reused here so it reads alongside the
+  // formal P&L instead of only living on a separate tab.
+  const monthEstimate = useMemo(() => {
+    const rows = bookings.filter((b) => b.date && b.date.slice(0, 7) === month);
+    const bookedValue = rows.reduce((sum, b) => sum + (b.jobValue || 0), 0);
+    const invoicedValue = rows.reduce((sum, b) => sum + (b.zohoInvoiceId ? (b.jobValue || 0) : 0), 0);
+    const inWorkshopValue = rows.reduce((sum, b) => sum + (!b.zohoInvoiceId && b.arrived ? (b.jobValue || 0) : 0), 0);
+    const notYetArrivedValue = Math.max(0, bookedValue - invoicedValue - inWorkshopValue);
+    return { bookedValue, invoicedValue, inWorkshopValue, notYetArrivedValue, forecastValue: invoicedValue + inWorkshopValue };
+  }, [bookings, month]);
+
   const doFreeze = () => {
     if (snapshot && !confirm(`${monthLabel} was already frozen on ${new Date(snapshot.frozenAt).toLocaleString("en-GB")}. Re-freeze with today's live figures?`)) return;
     freezePLSnapshot(month, live);
@@ -4565,8 +4580,8 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
 
   const frozenMonths = [...plSnapshots].sort((a, b) => b.month.localeCompare(a.month));
   const line = (label, value, opts = {}) => (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontWeight: opts.bold ? 700 : 400, borderTop: opts.rule ? "1px solid var(--line)" : undefined, marginTop: opts.rule ? 6 : 0, paddingTop: opts.rule ? 10 : 5 }}>
-      <span style={{ color: opts.bold ? undefined : "var(--muted)" }}>{label}</span>
+    <div title={opts.hint} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontWeight: opts.bold ? 700 : 400, borderTop: opts.rule ? "1px solid var(--line)" : undefined, marginTop: opts.rule ? 6 : 0, paddingTop: opts.rule ? 10 : 5 }}>
+      <span style={{ color: opts.bold ? undefined : "var(--muted)", textDecoration: opts.hint ? "underline dotted" : undefined, textDecorationColor: "var(--muted)" }}>{label}</span>
       <span className="wh-mono" style={{ color: opts.color }}>{opts.negative && value > 0 ? "−" : ""}£{value.toFixed(2)}</span>
     </div>
   );
@@ -4592,7 +4607,20 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
           : "Live figures for this month — not frozen yet, so these will keep moving as bookings/wages/costs change."}
       </div>
 
-      {line("Revenue (quoted)", shown.revenue)}
+      {!isFrozen && (
+        <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, padding: "12px 14px", marginBottom: 16, fontSize: 13, lineHeight: 1.7 }}>
+          In <strong>{monthLabel}</strong> you have potentially <strong className="wh-mono">£{monthEstimate.bookedValue.toFixed(0)}</strong> booked in the month,{" "}
+          <strong className="wh-mono">£{monthEstimate.invoicedValue.toFixed(0)}</strong> invoiced,{" "}
+          <strong className="wh-mono">£{monthEstimate.inWorkshopValue.toFixed(0)}</strong> currently in the workshop
+          {monthEstimate.notYetArrivedValue > 0 && <> and <strong className="wh-mono">£{monthEstimate.notYetArrivedValue.toFixed(0)}</strong> yet to arrive</>} —
+          therefore current forecast is <strong className="wh-mono" style={{ color: "var(--amber2)" }}>£{monthEstimate.forecastValue.toFixed(0)}</strong>.
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+            Forecast = invoiced + in the workshop — the two parts that have actually happened. Booked-in includes everything on the books for the month, even jobs that haven't arrived yet.
+          </div>
+        </div>
+      )}
+
+      {line("Revenue (quoted)", shown.revenue, { hint: "Only jobs already collected this month, at their quoted price — an in-progress month looks thin here until it closes. See the summary above for everything currently booked in." })}
       {line("VAT", shown.vat, { negative: true })}
       {line("Parts cost", shown.partsCost, { negative: true })}
       {line("Gross profit", shown.grossProfit, { bold: true, rule: true })}
