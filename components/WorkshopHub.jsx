@@ -3192,11 +3192,13 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
       </div>
       {open && (
         <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             <div><label className="wb-label">Job value £</label><input type="number" className="wb-input" value={booking.jobValue || ""} onChange={(e) => updateBooking(booking.id, { jobValue: parseFloat(e.target.value) || 0 })} /></div>
-            <div><label className="wb-label">Labour £</label><input type="number" className="wb-input" value={booking.labourCost || ""} onChange={(e) => updateBooking(booking.id, { labourCost: parseFloat(e.target.value) || 0 })} /></div>
             <div><label className="wb-label">Transport £</label><input type="number" className="wb-input" value={booking.transportCost || ""} onChange={(e) => updateBooking(booking.id, { transportCost: parseFloat(e.target.value) || 0 })} /></div>
           </div>
+          {/* Labour cost is deliberately not editable here — Profitability is
+              the one place it's entered/adjusted, so it isn't double-managed
+              from two different screens. */}
           {isTimingChainReplacement(jt) && !booking.jobValue && (
             <button className="wb-btn-ghost" onClick={() => updateBooking(booking.id, STANDARD_TIMING_CHAIN_PRICE)}>Use standard timing chain pricing</button>
           )}
