@@ -3617,6 +3617,8 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
         </div>
       </div>
 
+      <BookingActivityCalendar bookings={bookings} />
+
       <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <TrendingUp size={16} color="var(--amber)" /> Forecast vs £{monthlyTarget.toLocaleString("en-GB")} monthly target
@@ -3679,6 +3681,91 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Two very different "when" for the same booking: the day it was TAKEN
+// (createdAt — when the enquiry landed and someone typed it in, the
+// marketing signal worth lining up against ad spend/campaign days) vs the
+// day the car is physically IN (date — the drop-off day, a workshop-
+// capacity signal that's usually weeks after it was taken). Sat side by
+// side on a plain month grid so a spike in "taken" on a particular day (or
+// day of week) is easy to spot and cross-check against what was running
+// that day, rather than only ever seeing the drop-off-date view the main
+// Calendar tab already gives.
+function BookingActivityCalendar({ bookings }) {
+  const [cursor, setCursor] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const year = cursor.getFullYear(), month = cursor.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = []; for (let i = 0; i < startOffset; i++) cells.push(null); for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const takenByDay = useMemo(() => {
+    const map = {};
+    bookings.forEach((b) => {
+      if (!b.createdAt) return;
+      const iso = new Date(b.createdAt).toISOString().slice(0, 10);
+      map[iso] = (map[iso] || 0) + 1;
+    });
+    return map;
+  }, [bookings]);
+  const inByDay = useMemo(() => {
+    const map = {};
+    bookings.forEach((b) => { if (b.date) map[b.date] = (map[b.date] || 0) + 1; });
+    return map;
+  }, [bookings]);
+
+  const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const monthTotals = useMemo(() => {
+    const sum = (byDay) => Object.entries(byDay).reduce((acc, [iso, n]) => (iso.slice(0, 7) === monthKey ? acc + n : acc), 0);
+    return { taken: sum(takenByDay), in: sum(inByDay) };
+  }, [takenByDay, inByDay, monthKey]);
+
+  return (
+    <div className="wb-panel">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+          <Calendar size={16} color="var(--amber)" /> Booking activity calendar
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button className="wb-btn-ghost" onClick={() => setCursor(new Date(year, month - 1, 1))}><ChevronLeft size={14} /></button>
+          <div style={{ fontWeight: 700, fontSize: 13, minWidth: 130, textAlign: "center" }}>{cursor.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+          <button className="wb-btn-ghost" onClick={() => setCursor(new Date(year, month + 1, 1))}><ChevronRight size={14} /></button>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+        <span style={{ color: "var(--amber2)", fontWeight: 700 }}>● Taken</span> — fresh enquiries entered as a booking that day, the number worth checking against advertising/campaign days.{" "}
+        <span style={{ color: "var(--green)", fontWeight: 700 }}>● In</span> — cars physically dropped off that day, usually booked weeks ahead of when they were taken.{" "}
+        This month so far: <strong className="wh-mono">{monthTotals.taken}</strong> taken, <strong className="wh-mono">{monthTotals.in}</strong> in.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 4 }}>
+        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>{d}</div>)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+        {cells.map((d, i) => {
+          if (!d) return <div key={i} style={{ minHeight: 58 }} />;
+          const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          const taken = takenByDay[iso] || 0;
+          const inCount = inByDay[iso] || 0;
+          const isToday = iso === todayISO();
+          return (
+            <div
+              key={i} title={`${fmtDate(iso)}: ${taken} taken, ${inCount} in`}
+              style={{
+                minHeight: 58, borderRadius: 6, padding: "4px 6px", background: "var(--panel2)",
+                border: isToday ? "1px solid var(--amber)" : "1px solid var(--line)",
+              }}
+            >
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>{d}</div>
+              {taken > 0 && <div className="wh-mono" style={{ fontSize: 11, color: "var(--amber2)", fontWeight: 700 }}>{taken} taken</div>}
+              {inCount > 0 && <div className="wh-mono" style={{ fontSize: 11, color: "var(--green)" }}>{inCount} in</div>}
+              {taken === 0 && inCount === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>—</div>}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
