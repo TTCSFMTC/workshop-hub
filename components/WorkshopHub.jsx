@@ -2537,6 +2537,15 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
   // anything — this makes it open as a full-screen overlay instead.
   const [mobileDayOpen, setMobileDayOpen] = useState(false);
   const [intakeBooking, setIntakeBooking] = useState(null);
+  // A collected job is done and out the door — the full card (symptoms,
+  // parts used, edit/print/no-show icons, share links) is just noise once
+  // that's happened, so it collapses down to the name, the traffic-light
+  // buttons (in case COMP needs undoing), and pricing (still worth checking
+  // at a glance). Expanding one back is per-booking and doesn't persist —
+  // same "quick peek, not a setting" pattern as the other collapse toggles
+  // in this app (Job Types, Stock rows).
+  const [expandedCompleted, setExpandedCompleted] = useState(() => new Set());
+  const toggleCompletedExpanded = (id) => setExpandedCompleted((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -2637,18 +2646,28 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             const jt = jobTypes.find((j) => j.id === b.jobTypeId);
             const extraJts = (b.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
             const combinedParts = fullBookingBom(b, jobTypes);
+            const minimised = b.completed && !expandedCompleted.has(b.id);
             return (
               <div key={b.id} style={{ border: b.provisional ? "1px solid #fff" : "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: b.provisional ? "#fff" : bookingStatus(b).color || "var(--text)" }}>
-                    {b.customerName || "Unnamed"}
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 6, cursor: b.completed ? "pointer" : "default" }}
+                    onClick={b.completed ? () => toggleCompletedExpanded(b.id) : undefined}
+                    title={b.completed ? (minimised ? "Show full booking details" : "Minimise — job's collected, done and out the door") : undefined}
+                  >
+                    {b.completed && (
+                      <ChevronDown size={13} style={{ transform: minimised ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.1s", color: "var(--muted)", flexShrink: 0 }} />
+                    )}
+                    <div style={{ fontWeight: 700, fontSize: 13, color: b.provisional ? "#fff" : bookingStatus(b).color || "var(--text)" }}>
+                      {b.customerName || "Unnamed"}
+                    </div>
                   </div>
-                  {b.provisional && (
+                  {!minimised && b.provisional && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       <Bookmark size={12} /> Provisional — not yet confirmed
                     </div>
                   )}
-                  {b.noShow && (
+                  {!minimised && b.noShow && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red, #e2574c)", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       <Ban size={12} /> No-show
                     </div>
@@ -2656,6 +2675,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <TrafficLightButtons booking={b} updateBooking={updateBooking} onMarkArrived={setIntakeBooking} />
                   {/* Left-aligned, directly under the name — not pushed to the far right edge of
                       the card, which was unreachable one-handed on the mobile/iPad layout. */}
+                  {!minimised && (
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                     <button
                       onClick={() => {
@@ -2696,17 +2716,20 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <button onClick={() => onPrintJob(b)} title="Print job card" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><Printer size={13} /></button>
                     <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
                   </div>
-                  <BookingShareActions booking={b} jobTypes={jobTypes} />
+                  )}
+                  {!minimised && <BookingShareActions booking={b} jobTypes={jobTypes} />}
                 </div>
-                {b.vehicleModel && (
+                {!minimised && b.vehicleModel && (
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#38bdf8", marginTop: 6 }}>
                     {b.vehicleModel}
                   </div>
                 )}
+                {!minimised && (
                 <div style={{ fontSize: 11, color: "var(--amber2)", marginTop: 2 }}>
                   {jt?.name || "—"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
                 </div>
-                {b.paymentMethod && (
+                )}
+                {!minimised && b.paymentMethod && (
                   // Deliberately shown up front, not tucked inside the collapsible
                   // Job pricing panel — the whole point is that whoever picks up
                   // payment can see what was agreed without hunting for it.
@@ -2714,11 +2737,12 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     <PoundSterling size={11} /> {b.paymentMethod} agreed
                   </div>
                 )}
-                {b.days > 1 && (
+                {!minimised && b.days > 1 && (
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
                     {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(addDaysISO(b.date, b.days - 1))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
                   </div>
                 )}
+                {!minimised && (
                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
                   {b.phone && <span><Phone size={10} style={{ display: "inline", marginRight: 4 }} />{b.phone}</span>}
                   {b.reg && <span><Car size={10} style={{ display: "inline", marginRight: 4 }} />{b.reg}</span>}
@@ -2730,7 +2754,8 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   )}
                   <span style={{ fontSize: 10 }}>{b.business}</span>
                 </div>
-                {combinedParts.length > 0 && (
+                )}
+                {!minimised && combinedParts.length > 0 && (
                   <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                     <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>Parts used</div>
                     <div className="wh-mono" style={{ fontSize: 11, display: "flex", flexDirection: "column", gap: 1 }}>
@@ -2739,9 +2764,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   </div>
                 )}
                 <JobCostBlock booking={b} jt={jt} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking} addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost} />
+                {!minimised && (
                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                   Find this vehicle by reg (<strong className="wh-mono">{b.reg || "no reg"}</strong>) under Workshop mode to open its job card.
                 </div>
+                )}
               </div>
             );
           })}
