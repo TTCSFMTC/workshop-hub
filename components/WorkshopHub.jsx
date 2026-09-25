@@ -6,7 +6,7 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX,
 } from "lucide-react";
 import { QuotesTab } from "./QuotesTab";
 import {
@@ -1428,7 +1428,7 @@ export default function WorkshopHub() {
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
           plSnapshots={plSnapshots} freezePLSnapshot={freezePLSnapshotFn} unfreezePLSnapshot={unfreezePLSnapshotFn}
-          bookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
+          bookings={bookings.filter((b) => !b.customerCancelled)} allBookings={bookings} addBooking={addBooking} removeBooking={removeBooking} updateBooking={updateBooking}
           addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
           settings={settings} updateSettingsField={updateSettingsField}
           stockRows={stockRows} lowStockItems={lowStockItems} receiveStock={receiveStock}
@@ -1446,7 +1446,7 @@ export default function WorkshopHub() {
         />
       ) : (
         <WorkshopMode
-          bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings}
+          bookings={bookings.filter((b) => !b.customerCancelled)} jobTypes={jobTypes} parts={parts} settings={settings}
           jobCards={jobCards} upsertJobCard={upsertJobCard} updateJobCard={updateJobCard} removeJobCard={removeJobCard} updateBooking={updateBooking}
           jobApprovals={jobApprovals} addJobApproval={addJobApproval} removeJobApproval={removeJobApproval}
         />
@@ -1460,7 +1460,7 @@ export default function WorkshopHub() {
 // ============================================================
 function OfficeMode({
   parts, jobTypes, addPart, removePart, updatePartField, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine,
-  bookings, addBooking, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
+  bookings, allBookings, addBooking, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, settings, updateSettingsField, stockRows, lowStockItems, receiveStock,
   stockBatches, orderStock, deliverStock, cancelOrder, amendOrder,
   priceHistory, recordPrice, pendingReorder, showReorderAlert, setShowReorderAlert, setDismissedReorderIds,
   updatePriceHistorySupplier, updateStockBatchSupplier,
@@ -1498,6 +1498,12 @@ function OfficeMode({
   // NewBookingModal without treating it as an edit, and tells the onSave
   // handler below which request to mark converted once it's saved.
   const [acceptingRequest, setAcceptingRequest] = useState(null);
+  // Jumped to from the Calendar's "Customer cancelled" flow — set to the
+  // freed date so the Cancellations tab can scroll straight to that row
+  // instead of making office hunt for it in the list.
+  const [cancellationFocusDate, setCancellationFocusDate] = useState(null);
+  const openCancellationsForDate = (date) => { setCancellationFocusDate(date); setTab("cancellations"); };
+  const openCancellationsCount = useMemo(() => allBookings.filter((b) => b.customerCancelled && !b.cancellationFilled).length, [allBookings]);
 
   // Public /book submissions land in booking_requests, not bookings — this
   // is the one place office actually sees them, since nothing auto-converts
@@ -1637,11 +1643,12 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
             {key === "requests" && bookingRequests.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{bookingRequests.length}</span>}
+            {key === "cancellations" && openCancellationsCount > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{openCancellationsCount}</span>}
             {key === "supplierinvoices" && supplierInvoices.filter((i) => i.status === "needs_review").length > 0 && (
               <span className="wb-badge-low" style={{ marginLeft: 4 }}>{supplierInvoices.filter((i) => i.status === "needs_review").length}</span>
             )}
@@ -1658,7 +1665,13 @@ function OfficeMode({
             jobTypes={jobTypes} parts={parts} settings={settings} removeBooking={removeBooking} updateBooking={updateBooking}
             addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
             jobCards={jobCards} jobApprovals={jobApprovals} updateJobApproval={updateJobApproval} removeJobApproval={removeJobApproval}
-            holidays={holidays} />
+            holidays={holidays} onOpenCancellations={openCancellationsForDate} />
+        )}
+        {tab === "cancellations" && (
+          <CancellationsTab
+            allBookings={allBookings} jobTypes={jobTypes} updateBooking={updateBooking}
+            onOpenBooking={openBookingOnCalendar} focusDate={cancellationFocusDate} clearFocusDate={() => setCancellationFocusDate(null)}
+          />
         )}
         {tab === "jobs" && (
           <JobsTableTab
@@ -2519,7 +2532,7 @@ function IntakeConfirmationModal({ booking, jobTypes, onClose, onConfirmed }) {
   );
 }
 
-function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onProvisionalBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays }) {
+function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSelectedDay, onNewBooking, onProvisionalBooking, onEditBooking, onPrintJob, jobTypes, parts, settings, removeBooking, updateBooking, addBookingExtraCost, removeBookingExtraCost, jobCards, jobApprovals, updateJobApproval, removeJobApproval, holidays, onOpenCancellations }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const year = monthCursor.getFullYear(), month = monthCursor.getMonth();
   const firstDay = new Date(year, month, 1);
@@ -2714,7 +2727,25 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       <Ban size={13} strokeWidth={b.noShow ? 3 : 2} />
                     </button>
                     <button onClick={() => onPrintJob(b)} title="Print job card" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><Printer size={13} /></button>
-                    <button onClick={() => removeBooking(b.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm(`Mark ${b.customerName || "this booking"} as a customer cancellation? This frees up ${fmtDate(b.date)} and moves them to the Cancellations list.`)) return;
+                        updateBooking(b.id, {
+                          customerCancelled: true, customerCancelledAt: Date.now(),
+                          ...(b.workshopCompleted ? { workshopCompleted: false, workshopCompletedAt: null } : {}),
+                        });
+                        if (window.confirm("Try to fill this slot from the waiting list now?")) onOpenCancellations(b.date);
+                      }}
+                      title="Customer cancelled — frees up this date"
+                      style={{ background: "none", border: "none", color: "var(--amber)", cursor: "pointer" }}
+                    >
+                      <CalendarX size={13} />
+                    </button>
+                    <button
+                      onClick={() => { if (window.confirm(`Delete ${b.customerName || "this booking"}? This can't be undone.`)) removeBooking(b.id); }}
+                      title="Delete booking"
+                      style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}
+                    ><X size={13} /></button>
                   </div>
                   )}
                   {!minimised && <BookingShareActions booking={b} jobTypes={jobTypes} />}
@@ -2783,6 +2814,136 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           onConfirmed={() => setIntakeBooking(null)}
         />
       )}
+    </div>
+  );
+}
+
+// Two lists that feed each other: every "customer cancelled" booking stays
+// on record (not deleted) so the date it freed up can be offered to someone
+// else, and every booking ticked "notify if an earlier slot comes up" is the
+// pool of people to offer it to. Picking one and sending the WhatsApp just
+// records who was asked — the actual move only happens once office ticks
+// "they said yes", since a reply over WhatsApp isn't something this app can
+// see for itself.
+function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking, focusDate, clearFocusDate }) {
+  const jtName = (id) => jobTypes.find((j) => j.id === id)?.name || "—";
+  const [offerPicks, setOfferPicks] = useState({}); // { [cancellationId]: waitingBookingId } — chosen but not yet sent
+
+  const openCancellations = useMemo(
+    () => allBookings.filter((b) => b.customerCancelled && !b.cancellationFilled).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [allBookings]
+  );
+  const waitingList = useMemo(
+    () => allBookings.filter((b) => b.notifyIfEarlierSlot && !b.customerCancelled && !b.completed).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
+    [allBookings]
+  );
+  const waitingById = useMemo(() => Object.fromEntries(waitingList.map((w) => [w.id, w])), [waitingList]);
+
+  const rowRefs = useRef({});
+  useEffect(() => {
+    if (!focusDate) return;
+    const row = Object.values(rowRefs.current).find((el) => el?.dataset?.date === focusDate);
+    if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => clearFocusDate?.(), 4000);
+    return () => clearTimeout(t);
+  }, [focusDate]);
+
+  const sendOffer = (cancellation, waiting) => {
+    const message = `Hi ${firstName(waiting.customerName)}, we've had a cancellation on ${fmtDate(cancellation.date)} — would you like to move your existing date (currently ${fmtDate(waiting.date)}) to this one instead? Please confirm and we'll get you switched over.`;
+    if (!waiting.phone) { alert(`${waiting.customerName || "This customer"} has no phone number on file.`); return; }
+    window.open(whatsappLink(waiting.phone, message), "_blank");
+    updateBooking(cancellation.id, { cancellationOfferedTo: waiting.id, cancellationOfferedAt: Date.now() });
+  };
+  const confirmMove = (cancellation, waiting) => {
+    if (!window.confirm(`Move ${waiting.customerName || "this customer"} from ${fmtDate(waiting.date)} to ${fmtDate(cancellation.date)}? Only do this once they've confirmed over WhatsApp.`)) return;
+    updateBooking(waiting.id, { date: cancellation.date, notifyIfEarlierSlot: false });
+    updateBooking(cancellation.id, { cancellationFilled: true });
+  };
+  const tryOther = (cancellation) => updateBooking(cancellation.id, { cancellationOfferedTo: null, cancellationOfferedAt: null });
+  const removeFromWaitingList = (b) => { if (window.confirm(`Take ${b.customerName || "this customer"} off the waiting list?`)) updateBooking(b.id, { notifyIfEarlierSlot: false }); };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <CalendarX size={16} color="var(--amber)" /> Open cancellations
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+          Dates freed up by a customer cancelling — soonest first. Offer one to someone on the waiting list below, and only tick it filled once they've actually confirmed.
+        </div>
+        {openCancellations.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--muted)", padding: "10px 0" }}>No open cancellations right now.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {openCancellations.map((c) => {
+              const offered = c.cancellationOfferedTo ? waitingById[c.cancellationOfferedTo] : null;
+              const eligibleWaiting = waitingList.filter((w) => w.business === c.business);
+              const pickedId = offerPicks[c.id] || "";
+              return (
+                <div
+                  key={c.id}
+                  ref={(el) => { rowRefs.current[c.id] = el; }}
+                  data-date={c.date}
+                  className="wb-panel"
+                  style={{ padding: 12, borderColor: focusDate === c.date ? "var(--amber)" : undefined }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{fmtDate(c.date)} <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 12 }}>· {c.business}</span></div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                      Was {c.customerName || "Unnamed"}{c.reg ? ` (${c.reg})` : ""} — {jtName(c.jobTypeId)} — cancelled {c.customerCancelledAt ? fmtDate(new Date(c.customerCancelledAt).toISOString().slice(0, 10)) : ""}
+                    </div>
+                  </div>
+                  {offered ? (
+                    <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
+                      <span>Offered to <strong>{offered.customerName || "Unnamed"}</strong> (currently {fmtDate(offered.date)}) — awaiting their reply.</span>
+                      <button className="wb-btn" style={{ padding: "6px 10px", minHeight: 30 }} onClick={() => confirmMove(c, offered)}><Check size={13} /> They said yes — move them</button>
+                      <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: 30 }} onClick={() => tryOther(c)}>Try someone else</button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <select className="wb-select" style={{ maxWidth: 280 }} value={pickedId} onChange={(e) => setOfferPicks((prev) => ({ ...prev, [c.id]: e.target.value }))}>
+                        <option value="">Select from waiting list…</option>
+                        {eligibleWaiting.length === 0 && <option value="" disabled>No one waiting for {c.business}</option>}
+                        {eligibleWaiting.map((w) => <option key={w.id} value={w.id}>{w.customerName || "Unnamed"} — currently {fmtDate(w.date)}</option>)}
+                      </select>
+                      <button
+                        className="wb-btn-ghost" disabled={!pickedId} style={!pickedId ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                        onClick={() => { const w = waitingById[pickedId]; if (w) sendOffer(c, w); }}
+                      ><MessageCircle size={13} /> WhatsApp offer</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <Bookmark size={16} color="var(--amber)" /> Waiting for an earlier slot
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+          Ticked on the booking form — still diarised on their own date below until offered and moved above.
+        </div>
+        {waitingList.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--muted)", padding: "10px 0" }}>No one's asked to be notified of an earlier slot right now.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {waitingList.map((w) => (
+              <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 13, padding: "8px 10px", borderRadius: 6, background: "var(--panel2)" }}>
+                <div>
+                  <strong>{w.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>{w.reg} · currently {fmtDate(w.date)} · {w.business}</span>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="wb-btn-ghost" style={{ padding: "5px 9px", minHeight: 28, fontSize: 12 }} onClick={() => onOpenBooking(w)}>Open on Calendar</button>
+                  <button className="wb-btn-ghost" style={{ padding: "5px 9px", minHeight: 28, fontSize: 12 }} onClick={() => removeFromWaitingList(w)}><X size={12} /> Remove</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -6098,6 +6259,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [email, setEmail] = useState(booking?.email || initialValues?.email || "");
   const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
   const [provisional, setProvisional] = useState(booking?.provisional || false);
+  const [notifyIfEarlierSlot, setNotifyIfEarlierSlot] = useState(booking?.notifyIfEarlierSlot || false);
   const [beltChainStatus, setBeltChainStatus] = useState("idle"); // idle | loading | done | error
   const [beltChainResult, setBeltChainResult] = useState(null);
   const [beltChainError, setBeltChainError] = useState("");
@@ -6260,6 +6422,12 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
                 <input type="checkbox" checked={provisional} onChange={(e) => setProvisional(e.target.checked)} />
                 <Bookmark size={13} /> Provisional (not yet confirmed)
+              </label>
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }} title="Stays booked in on this date — but if an earlier slot frees up from a cancellation, they'll show on the Cancellations tab as someone to offer it to.">
+                <input type="checkbox" checked={notifyIfEarlierSlot} onChange={(e) => setNotifyIfEarlierSlot(e.target.checked)} />
+                <CalendarX size={13} /> Notify if an earlier slot comes up
               </label>
             </div>
             <div>
@@ -6441,6 +6609,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
             const payload = {
               customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
               provisional,
+              notifyIfEarlierSlot,
               pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
               distanceMiles: typeof distanceMiles === "number" ? distanceMiles : null,
               paymentMethod,
