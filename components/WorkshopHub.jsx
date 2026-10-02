@@ -3101,12 +3101,11 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPr
 // technician's job is only to describe what was found.
 function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, updateJobApproval, removeJobApproval }) {
   const pending = useMemo(() => jobApprovals.filter((a) => a.status === "draft"), [jobApprovals]);
-  const awaiting = useMemo(() => jobApprovals.filter((a) => a.status === "sent"), [jobApprovals]);
   const [drafts, setDrafts] = useState({});
   const [sendingId, setSendingId] = useState(null);
   const [errorId, setErrorId] = useState(null);
 
-  if (pending.length === 0 && awaiting.length === 0) return null;
+  if (pending.length === 0) return null;
 
   const setDraft = (id, patch) => setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
 
@@ -3143,11 +3142,9 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
 
   return (
     <div className="wb-panel" style={{ borderColor: "var(--amber)" }}>
-      {pending.length > 0 && (
       <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
         <AlertTriangle size={15} /> {pending.length} extra-work request{pending.length !== 1 ? "s" : ""} waiting on a price
       </div>
-      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {pending.map((a) => {
           const card = jobCards.find((c) => c.id === a.jobCardId);
@@ -3180,31 +3177,6 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
           );
         })}
       </div>
-      {awaiting.length > 0 && (
-        <div style={{ marginTop: pending.length > 0 ? 14 : 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
-            <MessageCircle size={15} /> {awaiting.length} extra-work request{awaiting.length !== 1 ? "s" : ""} awaiting the customer
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {awaiting.map((a) => {
-              const card = jobCards.find((c) => c.id === a.jobCardId);
-              const booking = bookings.find((b) => b.id === a.bookingId);
-              return (
-                <div key={a.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 180 }}>
-                    <strong style={{ fontSize: 13 }}>{card?.customerName || booking?.customerName || "Unknown customer"}</strong>{" "}
-                    <span style={{ color: "var(--muted)", fontSize: 12 }}>{card?.reg || booking?.reg ? `— ${card?.reg || booking?.reg}` : ""} · £{Number(a.price || 0).toFixed(2)}{a.sentAt ? ` · sent ${new Date(a.sentAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : ""}</span>
-                    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, whiteSpace: "pre-wrap" }}>{a.description}</div>
-                  </div>
-                  <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => pushApprovalAgain(a, booking, card)}>
-                    <MessageCircle size={13} /> Push again
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
