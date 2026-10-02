@@ -3086,6 +3086,7 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
     const draft = drafts[approval.id] || {};
     const price = Number(draft.price);
     if (!price || price <= 0) { setErrorId(approval.id); return; }
+    if (!bookings.find((b) => b.id === approval.bookingId)?.phone) { alert("This booking has no phone number on file — add one first, as approval requests go out over WhatsApp."); return; }
     setErrorId(null);
     setSendingId(approval.id);
     try {
@@ -3095,19 +3096,17 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
         body: JSON.stringify({ approvalId: approval.id, price, inStock: !!draft.inStock }),
       });
       const data = await res.json();
-      if (!res.ok) { alert(data.error || "Failed to send the approval report."); setSendingId(null); return; }
+      if (!res.ok) { alert(data.error || "Failed to generate the approval report."); setSendingId(null); return; }
       // Optimistic — realtime will bring in the server's ai_writeup/status once it lands.
       updateJobApproval(approval.id, { price, inStock: !!draft.inStock, status: "sent", sentAt: Date.now() });
 
-      // A brand-new sending domain is more likely to land in spam, so also
-      // nudge the customer over WhatsApp to go check their email.
+      // Goes to the customer over WhatsApp only — no email. The link opens
+      // the full write-up with approve/decline.
       const card = jobCards.find((c) => c.id === approval.jobCardId);
       const booking = bookings.find((b) => b.id === approval.bookingId);
-      if (booking?.phone) {
-        const cardVehicle = [card?.make, card?.model].filter(Boolean).join(" ");
-        const msg = `Hi ${firstName(card?.customerName || booking.customerName)}, we've found some extra work needed on your ${cardVehicle || booking.vehicleModel || "vehicle"} while carrying out the booked job. We've just emailed you the details along with a link to approve or decline — could you take a look when you get a chance?`;
-        window.open(whatsappLink(booking.phone, msg), "_blank");
-      }
+      const cardVehicle = [card?.make, card?.model].filter(Boolean).join(" ");
+      const msg = `Hi ${firstName(card?.customerName || booking?.customerName)}, we've found some extra work needed on your ${cardVehicle || booking?.vehicleModel || "vehicle"} (${card?.reg || booking?.reg || ""}) while carrying out the booked job.\n\nPrice for the extra work: £${price.toFixed(2)}\n${draft.inStock ? "The part is in stock, so we can do it while your vehicle is still with us." : "The part isn't in stock, so it would need to be ordered."}\n\nPlease tap the link to see the details and approve or decline:\n${data.approveUrl}`;
+      window.open(whatsappLink(booking.phone, msg), "_blank");
     } catch {
       alert("Failed to send the approval report — check your connection and try again.");
     }
