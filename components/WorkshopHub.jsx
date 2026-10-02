@@ -20,6 +20,7 @@ import {
   setBookingExtraPart, removeBookingExtraPart, setBookingJobTypePrice, removeBookingJobTypePrice, setBookingBomQtyOverride, removeBookingBomQtyOverride,
   setBookingBomCostOverride, removeBookingBomCostOverride,
   insertBookingExtraCost, removeBookingExtraCost as removeBookingExtraCostRow,
+  insertBookingCustomPart, removeBookingCustomPart as removeBookingCustomPartRow,
   upsertJobCardRow, updateJobCardRow, deleteJobCardRow,
   insertPriceHistory, deletePriceHistory, updatePriceHistorySupplier, insertStockBatch, updateStockBatchQtyRemaining, markStockBatchDelivered, deleteStockBatch, updateStockBatchSupplier, updateStockBatch,
   insertJobApproval, updateJobApprovalRow, deleteJobApproval,
@@ -591,6 +592,7 @@ export default function WorkshopHub() {
       subscribeTable("booking_job_type_prices", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_bom_qty_overrides", async () => setBookings(await fetchBookings())),
       subscribeTable("booking_bom_cost_overrides", async () => setBookings(await fetchBookings())),
+      subscribeTable("booking_custom_parts", async () => setBookings(await fetchBookings())),
       subscribeTable("job_cards", async () => setJobCards(await fetchJobCards())),
       subscribeTable("job_approvals", async () => setJobApprovals(await fetchJobApprovals())),
       subscribeTable("part_price_history", async () => setPriceHistory(await fetchPriceHistory())),
@@ -792,6 +794,7 @@ export default function WorkshopHub() {
     const extraParts = newBooking.extraParts || [];
     const jobTypePrices = newBooking.jobTypePrices || [];
     const bomQtyOverrides = newBooking.bomQtyOverrides || [];
+    const customParts = newBooking.customParts || [];
 
     setBookings((prev) => [...prev, newBooking]);
 
@@ -804,6 +807,7 @@ export default function WorkshopHub() {
         ...extraParts.map((l) => setBookingExtraPart(newBooking.id, l.partId, l.qty)),
         ...jobTypePrices.map((l) => setBookingJobTypePrice(newBooking.id, l.jobTypeId, l.price)),
         ...bomQtyOverrides.map((l) => setBookingBomQtyOverride(newBooking.id, l.partId, l.qty)),
+        ...customParts.map((c) => insertBookingCustomPart({ ...c, bookingId: newBooking.id })),
       ]);
     } catch (e) {
       // The booking went on screen the moment it was added (so office isn't
@@ -875,7 +879,7 @@ export default function WorkshopHub() {
 
     // bookings-table patch never includes extraJobTypeIds/extraParts/jobTypePrices/
     // bomQtyOverrides/bomCostOverrides — those live in their own junction tables, reconciled separately below.
-    const { extraJobTypeIds, extraParts, jobTypePrices, bomQtyOverrides, bomCostOverrides, ...rowPatch } = patch;
+    const { extraJobTypeIds, extraParts, jobTypePrices, bomQtyOverrides, bomCostOverrides, customParts, ...rowPatch } = patch;
 
     // Stock is only taken out (or given back) at the workshop-completed
     // transition, not at booking time — see addBooking. Three cases:
@@ -951,6 +955,12 @@ export default function WorkshopHub() {
       const beforeOverrides = before?.bomCostOverrides || [];
       const removed = beforeOverrides.filter((l) => !bomCostOverrides.some((n) => n.partId === l.partId));
       jobs.push(...bomCostOverrides.map((l) => setBookingBomCostOverride(id, l.partId, l.cost)), ...removed.map((l) => removeBookingBomCostOverride(id, l.partId)));
+    }
+    if (customParts) {
+      const beforeCustom = before?.customParts || [];
+      const added = customParts.filter((c) => !beforeCustom.some((b) => b.id === c.id));
+      const removed = beforeCustom.filter((b) => !customParts.some((c) => c.id === b.id));
+      jobs.push(...added.map((c) => insertBookingCustomPart({ ...c, bookingId: id })), ...removed.map((c) => removeBookingCustomPartRow(c.id)));
     }
     await Promise.all(jobs.filter(Boolean));
 
@@ -2786,11 +2796,12 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   <span style={{ fontSize: 10 }}>{b.business}</span>
                 </div>
                 )}
-                {!minimised && combinedParts.length > 0 && (
+                {!minimised && (combinedParts.length > 0 || (b.customParts || []).length > 0) && (
                   <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                     <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>Parts used</div>
                     <div className="wh-mono" style={{ fontSize: 11, display: "flex", flexDirection: "column", gap: 1 }}>
                       {combinedParts.map((l) => <span key={l.partId}>{l.qty}× {partsIndex[l.partId] || l.partId}</span>)}
+                      {(b.customParts || []).map((c) => <span key={c.id}>1× {c.description}</span>)}
                     </div>
                   </div>
                 )}
@@ -3289,8 +3300,13 @@ function unitCostForBomLine(booking, partId, part) {
   const override = (booking.bomCostOverrides || []).find((o) => o.partId === partId);
   return override != null ? override.cost : (part?.costPrice || 0);
 }
+// One-off "Other" parts typed straight onto a booking — outside the Stock
+// catalogue entirely, so they carry their own cost and retail price and
+// never touch stock levels.
+const customPartsCost = (booking) => (booking.customParts || []).reduce((sum, c) => sum + (c.cost || 0), 0);
+const customPartsRetail = (booking) => (booking.customParts || []).reduce((sum, c) => sum + (c.retail || 0), 0);
 function partsCostForBooking(booking, jobTypes, parts) {
-  return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + unitCostForBomLine(booking, l.partId, p) * l.qty; }, 0);
+  return fullBookingBom(booking, jobTypes).reduce((sum, l) => { const p = parts.find((x) => x.id === l.partId); return sum + unitCostForBomLine(booking, l.partId, p) * l.qty; }, 0) + customPartsCost(booking);
 }
 // Shared by the per-booking cost block and the Profitability tab's rollup.
 function computeProfit({ jobValue, labourCost, transportCost, partsCost, extraCostsTotal, vatRegistered }) {
@@ -3341,7 +3357,11 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
       // own parts list goes into Zoho's description field. A booking saved
       // before the pricing breakdown existed falls back to one line for the
       // whole total, described with the full combined parts list.
-      const lineItems = booking.jobTypePrices?.length
+      // One-off "Other" parts each get their own line at their retail price
+      // (job value already includes them, so they're taken back out of the
+      // single-line fallback below to avoid charging them twice).
+      const customLines = (booking.customParts || []).filter((c) => c.retail > 0).map((c) => ({ name: c.description, amount: c.retail, description: "" }));
+      const jobLines = booking.jobTypePrices?.length
         ? booking.jobTypePrices.map((p, i) => {
             // One-off extra parts (added straight from Stock, not tied to
             // any specific job type) have nowhere more specific to go, so
@@ -3355,7 +3375,8 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
               description: [describeJobTypeBom(p.jobTypeId), extra].filter(Boolean).join(", "),
             };
           })
-        : [{ name: jt?.name || "Workshop job", amount: booking.jobValue, description: fullBookingBom(booking, jobTypes).map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId).join(", ") }];
+        : [{ name: jt?.name || "Workshop job", amount: Math.max(0, booking.jobValue - customPartsRetail(booking)), description: fullBookingBom(booking, jobTypes).map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId).join(", ") }];
+      const lineItems = [...jobLines, ...customLines];
       const res = await fetch("/api/office/zoho-invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4517,7 +4538,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                               A manual total of £{r.booking.partsCostOverride.toFixed(2)} is currently overriding the recipe below — clear it (pencil icon, empty the Parts cost box) to go back to using this breakdown.
                             </div>
                           )}
-                          {fullBookingBom(r.booking, jobTypes).length === 0 ? (
+                          {fullBookingBom(r.booking, jobTypes).length === 0 && (r.booking.customParts || []).length === 0 ? (
                             <div style={{ fontSize: 12, color: "var(--muted)" }}>No parts recipe on this job — the parts cost is £0.00 unless manually entered.</div>
                           ) : (
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -4566,6 +4587,14 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                                     </tr>
                                   );
                                 })}
+                                {(r.booking.customParts || []).map((c) => (
+                                  <tr key={c.id}>
+                                    <td style={{ padding: "3px 8px 3px 0" }}>{c.description} <span style={{ color: "var(--muted)" }}>(one-off)</span></td>
+                                    <td style={{ padding: "3px 8px" }}>1</td>
+                                    <td className="wh-mono" style={{ padding: "3px 8px" }}>£{c.cost.toFixed(2)}</td>
+                                    <td className="wh-mono" style={{ padding: "3px 0 3px 8px", textAlign: "right" }}>£{c.cost.toFixed(2)}</td>
+                                  </tr>
+                                ))}
                               </tbody>
                               <tfoot>
                                 <tr style={{ fontWeight: 700, borderTop: "1px solid var(--line)" }}>
@@ -6268,6 +6297,9 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [jobTypeId, setJobTypeId] = useState(booking?.jobTypeId || initialValues?.jobTypeId || jobTypes[0]?.id || "");
   const [extraJobTypeIds, setExtraJobTypeIds] = useState(booking?.extraJobTypeIds || []);
   const [extraParts, setExtraParts] = useState(booking?.extraParts || []);
+  // One-off "Other" parts typed straight in (not in the Stock catalogue) — see the Other option in the extra jobs dropdown.
+  const [customParts, setCustomParts] = useState(booking?.customParts || []);
+  const [otherBox, setOtherBox] = useState(null); // { description, cost, retail } while the Other box is open
   const [bomQtyOverrides, setBomQtyOverrides] = useState(booking?.bomQtyOverrides || []);
   // Make/model used to be one free-text field; split into a Make dropdown
   // (driven by the brands list, so it grows as new makes are taken on) and
@@ -6325,7 +6357,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
     if (def) setDays(def);
   }, [jobTypeId]);
   const allJobTypeIds = [jobTypeId, ...extraJobTypeIds].filter(Boolean);
-  const jobValue = allJobTypeIds.reduce((sum, id) => sum + (jobTypePrices[id] || 0), 0);
+  const jobValue = allJobTypeIds.reduce((sum, id) => sum + (jobTypePrices[id] || 0), 0) + customParts.reduce((sum, c) => sum + (c.retail || 0), 0);
   // The job types' own default BOM lines — the quantity a technician can
   // override per booking below, for parts that genuinely vary by vehicle
   // (e.g. Followers: some cars take 3, some take 6) rather than being fixed
@@ -6479,13 +6511,49 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
               onChange={(e) => {
                 if (!e.target.value) return;
                 const id = e.target.value;
+                if (id === "__other__") { setOtherBox({ description: "", cost: "", retail: "" }); return; }
                 setExtraJobTypeIds((prev) => [...prev, id]);
                 setJobTypePrices((prev) => (id in prev ? prev : { ...prev, [id]: priceForNewJobType(id) }));
               }}
             >
               <option value="">+ add an extra job…</option>
+              <option value="__other__">Other — type in a one-off part…</option>
               {jobTypes.filter((jt) => jt.id !== jobTypeId && !extraJobTypeIds.includes(jt.id)).map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
             </select>
+            {customParts.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                {customParts.map((c) => (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, background: "var(--panel2)", borderRadius: 6, padding: "5px 8px" }}>
+                    <span>{c.description}</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span className="wh-mono" style={{ color: "var(--muted)" }}>cost £{c.cost.toFixed(2)}</span>
+                      <span className="wh-mono">retail £{c.retail.toFixed(2)}</span>
+                      <X size={12} style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setCustomParts((prev) => prev.filter((x) => x.id !== c.id))} />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {otherBox && (
+              <div style={{ marginTop: 8, padding: 10, border: "1px solid var(--line)", borderRadius: 8, background: "var(--panel2)", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 700 }}>One-off part (not in Stock)</div>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8 }}>
+                  <div><label className="wb-label">Part</label><input className="wb-input" autoFocus value={otherBox.description} onChange={(e) => setOtherBox((p) => ({ ...p, description: e.target.value }))} placeholder="e.g. Rear wiper arm" /></div>
+                  <div><label className="wb-label">Cost £</label><input type="number" step="0.01" className="wb-input" value={otherBox.cost} onChange={(e) => setOtherBox((p) => ({ ...p, cost: e.target.value }))} /></div>
+                  <div><label className="wb-label">Retail £</label><input type="number" step="0.01" className="wb-input" value={otherBox.retail} onChange={(e) => setOtherBox((p) => ({ ...p, retail: e.target.value }))} /></div>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" className="wb-btn-ghost" onClick={() => setOtherBox(null)}>Cancel</button>
+                  <button
+                    type="button" className="wb-btn" disabled={!otherBox.description.trim()} style={!otherBox.description.trim() ? { opacity: 0.5, cursor: "not-allowed" } : {}}
+                    onClick={() => {
+                      setCustomParts((prev) => [...prev, { id: uid("cp"), description: otherBox.description.trim(), cost: parseFloat(otherBox.cost) || 0, retail: parseFloat(otherBox.retail) || 0 }]);
+                      setOtherBox(null);
+                    }}
+                  >Add to booking</button>
+                </div>
+              </div>
+            )}
           </div>
           {jobTypeBomLines.length > 0 && (
             <div>
@@ -6522,6 +6590,13 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
                   </div>
                 );
               })}
+              {customParts.map((c) => (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 13 }}>{c.description}</span>
+                  <span style={{ fontSize: 13, color: "var(--muted)" }}>£</span>
+                  <span className="wh-mono" style={{ width: 100, fontSize: 13 }}>{c.retail.toFixed(2)}</span>
+                </div>
+              ))}
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 13, borderTop: "1px solid var(--line)", paddingTop: 6 }}>
                 <span>Total invoice</span>
                 <span className="wh-mono">£{jobValue.toFixed(2)}</span>
@@ -6607,7 +6682,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
           <button className="wb-btn" disabled={!canSave} style={!canSave ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={() => {
             const payload = {
-              customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, date, days, vehicleModel,
+              customerName: customerName.trim(), phone: phone.trim(), email: email.trim(), reg: reg.trim(), symptoms: symptoms.trim(), business, jobTypeId, extraJobTypeIds, extraParts, bomQtyOverrides, customParts, date, days, vehicleModel,
               provisional,
               notifyIfEarlierSlot,
               pickupRequired: isTCS ? true : pickupRequired, pickupAddress: pickupAddress.trim(), postcode: postcode.trim(),
