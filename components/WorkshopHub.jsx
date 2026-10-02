@@ -214,6 +214,32 @@ function whatsappLink(phone, message) {
   return `https://wa.me/${whatsappNumber(phone)}?text=${encodeURIComponent(message)}`;
 }
 
+// "Push again" for an extra-work approval that's already been sent but not
+// answered — rebuilt from the saved approval (price, stock, link) so nobody
+// has to retype or hunt for anything. Opens WhatsApp; returns false when the
+// booking has no phone number to send it to.
+function pushApprovalAgain(approval, booking, card) {
+  if (!booking?.phone) { alert("This booking has no phone number on file — add one first."); return false; }
+  const vehicle = [card?.make, card?.model].filter(Boolean).join(" ") || booking.vehicleModel || "vehicle";
+  const url = `${window.location.origin}/approve/${approval.token}`;
+  const msg = `Hi ${firstName(card?.customerName || booking.customerName)}, just a quick reminder about the extra work we found on your ${vehicle} (${card?.reg || booking.reg || ""}).\n\nPrice: £${Number(approval.price || 0).toFixed(2)}\n\nCould you please tap the link and approve or decline so we know whether to go ahead?\n${url}`;
+  window.open(whatsappLink(booking.phone, msg), "_blank");
+  return true;
+}
+
+// Sent when a website booking request can't have the date asked for — offers
+// a date we can do instead, rather than a flat decline.
+function offerDateMessage(req, newDate) {
+  return `Hi ${firstName(req.name)},
+
+Thanks for your booking request with ${req.business}${req.date ? ` for ${fmtDate(req.date)}` : ""}. Unfortunately we're not able to fit your vehicle${req.reg ? ` (${req.reg})` : ""} in on that day, but we could do ${fmtDate(newDate)} instead.
+
+Would that date work for you? Just reply here to confirm and we'll get you booked in.
+
+Many thanks,
+${req.business}`;
+}
+
 // The record of the agreed price lives in this message, so it's only ever
 // sendable once a job value has been entered — callers must check
 // booking.jobValue before opening this link.
@@ -1695,7 +1721,8 @@ function OfficeMode({
           <BookingRequestsTab
             requests={bookingRequests} jobTypes={jobTypes} bookings={bookings} holidays={holidays}
             onAccept={(req) => setAcceptingRequest(req)}
-            onDecline={(req) => { if (confirm(`Decline the request from ${req.name}?`)) declineRequest(req.id); }}
+            onDecline={(req) => { if (confirm(`Decline the request from ${req.name} without offering another date?`)) declineRequest(req.id); }}
+            onOfferDate={(req, date) => { window.open(whatsappLink(req.phone, offerDateMessage(req, date)), "_blank"); declineRequest(req.id); }}
             onRefresh={refreshBookingRequests}
           />
         )}
@@ -3074,11 +3101,12 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPr
 // technician's job is only to describe what was found.
 function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, updateJobApproval, removeJobApproval }) {
   const pending = useMemo(() => jobApprovals.filter((a) => a.status === "draft"), [jobApprovals]);
+  const awaiting = useMemo(() => jobApprovals.filter((a) => a.status === "sent"), [jobApprovals]);
   const [drafts, setDrafts] = useState({});
   const [sendingId, setSendingId] = useState(null);
   const [errorId, setErrorId] = useState(null);
 
-  if (pending.length === 0) return null;
+  if (pending.length === 0 && awaiting.length === 0) return null;
 
   const setDraft = (id, patch) => setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
 
@@ -3115,9 +3143,11 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
 
   return (
     <div className="wb-panel" style={{ borderColor: "var(--amber)" }}>
+      {pending.length > 0 && (
       <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
         <AlertTriangle size={15} /> {pending.length} extra-work request{pending.length !== 1 ? "s" : ""} waiting on a price
       </div>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {pending.map((a) => {
           const card = jobCards.find((c) => c.id === a.jobCardId);
@@ -3150,6 +3180,31 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
           );
         })}
       </div>
+      {awaiting.length > 0 && (
+        <div style={{ marginTop: pending.length > 0 ? 14 : 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, marginBottom: 10, color: "var(--amber2)" }}>
+            <MessageCircle size={15} /> {awaiting.length} extra-work request{awaiting.length !== 1 ? "s" : ""} awaiting the customer
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {awaiting.map((a) => {
+              const card = jobCards.find((c) => c.id === a.jobCardId);
+              const booking = bookings.find((b) => b.id === a.bookingId);
+              return (
+                <div key={a.id} style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10, background: "var(--panel2)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 180 }}>
+                    <strong style={{ fontSize: 13 }}>{card?.customerName || booking?.customerName || "Unknown customer"}</strong>{" "}
+                    <span style={{ color: "var(--muted)", fontSize: 12 }}>{card?.reg || booking?.reg ? `— ${card?.reg || booking?.reg}` : ""} · £{Number(a.price || 0).toFixed(2)}{a.sentAt ? ` · sent ${new Date(a.sentAt).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}` : ""}</span>
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, whiteSpace: "pre-wrap" }}>{a.description}</div>
+                  </div>
+                  <button className="wb-btn-ghost" style={{ padding: "8px 12px", minHeight: 32 }} onClick={() => pushApprovalAgain(a, booking, card)}>
+                    <MessageCircle size={13} /> Push again
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -5971,7 +6026,10 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 // office want to accept it". A request whose requirements mention a chain
 // job and lands within 2 days of another chain job's span gets a warning
 // badge, since that's the one case worth a closer look even within capacity.
-function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, onDecline, onRefresh }) {
+function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, onDecline, onOfferDate, onRefresh }) {
+  // Which request has its "offer another date" panel open, and the date picked.
+  const [offerId, setOfferId] = useState(null);
+  const [offerDate, setOfferDate] = useState("");
   const overlapsChainJob = (req) => {
     const isChainRequest = (req.requirements || []).some((r) => r.toLowerCase().includes("chain"));
     if (!isChainRequest) return false;
@@ -5988,10 +6046,10 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
   // practice this only ever fires for the one-off case, cutting that day's
   // capacity to 2 rather than blocking it, worth a closer look.
   const TECHS = ["Ernesto", "Ervin"];
-  const techsOffFor = (req) => {
+  const techsOffFor = (req, date = req.date) => {
     const off = new Set();
     holidays.forEach((h) => {
-      if (req.date >= h.dateFrom && req.date <= h.dateTo) {
+      if (date >= h.dateFrom && date <= h.dateTo) {
         TECHS.forEach((t) => { if (h.name.toLowerCase().includes(t.toLowerCase())) off.add(t); });
       }
     });
@@ -6007,7 +6065,7 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
         <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: "auto" }} onClick={onRefresh}>Refresh</button>
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
-        Submitted through the public booking page — accept to add it to the diary as a real booking, or decline it.
+        Submitted through the public booking page — accept to add it to the diary as a real booking, or offer another date and we'll WhatsApp them.
       </div>
       {requests.length === 0 && (
         <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "30px 0" }}>No pending requests.</div>
@@ -6097,8 +6155,37 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
               )}
               <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                 <button className="wb-btn" style={{ padding: "8px 14px", minHeight: "auto" }} onClick={() => onAccept(req)}>Accept</button>
-                <button className="wb-btn-ghost" style={{ padding: "8px 14px", minHeight: "auto", color: "var(--red)" }} onClick={() => onDecline(req)}>Decline</button>
+                <button className="wb-btn-ghost" style={{ padding: "8px 14px", minHeight: "auto" }} onClick={() => { setOfferId(offerId === req.id ? null : req.id); setOfferDate(""); }}>
+                  <CalendarX size={13} /> Offer another date
+                </button>
               </div>
+              {offerId === req.id && (() => {
+                const offerBusy = offerDate ? bookings.filter((b) => !b.customerCancelled && bookingDates(b).includes(offerDate)).length : 0;
+                const offerOff = offerDate ? techsOffFor(req, offerDate) : [];
+                return (
+                  <div style={{ marginTop: 10, padding: 10, borderRadius: 6, background: "var(--panel2)", border: "1px solid var(--line)" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Date we can do</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input type="date" className="wb-input" style={{ width: 170 }} min={todayISO()} value={offerDate} onChange={(e) => setOfferDate(e.target.value)} />
+                      <button className="wb-btn" style={{ padding: "8px 14px", minHeight: "auto" }} disabled={!offerDate || !req.phone}
+                        onClick={() => { onOfferDate(req, offerDate); setOfferId(null); setOfferDate(""); }}>
+                        <MessageCircle size={13} /> Send WhatsApp
+                      </button>
+                    </div>
+                    {offerDate && (
+                      <div style={{ fontSize: 11, marginTop: 6, color: offerOff.length > 0 ? "var(--red)" : "var(--muted)" }}>
+                        {fmtDate(offerDate)} — {offerBusy} booking{offerBusy !== 1 ? "s" : ""} already{offerOff.length > 0 ? ` · ${offerOff.join(" & ")} on holiday` : ""}
+                      </div>
+                    )}
+                    {!req.phone && <div style={{ fontSize: 11, marginTop: 6, color: "var(--red)" }}>No phone number on this request, so it can't be sent by WhatsApp.</div>}
+                    <div style={{ fontSize: 11, marginTop: 8 }}>
+                      <button onClick={() => onDecline(req)} style={{ background: "none", border: "none", padding: 0, color: "var(--muted)", cursor: "pointer", textDecoration: "underline", fontSize: 11 }}>
+                        or decline without offering a date
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
@@ -7082,6 +7169,11 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
                       <span style={{ fontSize: 11, fontWeight: 700, color: statusColor, textTransform: "uppercase", letterSpacing: "0.04em" }}>{statusLabel}</span>
                       {a.status === "draft" && (
                         <button onClick={() => removeJobApproval(a.id)} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={13} /></button>
+                      )}
+                      {a.status === "sent" && (
+                        <button className="jc-btn-sm" onClick={() => pushApprovalAgain(a, booking, card)}>
+                          <MessageCircle size={13} /> Push again
+                        </button>
                       )}
                     </div>
                     <div style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{a.description}</div>
