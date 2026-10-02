@@ -30,7 +30,7 @@ import {
   subscribeTable,
 } from "@/lib/data";
 import { CALENDAR_COLORS } from "@/lib/calendarColors";
-import { BUSINESSES, REVIEW_LINKS } from "@/lib/constants";
+import { BUSINESSES, REVIEW_LINKS, BANK_DETAILS } from "@/lib/constants";
 import * as XLSX from "xlsx";
 import { BookingShareActions } from "./BookingShareActions";
 import { SupplierInvoicesTab } from "./SupplierInvoicesTab";
@@ -261,6 +261,12 @@ I can confirm your vehicle${b.reg ? ` (${b.reg})` : ""} is booked in on ${fmtDat
 We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
 Between now and then, if anything changes or comes up, please just let us know.
+
+One request: with banks' ever-increasing fraud prevention, new payees set up on the day are currently taking an average of 30-40 minutes for the funds to go through. Could you please set us up as a payee before the day? You don't need to pay us now, just set it up, so that on the day the payment goes straight through and saves you time at the workshop. Our bank details are:
+
+Account name: Christopher Wilson T/A Warrington 4x4 (business account)
+Sort code: ${BANK_DETAILS.sortCode}
+Account number: ${BANK_DETAILS.accountNumber}
 
 ${closing}
 
