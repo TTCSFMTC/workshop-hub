@@ -5378,6 +5378,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   const [downloadingPartsPdf, setDownloadingPartsPdf] = useState(false);
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const [stocktakeOpen, setStocktakeOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set()); // per-part rows, shared across brand sections
   // Sections start collapsed too, same reasoning as Job Types and the
   // per-part rows above — several brands' worth of parts at once was right
@@ -5488,6 +5489,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <button className="wb-btn-ghost" disabled={downloadingPartsPdf} style={downloadingPartsPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadOutstandingPartsPdf} title="Download the same list as a PDF"><Download size={13} /> {downloadingPartsPdf ? "Generating…" : "Download PDF"}</button>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
+        <button className="wb-btn" onClick={() => setStocktakeOpen(true)} title="Type in what's physically on the shelf and correct the system in one go"><ListChecks size={13} /> Stocktake</button>
       </div>
       <div className="wb-panel" style={{ padding: 12, marginBottom: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
@@ -5573,6 +5575,98 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
       {priceCheckOpen && (
         <PartsPriceModal parts={stockRows} onClose={() => setPriceCheckOpen(false)} />
       )}
+      {stocktakeOpen && (
+        <StocktakeModal stockRows={stockRows} receiveStock={receiveStock} addAuditLog={addAuditLog} onClose={() => setStocktakeOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+// Physical stocktake: type what's actually on the shelf against each part and
+// every difference is put through in one go — adds/removes via the same
+// receiveStock the single-part Correct buttons use, one Corrections log entry
+// per part, all sharing the one reason. Parts left blank are untouched.
+function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
+  const [counts, setCounts] = useState({});
+  const [filter, setFilter] = useState("");
+  const [hideZero, setHideZero] = useState(false);
+
+  // Labour Hours is a constant-rate item rather than physical stock, so it
+  // never belongs on a shelf count.
+  const countable = useMemo(() => stockRows.filter((r) => !/^labour hours$/i.test(r.name.trim())).sort((a, b) => a.name.localeCompare(b.name)), [stockRows]);
+  const q = filter.trim().toLowerCase();
+  const visible = countable.filter((r) => (!q || r.name.toLowerCase().includes(q) || (r.partNumber || "").toLowerCase().includes(q)) && (!hideZero || r.stock !== 0 || r.committed > 0));
+
+  const changes = countable
+    .filter((r) => counts[r.id] !== undefined && counts[r.id] !== "" && Number.isFinite(parseFloat(counts[r.id])) && parseFloat(counts[r.id]) >= 0)
+    .map((r) => ({ r, counted: parseFloat(counts[r.id]), diff: +(parseFloat(counts[r.id]) - r.stock).toFixed(2) }))
+    .filter((c) => c.diff !== 0);
+
+  const apply = () => {
+    if (changes.length === 0) return;
+    const reason = promptReason(`Why are you correcting ${changes.length} part${changes.length !== 1 ? "s" : ""}? (e.g. "Physical stocktake ${fmtDate(todayISO())}")`);
+    if (reason === null) return;
+    changes.forEach(({ r, counted, diff }) => {
+      receiveStock(r.id, diff);
+      addAuditLog(`Stocktake: ${r.name} ${r.stock} → ${counted} (${diff > 0 ? "+" : ""}${diff})`, reason);
+    });
+    onClose();
+  };
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      <div className="wb-modal" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+            <ListChecks size={16} color="var(--amber)" /> Stocktake
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Type the number physically on the shelf against each part you've counted. Leave a part blank to leave it alone. Nothing changes until you press Apply.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input className="wb-input" style={{ flex: 1, minWidth: 180 }} placeholder="Search part name or number…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+              <input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.target.checked)} /> Hide parts showing 0
+            </label>
+          </div>
+          <div style={{ overflow: "auto", maxHeight: "50vh" }}>
+            <table className="wb-table">
+              <thead><tr><th>Part</th><th>System</th><th>Booked</th><th>Counted</th><th>Change</th></tr></thead>
+              <tbody>
+                {visible.map((r) => {
+                  const raw = counts[r.id];
+                  const n = raw === undefined || raw === "" ? null : parseFloat(raw);
+                  const diff = n === null || !Number.isFinite(n) ? null : +(n - r.stock).toFixed(2);
+                  return (
+                    <tr key={r.id}>
+                      <td>{r.name}{r.partNumber ? <span style={{ color: "var(--muted)", fontSize: 11 }}> · {r.partNumber}</span> : null}</td>
+                      <td className="wh-mono">{r.stock}</td>
+                      <td className="wh-mono">{r.committed || ""}</td>
+                      <td><input type="number" min="0" step="any" className="wb-input" style={{ width: 80 }} value={raw ?? ""} onChange={(e) => setCounts((prev) => ({ ...prev, [r.id]: e.target.value }))} /></td>
+                      <td className="wh-mono" style={{ color: diff === null || diff === 0 ? "var(--muted)" : diff < 0 ? "var(--red)" : "var(--green)" }}>
+                        {diff === null ? "" : diff === 0 ? "✓" : diff > 0 ? `+${diff}` : diff}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {visible.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 16 }}>No parts match.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>
+              {changes.length === 0 ? "No differences entered yet." : `${changes.length} part${changes.length !== 1 ? "s" : ""} will be corrected.`}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
+              <button className="wb-btn" disabled={changes.length === 0} onClick={apply}>Apply {changes.length > 0 ? `${changes.length} correction${changes.length !== 1 ? "s" : ""}` : "corrections"}</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
