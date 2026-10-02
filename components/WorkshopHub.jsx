@@ -262,12 +262,6 @@ We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
 Between now and then, if anything changes or comes up, please just let us know.
 
-One request: with banks' ever-increasing fraud prevention, new payees set up on the day are currently taking an average of 30-40 minutes for the funds to go through. Could you please set us up as a payee before the day? You don't need to pay us now, just set it up, so that on the day the payment goes straight through and saves you time at the workshop. Our bank details are:
-
-Account name: Christopher Wilson T/A Warrington 4x4 (business account)
-Sort code: ${BANK_DETAILS.sortCode}
-Account number: ${BANK_DETAILS.accountNumber}
-
 ${closing}
 
 Many thanks,
@@ -293,7 +287,13 @@ Please could you let me know a price and whether you're able to do this?`;
 }
 
 function workshopCompletedMessage(b) {
-  return `Great news ${firstName(b.customerName)}, your vehicle has been completed! It's ready for collection whenever's convenient for you — just let us know if you have any questions.`;
+  return `Great news ${firstName(b.customerName)}, your vehicle has been completed! It's ready for collection whenever's convenient for you — please contact the office to arrange a time, or if you have any questions.
+
+One request: with banks' ever-increasing fraud prevention, new payees set up on the day are currently taking an average of 30-40 minutes for the funds to go through. Could you please set us up as a payee before you collect? You don't need to pay us now, just set it up, so that when you arrive the payment goes straight through and saves you time at the workshop. Our bank details are:
+
+Account name: Christopher Wilson T/A Warrington 4x4 (business account)
+Sort code: ${BANK_DETAILS.sortCode}
+Account number: ${BANK_DETAILS.accountNumber}`;
 }
 
 // Sent the moment COMP is ticked — thanks the customer, flags that a brief
