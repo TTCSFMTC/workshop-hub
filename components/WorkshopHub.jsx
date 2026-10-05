@@ -264,6 +264,10 @@ We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
 Between now and then, if anything changes or comes up, please just let us know.
 
+Our address is:
+Warrington 4x4 / The Timing Chain Specialists,
+Unit 27 Tatton Court, Woolston, Warrington WA1 4RR.
+
 ${closing}
 
 Many thanks,
