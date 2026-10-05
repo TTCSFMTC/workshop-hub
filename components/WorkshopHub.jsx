@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
-  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp,
+  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp, BarChart3,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX,
 } from "lucide-react";
@@ -1701,7 +1701,7 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1780,6 +1780,11 @@ function OfficeMode({
         {tab === "forecast" && (
           <ProfitabilityGate>
             <ForecastTab bookings={bookings} jobTypes={jobTypes} settings={settings} onOpenBooking={openBookingOnCalendar} />
+          </ProfitabilityGate>
+        )}
+        {tab === "monthly" && (
+          <ProfitabilityGate>
+            <MonthlyTotalsTab bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} staffWages={staffWages} bonusRates={bonusRates} fixedCosts={fixedCosts} plSnapshots={plSnapshots} />
           </ProfitabilityGate>
         )}
         {tab === "profitability" && (
@@ -4255,13 +4260,57 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
+// Completed, priced bookings grouped by the month they finished, with each
+// month's totals — shared by the Profitability tab and the Monthly Totals tab.
+function computeProfitMonths(bookings, jobTypes, parts, settings) {
+    const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
+    const completed = priced.filter((b) => b.completed);
+    const unpricedCount = bookings.length - priced.length;
+    const notYetCompleteCount = priced.length - completed.length;
+    const byMonth = {};
+    completed.forEach((b) => {
+      // Revenue lands in the month the job was actually finished/collected —
+      // the same month the bonus and the P&L "invoiced" headline use — not
+      // the month it was dropped off, so a car in on 29 Sep and collected on
+      // 2 Oct is October revenue.
+      const key = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : b.date.slice(0, 7);
+      byMonth[key] = byMonth[key] || [];
+      byMonth[key].push({ booking: b, ...bookingProfit(b, jobTypes, parts, settings) });
+    });
+    const monthList = Object.keys(byMonth).sort().reverse().map((key) => {
+      const rows = byMonth[key].sort((a, b) => (a.booking.date < b.booking.date ? 1 : -1));
+      const totals = rows.reduce((acc, r) => ({
+        jobValue: acc.jobValue + r.jobValue, partsCost: acc.partsCost + r.partsCost,
+        labourCost: acc.labourCost + r.labourCost, transportCost: acc.transportCost + r.transportCost,
+        extraCostsTotal: acc.extraCostsTotal + r.extraCostsTotal,
+        vat: acc.vat + r.vat, profit: acc.profit + r.profit,
+      }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, vat: 0, profit: 0 });
+      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+      // Same main+extra job type counting as the all-time breakdown below,
+      // just scoped to this one month — this is the number that actually
+      // matches a staff bonus period, not the all-time total.
+      const jobTypeCounts = {};
+      rows.forEach((r) => {
+        const ids = [r.booking.jobTypeId, ...(r.booking.extraJobTypeIds || [])].filter(Boolean);
+        ids.forEach((id) => {
+          const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
+          jobTypeCounts[name] = (jobTypeCounts[name] || 0) + 1;
+        });
+      });
+      const jobTypeBreakdown = Object.entries(jobTypeCounts).sort((a, b) => b[1] - a[1]);
+      return { key, label, rows, totals, jobTypeBreakdown };
+    });
+    return { monthList, unpricedCount, notYetCompleteCount };
+}
+
 // Month-by-month comparison: what was booked in, what actually got invoiced,
 // and what was made (net profit, the same figure as each month's P&L). Booked
 // in = every job dropped off that month; invoiced = jobs finished that month
 // with a Zoho invoice raised (same finish-date rule as the P&L headline);
 // net profit = the P&L's own net figure, or its frozen snapshot if that month
 // has been frozen.
-function MonthlySnapshot({ months, bookings, staffWages, bonusRates, fixedCosts, plSnapshots }) {
+function MonthlyTotalsTab({ bookings, jobTypes, parts, settings, staffWages, bonusRates, fixedCosts, plSnapshots }) {
+  const months = useMemo(() => computeProfitMonths(bookings, jobTypes, parts, settings), [bookings, jobTypes, parts, settings]);
   const rows = useMemo(() => {
     const currentKey = todayISO().slice(0, 7);
     const finishMonth = (b) => (b.completed && b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : addDaysISO(b.date, (b.days || 1) - 1).slice(0, 7));
@@ -4325,46 +4374,7 @@ function MonthlySnapshot({ months, bookings, staffWages, bonusRates, fixedCosts,
 }
 
 function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
-  const months = useMemo(() => {
-    const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
-    const completed = priced.filter((b) => b.completed);
-    const unpricedCount = bookings.length - priced.length;
-    const notYetCompleteCount = priced.length - completed.length;
-    const byMonth = {};
-    completed.forEach((b) => {
-      // Revenue lands in the month the job was actually finished/collected —
-      // the same month the bonus and the P&L "invoiced" headline use — not
-      // the month it was dropped off, so a car in on 29 Sep and collected on
-      // 2 Oct is October revenue.
-      const key = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : b.date.slice(0, 7);
-      byMonth[key] = byMonth[key] || [];
-      byMonth[key].push({ booking: b, ...bookingProfit(b, jobTypes, parts, settings) });
-    });
-    const monthList = Object.keys(byMonth).sort().reverse().map((key) => {
-      const rows = byMonth[key].sort((a, b) => (a.booking.date < b.booking.date ? 1 : -1));
-      const totals = rows.reduce((acc, r) => ({
-        jobValue: acc.jobValue + r.jobValue, partsCost: acc.partsCost + r.partsCost,
-        labourCost: acc.labourCost + r.labourCost, transportCost: acc.transportCost + r.transportCost,
-        extraCostsTotal: acc.extraCostsTotal + r.extraCostsTotal,
-        vat: acc.vat + r.vat, profit: acc.profit + r.profit,
-      }), { jobValue: 0, partsCost: 0, labourCost: 0, transportCost: 0, extraCostsTotal: 0, vat: 0, profit: 0 });
-      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-      // Same main+extra job type counting as the all-time breakdown below,
-      // just scoped to this one month — this is the number that actually
-      // matches a staff bonus period, not the all-time total.
-      const jobTypeCounts = {};
-      rows.forEach((r) => {
-        const ids = [r.booking.jobTypeId, ...(r.booking.extraJobTypeIds || [])].filter(Boolean);
-        ids.forEach((id) => {
-          const name = jobTypes.find((j) => j.id === id)?.name || "Unknown job type";
-          jobTypeCounts[name] = (jobTypeCounts[name] || 0) + 1;
-        });
-      });
-      const jobTypeBreakdown = Object.entries(jobTypeCounts).sort((a, b) => b[1] - a[1]);
-      return { key, label, rows, totals, jobTypeBreakdown };
-    });
-    return { monthList, unpricedCount, notYetCompleteCount };
-  }, [bookings, jobTypes, parts, settings]);
+  const months = useMemo(() => computeProfitMonths(bookings, jobTypes, parts, settings), [bookings, jobTypes, parts, settings]);
 
   // Which month's full breakdown is showing — one at a time behind a row of
   // month buttons, rather than every month's table stacked and expanded at
@@ -4476,8 +4486,6 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
           </div>
         )}
       </div>
-
-      <MonthlySnapshot months={months} bookings={bookings} staffWages={staffWages} bonusRates={bonusRates} fixedCosts={fixedCosts} plSnapshots={plSnapshots} />
 
       <StaffWagesSection
         months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
