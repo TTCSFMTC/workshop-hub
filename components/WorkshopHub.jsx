@@ -11,7 +11,7 @@ import {
 import { QuotesTab } from "./QuotesTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
-  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
+  insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
@@ -1127,6 +1127,11 @@ export default function WorkshopHub() {
     await updateJobTypeStandardPrice(jtId, price);
   });
 
+  const updateJobTypeInvoiceDescriptionFn = (jtId, text) => withSaveState(async () => {
+    setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, invoiceDescription: text } : j)));
+    await updateJobTypeInvoiceDescription(jtId, text);
+  });
+
   const updateJobTypePublicBookableFn = (jtId, publicBookable) => withSaveState(async () => {
     setJobTypes((prev) => prev.map((j) => (j.id === jtId ? { ...j, publicBookable } : j)));
     await updateJobTypePublicBookable(jtId, publicBookable);
@@ -1469,6 +1474,7 @@ export default function WorkshopHub() {
           brands={brands} addBrand={addBrandFn} removeBrand={removeBrandFn} renameBrand={renameBrandFn} updateJobTypeBrand={updateJobTypeBrandFn} removeJobType={removeJobTypeFn}
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
           updateJobTypePublicBookable={updateJobTypePublicBookableFn}
+          updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescriptionFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
@@ -1513,7 +1519,7 @@ function OfficeMode({
   auditLog, addAuditLog,
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
-  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable,
+  brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
   holidays, addHoliday, removeHoliday,
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
@@ -1760,7 +1766,7 @@ function OfficeMode({
           <JobTypesTab jobTypes={jobTypes} parts={parts} bookings={bookings} addPart={addPart} addJobType={addJobType} renameJobType={renameJobType}
             updateJobTypeColor={updateJobTypeColor} addBomLine={addBomLine} updateBomQty={updateBomQty} removeBomLine={removeBomLine}
             brands={brands} updateJobTypeBrand={updateJobTypeBrand} removeJobType={removeJobType}
-            updateJobTypeStandardPrice={updateJobTypeStandardPrice} updateJobTypePublicBookable={updateJobTypePublicBookable} />
+            updateJobTypeStandardPrice={updateJobTypeStandardPrice} updateJobTypePublicBookable={updateJobTypePublicBookable} updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescription} />
         )}
         {tab === "holidays" && (
           <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
@@ -3405,13 +3411,16 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
             const extra = i === booking.jobTypePrices.length - 1 && (booking.extraParts || []).length > 0
               ? booking.extraParts.map((l) => parts.find((p2) => p2.id === l.partId)?.name || l.partId).join(", ")
               : "";
+            const workText = jobTypes.find((j) => j.id === p.jobTypeId)?.invoiceDescription;
             return {
               name: jobTypes.find((j) => j.id === p.jobTypeId)?.name || p.jobTypeId,
               amount: p.price,
-              description: [describeJobTypeBom(p.jobTypeId), extra].filter(Boolean).join(", "),
+              description: workText
+                ? [workText, extra && `Additional parts: ${extra}`].filter(Boolean).join("\n\n")
+                : [describeJobTypeBom(p.jobTypeId), extra].filter(Boolean).join(", "),
             };
           })
-        : [{ name: jt?.name || "Workshop job", amount: Math.max(0, booking.jobValue - customPartsRetail(booking)), description: fullBookingBom(booking, jobTypes).map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId).join(", ") }];
+        : [{ name: jt?.name || "Workshop job", amount: Math.max(0, booking.jobValue - customPartsRetail(booking)), description: jt?.invoiceDescription || fullBookingBom(booking, jobTypes).map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId).join(", ") }];
       const lineItems = [...jobLines, ...customLines];
       const res = await fetch("/api/office/zoho-invoice", {
         method: "POST",
@@ -5856,7 +5865,7 @@ function PriceHistoryModal({ part, history, recordPrice, onClose }) {
   );
 }
 
-function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice }) {
+function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJobType, updateJobTypeColor, addBomLine, updateBomQty, removeBomLine, brands, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypeInvoiceDescription }) {
   const [showNewJobType, setShowNewJobType] = useState(false);
   const addJobTypeClick = () => setShowNewJobType(true);
   const renameJobTypeClick = (jtId) => { const jt = jobTypes.find((j) => j.id === jtId); const name = prompt("Rename job type:", jt.name); if (!name) return; renameJobType(jtId, name); };
@@ -5948,6 +5957,16 @@ function JobTypesTab({ jobTypes, parts, bookings, addPart, addJobType, renameJob
           </div>
           {open && (
             <>
+              <div style={{ margin: "10px 0" }}>
+                <label className="wb-label">Invoice description (work carried out)</label>
+                <textarea
+                  key={`${jt.id}-${jt.invoiceDescription || ""}`}
+                  className="wb-input" rows={4} style={{ width: "100%", resize: "vertical" }}
+                  placeholder="Optional — appears under this job's line on the Zoho invoice instead of the parts list"
+                  defaultValue={jt.invoiceDescription || ""}
+                  onBlur={(e) => { const v = e.target.value.trim(); if (v !== (jt.invoiceDescription || "")) updateJobTypeInvoiceDescription(jt.id, v); }}
+                />
+              </div>
               <table className="wb-table">
                 <thead><tr><th>Part</th><th style={{ width: 120 }}>Qty per job</th><th style={{ width: 40 }}></th></tr></thead>
                 <tbody>
