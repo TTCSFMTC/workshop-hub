@@ -2881,6 +2881,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
 // see for itself.
 function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking, focusDate, clearFocusDate }) {
   const jtName = (id) => jobTypes.find((j) => j.id === id)?.name || "—";
+  // What a waiting customer is bringing in — the car, the job and how long it
+  // needs — so office can tell at a glance whether a freed slot suits them.
+  const carOf = (b) => [b.vehicleModel, b.reg].filter(Boolean).join(" · ") || "car not recorded";
+  const daysOf = (b) => `${b.days || 1} day${(b.days || 1) !== 1 ? "s" : ""}`;
   const [offerPicks, setOfferPicks] = useState({}); // { [cancellationId]: waitingBookingId } — chosen but not yet sent
 
   const openCancellations = useMemo(
@@ -2891,7 +2895,17 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
     () => allBookings.filter((b) => b.notifyIfEarlierSlot && !b.customerCancelled && !b.completed).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),
     [allBookings]
   );
-  const waitingById = useMemo(() => Object.fromEntries(waitingList.map((w) => [w.id, w])), [waitingList]);
+  // Anyone offered a freed slot — a waiting-list customer or one of the next
+  // Ingenium jobs below — is looked up from the full booking list.
+  const bookingById = useMemo(() => Object.fromEntries(allBookings.map((b) => [b.id, b])), [allBookings]);
+  // Ingenium jobs are the easiest to slot into a freed day, so the next few
+  // still-to-start ones after the freed date are always suggested first,
+  // whether or not they ticked "notify me of an earlier slot".
+  const isIngenium = (b) => /ingenium/i.test(jtName(b.jobTypeId));
+  const nextIngeniumFor = (c) => allBookings
+    .filter((b) => b.id !== c.id && b.business === c.business && !b.customerCancelled && !b.completed && !b.workshopCompleted && !b.arrived && !b.provisional && b.date > c.date && isIngenium(b))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .slice(0, 5);
 
   const rowRefs = useRef({});
   useEffect(() => {
@@ -2923,15 +2937,16 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
           <CalendarX size={16} color="var(--amber)" /> Open cancellations
         </div>
         <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
-          Dates freed up by a customer cancelling — soonest first. Offer one to someone on the waiting list below, and only tick it filled once they've actually confirmed.
+          Dates freed up by a customer cancelling — soonest first. Offer one to the next Ingenium job or someone on the waiting list below, and only tick it filled once they've actually confirmed.
         </div>
         {openCancellations.length === 0 ? (
           <div style={{ fontSize: 13, color: "var(--muted)", padding: "10px 0" }}>No open cancellations right now.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {openCancellations.map((c) => {
-              const offered = c.cancellationOfferedTo ? waitingById[c.cancellationOfferedTo] : null;
-              const eligibleWaiting = waitingList.filter((w) => w.business === c.business);
+              const offered = c.cancellationOfferedTo ? bookingById[c.cancellationOfferedTo] : null;
+              const nextIngenium = nextIngeniumFor(c);
+              const eligibleWaiting = waitingList.filter((w) => w.business === c.business && !nextIngenium.some((n) => n.id === w.id));
               const pickedId = offerPicks[c.id] || "";
               return (
                 <div
@@ -2944,25 +2959,32 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
                   <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{fmtDate(c.date)} <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 12 }}>· {c.business}</span></div>
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                      Was {c.customerName || "Unnamed"}{c.reg ? ` (${c.reg})` : ""} — {jtName(c.jobTypeId)} — cancelled {c.customerCancelledAt ? fmtDate(new Date(c.customerCancelledAt).toISOString().slice(0, 10)) : ""}
+                      Was {c.customerName || "Unnamed"} — {carOf(c)} — {jtName(c.jobTypeId)} ({daysOf(c)}) — cancelled {c.customerCancelledAt ? fmtDate(new Date(c.customerCancelledAt).toISOString().slice(0, 10)) : ""}
                     </div>
                   </div>
                   {offered ? (
                     <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
-                      <span>Offered to <strong>{offered.customerName || "Unnamed"}</strong> (currently {fmtDate(offered.date)}) — awaiting their reply.</span>
+                      <span>Offered to <strong>{offered.customerName || "Unnamed"}</strong> ({carOf(offered)} — {jtName(offered.jobTypeId)}, currently {fmtDate(offered.date)}) — awaiting their reply.</span>
                       <button className="wb-btn" style={{ padding: "6px 10px", minHeight: 30 }} onClick={() => confirmMove(c, offered)}><Check size={13} /> They said yes — move them</button>
                       <button className="wb-btn-ghost" style={{ padding: "6px 10px", minHeight: 30 }} onClick={() => tryOther(c)}>Try someone else</button>
                     </div>
                   ) : (
                     <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       <select className="wb-select" style={{ maxWidth: 280 }} value={pickedId} onChange={(e) => setOfferPicks((prev) => ({ ...prev, [c.id]: e.target.value }))}>
-                        <option value="">Select from waiting list…</option>
-                        {eligibleWaiting.length === 0 && <option value="" disabled>No one waiting for {c.business}</option>}
-                        {eligibleWaiting.map((w) => <option key={w.id} value={w.id}>{w.customerName || "Unnamed"} — currently {fmtDate(w.date)}</option>)}
+                        <option value="">Select who to offer it to…</option>
+                        {nextIngenium.length > 0 && (
+                          <optgroup label="Next Ingenium jobs (easy to fit in)">
+                            {nextIngenium.map((w) => <option key={w.id} value={w.id}>{w.customerName || "Unnamed"} — {carOf(w)} — {jtName(w.jobTypeId)} ({daysOf(w)}) — currently {fmtDate(w.date)}{w.notifyIfEarlierSlot ? " ★ waiting" : ""}</option>)}
+                          </optgroup>
+                        )}
+                        <optgroup label="Waiting list">
+                          {eligibleWaiting.length === 0 && <option value="" disabled>No one else waiting for {c.business}</option>}
+                          {eligibleWaiting.map((w) => <option key={w.id} value={w.id}>{w.customerName || "Unnamed"} — {carOf(w)} — {jtName(w.jobTypeId)} ({daysOf(w)}) — currently {fmtDate(w.date)}</option>)}
+                        </optgroup>
                       </select>
                       <button
                         className="wb-btn-ghost" disabled={!pickedId} style={!pickedId ? { opacity: 0.5, cursor: "not-allowed" } : {}}
-                        onClick={() => { const w = waitingById[pickedId]; if (w) sendOffer(c, w); }}
+                        onClick={() => { const w = bookingById[pickedId]; if (w) sendOffer(c, w); }}
                       ><MessageCircle size={13} /> WhatsApp offer</button>
                     </div>
                   )}
@@ -2987,7 +3009,7 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
             {waitingList.map((w) => (
               <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 13, padding: "8px 10px", borderRadius: 6, background: "var(--panel2)" }}>
                 <div>
-                  <strong>{w.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>{w.reg} · currently {fmtDate(w.date)} · {w.business}</span>
+                  <strong>{w.customerName || "Unnamed"}</strong> <span style={{ color: "var(--muted)" }}>{carOf(w)} · {jtName(w.jobTypeId)} ({daysOf(w)}) · currently {fmtDate(w.date)} · {w.business}</span>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button className="wb-btn-ghost" style={{ padding: "5px 9px", minHeight: 28, fontSize: 12 }} onClick={() => onOpenBooking(w)}>Open on Calendar</button>
