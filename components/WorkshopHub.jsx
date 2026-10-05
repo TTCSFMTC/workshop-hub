@@ -669,10 +669,14 @@ export default function WorkshopHub() {
     }
   }, []);
 
+  // Customer-cancelled bookings are kept in the list (for the Cancellations
+  // tab) but never use parts, so every stock calculation below ignores them.
+  const activeBookings = useMemo(() => bookings.filter((b) => !b.customerCancelled), [bookings]);
+
   const partUsageWeekly = useMemo(() => {
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 28);
     const usage = {}; parts.forEach((p) => (usage[p.id] = 0));
-    bookings.forEach((b) => {
+    activeBookings.forEach((b) => {
       const bd = new Date(b.date + "T00:00:00");
       if (bd < cutoff) return;
       const jt = jobTypes.find((j) => j.id === b.jobTypeId);
@@ -681,7 +685,23 @@ export default function WorkshopHub() {
     });
     const weekly = {}; Object.keys(usage).forEach((k) => (weekly[k] = usage[k] / 4));
     return weekly;
-  }, [bookings, jobTypes, parts]);
+  }, [activeBookings, jobTypes, parts]);
+
+  // How many finished jobs used each part over the last 90 days (and how many
+  // units) — drives the "most used" ranking on the stocktake sheet.
+  const partUsageRecent = useMemo(() => {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
+    const usage = {};
+    activeBookings.forEach((b) => {
+      if (!(b.workshopCompleted || b.completed)) return;
+      if (new Date(b.date + "T00:00:00") < cutoff) return;
+      fullBookingBom(b, jobTypes).forEach((l) => {
+        const u = (usage[l.partId] = usage[l.partId] || { jobs: 0, units: 0 });
+        u.jobs += 1; u.units += l.qty;
+      });
+    });
+    return usage;
+  }, [activeBookings, jobTypes]);
 
   // What's already spoken for by jobs that are booked in but not yet
   // workshop completed — stock isn't actually deducted until completion
@@ -692,7 +712,7 @@ export default function WorkshopHub() {
   // usage-rate reorder alert above.
   const partCommittedToUpcoming = useMemo(() => {
     const committed = {};
-    bookings.forEach((b) => {
+    activeBookings.forEach((b) => {
       // A collected booking is done regardless of whether workshopCompleted
       // ever got ticked on the way there — some older/imported bookings went
       // straight to completed without it, and counting those as still-
@@ -701,7 +721,7 @@ export default function WorkshopHub() {
       fullBookingBom(b, jobTypes).forEach((l) => { committed[l.partId] = (committed[l.partId] || 0) + l.qty; });
     });
     return committed;
-  }, [bookings, jobTypes]);
+  }, [activeBookings, jobTypes]);
 
   // Stock already ordered from a supplier but not yet delivered — still
   // counts toward covering upcoming bookings even though it's not
@@ -717,8 +737,9 @@ export default function WorkshopHub() {
     const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
     const committed = partCommittedToUpcoming[p.id] || 0;
     const onOrder = partOnOrder[p.id] || 0;
-    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, onOrder, availableAfterUpcoming: p.stock + onOrder - committed };
-  }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder]);
+    const recent = partUsageRecent[p.id] || { jobs: 0, units: 0 };
+    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, onOrder, availableAfterUpcoming: p.stock + onOrder - committed, jobsUsed: recent.jobs, unitsUsed: recent.units };
+  }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder, partUsageRecent]);
   const lowStockItems = stockRows.filter((r) => r.needsOrder);
 
   // Walks every not-yet-completed booking in date order, running down each
@@ -744,7 +765,7 @@ export default function WorkshopHub() {
     });
     Object.values(pendingByPart).forEach((list) => list.sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1)));
 
-    const upcoming = bookings
+    const upcoming = activeBookings
       .filter((b) => !b.workshopCompleted && !b.completed && b.date)
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
     const shortfalls = {};
@@ -768,7 +789,7 @@ export default function WorkshopHub() {
       });
     });
     return Object.values(shortfalls).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  }, [bookings, jobTypes, parts, stockBatches]);
+  }, [activeBookings, jobTypes, parts, stockBatches]);
 
   // Shown once per calendar day (not per session, unlike the reorder alert
   // above) — a fresh check each morning of what the diary now needs, without
@@ -5760,6 +5781,7 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
   const [counts, setCounts] = useState({});
   const [filter, setFilter] = useState("");
   const [hideZero, setHideZero] = useState(false);
+  const [topOnly, setTopOnly] = useState(true);
   const [printing, setPrinting] = useState(false);
 
   // Same print pattern as the other sheets: render the printout, open the
@@ -5775,8 +5797,14 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
   // Labour Hours is a constant-rate item rather than physical stock, so it
   // never belongs on a shelf count.
   const countable = useMemo(() => stockRows.filter((r) => !/^labour hours$/i.test(r.name.trim())).sort((a, b) => a.name.localeCompare(b.name)), [stockRows]);
+  // The 25 parts used on the most finished jobs over the last 90 days (units
+  // used breaks ties) — the ones worth checking on the shelves every time.
+  const topIds = useMemo(
+    () => new Set(countable.filter((r) => r.jobsUsed > 0).sort((a, b) => b.jobsUsed - a.jobsUsed || b.unitsUsed - a.unitsUsed).slice(0, 25).map((r) => r.id)),
+    [countable]
+  );
   const q = filter.trim().toLowerCase();
-  const visible = countable.filter((r) => (!q || r.name.toLowerCase().includes(q) || (r.partNumber || "").toLowerCase().includes(q)) && (!hideZero || r.stock !== 0 || r.committed > 0));
+  const visible = countable.filter((r) => (!topOnly || topIds.has(r.id)) && (!q || r.name.toLowerCase().includes(q) || (r.partNumber || "").toLowerCase().includes(q)) && (!hideZero || r.stock !== 0 || r.committed > 0));
 
   const changes = countable
     .filter((r) => counts[r.id] !== undefined && counts[r.id] !== "" && Number.isFinite(parseFloat(counts[r.id])) && parseFloat(counts[r.id]) >= 0)
@@ -5810,6 +5838,9 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <input className="wb-input" style={{ flex: 1, minWidth: 180 }} placeholder="Search part name or number…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }} title="Parts used on the most finished jobs in the last 90 days">
+              <input type="checkbox" checked={topOnly} onChange={(e) => setTopOnly(e.target.checked)} /> Top 25 most used only
+            </label>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
               <input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.target.checked)} /> Hide parts showing 0
             </label>
