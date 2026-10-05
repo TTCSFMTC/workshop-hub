@@ -3752,9 +3752,16 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
   const forecast = useMemo(() => {
     const currentKey = todayISO().slice(0, 7);
     const byMonth = {};
+    // Grouped by the month each job finishes in (real completion date once
+    // collected, otherwise drop-off + days - 1) — same rule as the P&L
+    // forecast — so a car dropped off at the end of one month and finished
+    // in the next counts towards the month it's actually billed in.
     bookings.forEach((b) => {
       if (!b.date) return;
-      const key = b.date.slice(0, 7);
+      const finishDate = b.completed && b.completedAt
+        ? new Date(b.completedAt).toISOString().slice(0, 10)
+        : addDaysISO(b.date, (b.days || 1) - 1);
+      const key = finishDate.slice(0, 7);
       if (key < currentKey) return;
       (byMonth[key] = byMonth[key] || []).push(b);
     });
@@ -4250,7 +4257,11 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
     const notYetCompleteCount = priced.length - completed.length;
     const byMonth = {};
     completed.forEach((b) => {
-      const key = b.date.slice(0, 7);
+      // Revenue lands in the month the job was actually finished/collected —
+      // the same month the bonus and the P&L "invoiced" headline use — not
+      // the month it was dropped off, so a car in on 29 Sep and collected on
+      // 2 Oct is October revenue.
+      const key = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : b.date.slice(0, 7);
       byMonth[key] = byMonth[key] || [];
       byMonth[key].push({ booking: b, ...bookingProfit(b, jobTypes, parts, settings) });
     });
