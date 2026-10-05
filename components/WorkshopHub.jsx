@@ -98,7 +98,8 @@ const weekdayCount = (dateFrom, dateTo) => {
 };
 // Per-staff holiday colour, keyed by first name (case-insensitive) so the
 // calendar star and Holidays tab agree on who's who at a glance.
-const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)" };
+const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2" };
+const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam"];
 const holidayColor = (name) => STAFF_HOLIDAY_COLORS[(name || "").trim().toLowerCase()] || "var(--amber)";
 
 // ============================================================
@@ -6041,7 +6042,7 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
           <Sun size={16} color="var(--amber)" /> Holidays
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
-          <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /></div>
+          <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} list="staff-holiday-names" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /><datalist id="staff-holiday-names">{STAFF_HOLIDAY_NAMES.map((n) => <option key={n} value={n} />)}</datalist></div>
           <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
           <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
