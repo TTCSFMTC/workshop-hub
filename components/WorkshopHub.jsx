@@ -4255,6 +4255,75 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   );
 }
 
+// Month-by-month comparison: what was booked in, what actually got invoiced,
+// and what was made (net profit, the same figure as each month's P&L). Booked
+// in = every job dropped off that month; invoiced = jobs finished that month
+// with a Zoho invoice raised (same finish-date rule as the P&L headline);
+// net profit = the P&L's own net figure, or its frozen snapshot if that month
+// has been frozen.
+function MonthlySnapshot({ months, bookings, staffWages, bonusRates, fixedCosts, plSnapshots }) {
+  const rows = useMemo(() => {
+    const currentKey = todayISO().slice(0, 7);
+    const finishMonth = (b) => (b.completed && b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : addDaysISO(b.date, (b.days || 1) - 1).slice(0, 7));
+    const booked = {}, invoiced = {};
+    bookings.forEach((b) => {
+      if (!b.date || !(b.jobValue > 0)) return;
+      const bk = b.date.slice(0, 7);
+      booked[bk] = (booked[bk] || 0) + b.jobValue;
+      if (b.zohoInvoiceId) { const fk = finishMonth(b); invoiced[fk] = (invoiced[fk] || 0) + b.jobValue; }
+    });
+    const keys = new Set([...Object.keys(booked), ...Object.keys(invoiced), ...months.monthList.map((m) => m.key)]);
+    const fixedCostsTotal = fixedCosts.reduce((sum, f) => sum + (f.amount || 0), 0);
+    return [...keys].filter((k) => k <= currentKey).sort().reverse().slice(0, 12).map((key) => {
+      const totals = months.monthList.find((m) => m.key === key)?.totals || { jobValue: 0, vat: 0, partsCost: 0, transportCost: 0, extraCostsTotal: 0 };
+      const frozen = plSnapshots.find((x) => x.month === key);
+      const wages = computeStaffWagesForMonth(key, staffWages, bonusRates, bookings);
+      const net = frozen ? frozen.snapshot.netProfit
+        : totals.jobValue - totals.vat - totals.partsCost - totals.transportCost - totals.extraCostsTotal - wages.totalOutlay - fixedCostsTotal;
+      const label = new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+      return { key, label, isCurrent: key === currentKey, booked: booked[key] || 0, invoiced: invoiced[key] || 0, net, frozen: !!frozen, noWages: wages.monthRows.length === 0 && !frozen };
+    });
+  }, [months, bookings, staffWages, bonusRates, fixedCosts, plSnapshots]);
+
+  if (rows.length === 0) return null;
+  const money = (n) => `£${Math.round(n).toLocaleString("en-GB")}`;
+  return (
+    <div className="wb-panel">
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+        <TrendingUp size={16} color="var(--amber)" /> Month by month — booked, invoiced, made
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+        Booked in = jobs dropped off that month. Invoiced = jobs finished that month with a Zoho invoice raised. Net profit = the month's P&amp;L figure after VAT, parts, wages and fixed costs.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="wb-table">
+          <thead><tr><th>Month</th><th>Booked in</th><th>Invoiced</th><th>Invoiced vs booked</th><th>Net profit</th></tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const pct = r.booked > 0 ? Math.round((r.invoiced / r.booked) * 100) : null;
+              return (
+                <tr key={r.key}>
+                  <td style={{ fontWeight: 600 }}>{r.label}{r.isCurrent ? " (so far)" : ""}{r.frozen ? " ❄" : ""}</td>
+                  <td className="wh-mono">{money(r.booked)}</td>
+                  <td className="wh-mono">{money(r.invoiced)}</td>
+                  <td className="wh-mono" style={{ color: "var(--muted)" }}>{pct === null ? "—" : `${pct}% (${r.invoiced - r.booked >= 0 ? "+" : "−"}${money(Math.abs(r.invoiced - r.booked))})`}</td>
+                  <td className="wh-mono" style={{ fontWeight: 700, color: r.net >= 0 ? "var(--green)" : "var(--red)" }}>
+                    {r.net < 0 ? "−" : ""}{money(Math.abs(r.net))}
+                    {r.noWages && <span title="No staff wages entered for this month, so net profit is overstated" style={{ marginLeft: 6, color: "var(--amber2)" }}>⚠</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+        ❄ = month frozen on the P&amp;L (saved figures). ⚠ = no staff wages entered for that month, so net profit looks better than it really is. The current month is still moving.
+      </div>
+    </div>
+  );
+}
+
 function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
   const months = useMemo(() => {
     const priced = bookings.filter((b) => (b.jobValue || 0) > 0);
@@ -4383,9 +4452,6 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
       <div className="wb-panel">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}><PoundSterling size={16} color="var(--amber)" /> Profitability</div>
-          <div className="wh-mono" style={{ fontSize: 13, color: grandTotal.profit >= 0 ? "var(--green)" : "var(--red)" }}>
-            £{grandTotal.profit.toFixed(2)} total profit across £{grandTotal.jobValue.toFixed(2)} quoted
-          </div>
           <button className="wb-btn-ghost" onClick={exportExcel} disabled={months.monthList.length === 0}><FileText size={13} /> Export to Excel</button>
         </div>
         {(months.unpricedCount > 0 || months.notYetCompleteCount > 0) && (
@@ -4410,6 +4476,8 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
           </div>
         )}
       </div>
+
+      <MonthlySnapshot months={months} bookings={bookings} staffWages={staffWages} bonusRates={bonusRates} fixedCosts={fixedCosts} plSnapshots={plSnapshots} />
 
       <StaffWagesSection
         months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
