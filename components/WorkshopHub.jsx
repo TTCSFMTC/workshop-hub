@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
@@ -1435,18 +1436,23 @@ export default function WorkshopHub() {
         .print-still-to-finish { display: none; }
         .print-outstanding-parts { display: none; }
         .print-wages-statement { display: none; }
+        .print-stocktake { display: none; }
         @media print {
           body * { visibility: hidden; }
           .print-job-card, .print-job-card *,
           .print-job-cards, .print-job-cards *,
           .print-still-to-finish, .print-still-to-finish *,
           .print-outstanding-parts, .print-outstanding-parts *,
-          .print-wages-statement, .print-wages-statement * { visibility: visible; }
+          .print-wages-statement, .print-wages-statement *,
+          .print-stocktake, .print-stocktake * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-still-to-finish { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-outstanding-parts { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-wages-statement { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-stocktake { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-stocktake thead { display: table-header-group; }
+          .print-stocktake tr { break-inside: avoid; page-break-inside: avoid; }
           .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
@@ -5628,6 +5634,40 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   );
 }
 
+// Paper stocktake sheet: every part with what the system thinks is on the
+// shelf and a blank Counted box to fill in by hand, then key into Stocktake.
+function StocktakePrintout({ rows }) {
+  return (
+    <div className="print-stocktake">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Stocktake sheet</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>Printed {new Date().toLocaleString("en-GB")} — write the number you actually count in the Counted box</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              {["Part", "Part no.", "Unit", "System", "Booked", "Counted"].map((h) => (
+                <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc" }}>{r.name}</td>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc", color: "#444" }}>{r.partNumber || ""}</td>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc", color: "#444" }}>{r.unit}</td>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc", fontWeight: 700 }}>{r.stock}</td>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc" }}>{r.committed || ""}</td>
+                <td style={{ padding: "7px 8px", borderBottom: "1px solid #ccc", width: 90 }}><div style={{ border: "1px solid #000", height: 20 }} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // Physical stocktake: type what's actually on the shelf against each part and
 // every difference is put through in one go — adds/removes via the same
 // receiveStock the single-part Correct buttons use, one Corrections log entry
@@ -5636,6 +5676,17 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
   const [counts, setCounts] = useState({});
   const [filter, setFilter] = useState("");
   const [hideZero, setHideZero] = useState(false);
+  const [printing, setPrinting] = useState(false);
+
+  // Same print pattern as the other sheets: render the printout, open the
+  // print dialog, and drop it again once printing finishes or is cancelled.
+  useEffect(() => {
+    if (!printing) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrinting(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printing]);
 
   // Labour Hours is a constant-rate item rather than physical stock, so it
   // never belongs on a shelf count.
@@ -5661,6 +5712,7 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
 
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
+      {printing && createPortal(<StocktakePrintout rows={visible} />, document.body)}
       <div className="wb-modal" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
@@ -5707,6 +5759,7 @@ function StocktakeModal({ stockRows, receiveStock, addAuditLog, onClose }) {
               {changes.length === 0 ? "No differences entered yet." : `${changes.length} part${changes.length !== 1 ? "s" : ""} will be corrected.`}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" onClick={() => setPrinting(true)} disabled={visible.length === 0} title="Print this list with a blank Counted column to tick off against the shelves"><Printer size={13} /> Print list</button>
               <button className="wb-btn-ghost" onClick={onClose}>Cancel</button>
               <button className="wb-btn" disabled={changes.length === 0} onClick={apply}>Apply {changes.length > 0 ? `${changes.length} correction${changes.length !== 1 ? "s" : ""}` : "corrections"}</button>
             </div>
