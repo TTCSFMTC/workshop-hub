@@ -732,16 +732,6 @@ export default function WorkshopHub() {
     return onOrder;
   }, [stockBatches]);
 
-  const stockRows = useMemo(() => parts.map((p) => {
-    const weekly = partUsageWeekly[p.id] || 0;
-    const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
-    const committed = partCommittedToUpcoming[p.id] || 0;
-    const onOrder = partOnOrder[p.id] || 0;
-    const recent = partUsageRecent[p.id] || { jobs: 0, units: 0 };
-    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, onOrder, availableAfterUpcoming: p.stock + onOrder - committed, jobsUsed: recent.jobs, unitsUsed: recent.units };
-  }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder, partUsageRecent]);
-  const lowStockItems = stockRows.filter((r) => r.needsOrder);
-
   // Walks every not-yet-completed booking in date order, running down each
   // part's available stock (physical + on order) as demand comes due, to
   // find the first booking whose parts won't be covered by what's in hand —
@@ -774,22 +764,45 @@ export default function WorkshopHub() {
         if (!(l.partId in available)) return;
         const pending = pendingByPart[l.partId];
         while (pending.length > 0 && pending[0].dueDate <= b.date) available[l.partId] += pending.shift().qty;
+        const before = available[l.partId];
         available[l.partId] -= l.qty;
-        if (available[l.partId] < 0 && !shortfalls[l.partId]) {
-          const part = parts.find((p) => p.id === l.partId);
-          shortfalls[l.partId] = {
-            partId: l.partId,
-            partName: part?.name || l.partId,
-            shortBy: -available[l.partId],
-            date: b.date,
-            bookingId: b.id,
-            customerName: b.customerName,
-          };
+        if (available[l.partId] < 0) {
+          // Every booking left uncovered is kept (with its reg), not just
+          // the first — so when ordering, the full list of cars it's for is
+          // to hand.
+          const uncovered = before < 0 ? l.qty : -available[l.partId];
+          if (!shortfalls[l.partId]) {
+            const part = parts.find((p) => p.id === l.partId);
+            shortfalls[l.partId] = {
+              partId: l.partId,
+              partName: part?.name || l.partId,
+              shortBy: 0,
+              date: b.date,
+              bookingId: b.id,
+              customerName: b.customerName,
+              bookings: [],
+            };
+          }
+          shortfalls[l.partId].shortBy = -available[l.partId];
+          shortfalls[l.partId].bookings.push({ bookingId: b.id, reg: b.reg, customerName: b.customerName, date: b.date, qty: uncovered });
         }
       });
     });
     return Object.values(shortfalls).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }, [activeBookings, jobTypes, parts, stockBatches]);
+
+  const shortfallByPart = useMemo(() => Object.fromEntries(partsForecastShortfalls.map((x) => [x.partId, x])), [partsForecastShortfalls]);
+
+  const stockRows = useMemo(() => parts.map((p) => {
+    const weekly = partUsageWeekly[p.id] || 0;
+    const weeksLeft = weekly > 0 ? p.stock / weekly : Infinity;
+    const committed = partCommittedToUpcoming[p.id] || 0;
+    const onOrder = partOnOrder[p.id] || 0;
+    const recent = partUsageRecent[p.id] || { jobs: 0, units: 0 };
+    return { ...p, weekly, weeksLeft, needsOrder: weeksLeft < REORDER_WEEKS, committed, onOrder, availableAfterUpcoming: p.stock + onOrder - committed, jobsUsed: recent.jobs, unitsUsed: recent.units, shortBookings: shortfallByPart[p.id]?.bookings || [] };
+  }), [parts, partUsageWeekly, partCommittedToUpcoming, partOnOrder, partUsageRecent, shortfallByPart]);
+  const lowStockItems = stockRows.filter((r) => r.needsOrder);
+
 
   // Shown once per calendar day (not per session, unlike the reorder alert
   // above) — a fresh check each morning of what the diary now needs, without
@@ -2355,7 +2368,15 @@ function PartsForecastModal({ shortfalls, onOpenBooking, onClose }) {
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--red)" }}>Short by {s.shortBy}</div>
               </div>
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                Needed by {fmtDate(s.date)}{s.customerName ? ` for ${s.customerName}` : ""} — tap to open on Calendar
+                Needed by {fmtDate(s.date)} — tap to open on Calendar
+              </div>
+              <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                {(s.bookings || []).map((sb) => (
+                  <div key={sb.bookingId} style={{ fontSize: 12, display: "flex", gap: 8 }}>
+                    <strong className="wh-mono">{sb.reg || "No reg"}</strong>
+                    <span style={{ color: "var(--muted)" }}>{sb.customerName ? `${sb.customerName} · ` : ""}{fmtDate(sb.date)}{sb.qty ? ` · ${sb.qty} short` : ""}</span>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
@@ -5236,6 +5257,11 @@ function StockPartRow({ r, open, onToggle, pendingByPart, daysAgo, renamePart, s
                 {r.availableAfterUpcoming < 0 && <AlertTriangle size={10} style={{ display: "inline", marginRight: 2 }} />}
                 Remaining: {r.availableAfterUpcoming}
               </div>
+              {r.availableAfterUpcoming < 0 && (r.shortBookings || []).length > 0 && (
+                <div style={{ fontWeight: 400, color: "var(--red)", whiteSpace: "normal", maxWidth: 200 }}>
+                  Short for: {r.shortBookings.map((sb) => `${sb.reg || "no reg"} (${fmtDate(sb.date).replace(/^\w+ /, "")})`).join(", ")}
+                </div>
+              )}
             </div>
           ) : r.stock}
         </td>
