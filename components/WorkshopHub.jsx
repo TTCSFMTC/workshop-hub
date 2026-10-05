@@ -479,6 +479,9 @@ const WEEKEND_HALF_DAY_RATE = 75;
 // to a name check where brand alone would be too broad (e.g. every Ford
 // job isn't a 2-day wet belt). Returns null (no default) for anything else,
 // so an unmatched job type just leaves "Days in for" as whatever it was.
+// Nothing the workshop does is a one-day job, so a booking is never shorter
+// than this — new bookings start here and the Days boxes won't go below it.
+const MIN_BOOKING_DAYS = 2;
 function defaultDaysForJobType(jt, brands) {
   if (!jt) return null;
   const brandName = brands.find((b) => b.id === jt.brandId)?.name || "";
@@ -6378,7 +6381,7 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
   const [model, setModel] = useState("");
   const [jobTypeId, setJobTypeId] = useState("");
   const [date, setDate] = useState(defaultDate || todayISO());
-  const [days, setDays] = useState(1);
+  const [days, setDays] = useState(MIN_BOOKING_DAYS);
 
   const canSave = reg.trim() && jobTypeId && date;
 
@@ -6414,7 +6417,7 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Date offered</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div><label className="wb-label">Days</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => setDays(Math.max(1, parseInt(e.target.value) || 1))} /></div>
+            <div><label className="wb-label">Days</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS))} /></div>
           </div>
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -6474,7 +6477,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   const [vehicleModelText, setVehicleModelText] = useState(guessedVehicle.model);
   const vehicleModel = [vehicleMake === "Other" ? vehicleMakeOther.trim() : vehicleMake, vehicleModelText.trim()].filter(Boolean).join(" ").trim();
   const [date, setDate] = useState(booking?.date || initialValues?.date || defaultDate);
-  const [days, setDays] = useState(booking?.days || 1);
+  const [days, setDays] = useState(booking?.days || MIN_BOOKING_DAYS);
   // Once staff manually type a days figure, the auto-default below stops
   // touching it — otherwise picking a second job type after correcting the
   // first would silently overwrite their correction.
@@ -6645,7 +6648,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => { setJobTypeId(e.target.value); setExtraJobTypeIds((prev) => prev.filter((x) => x !== e.target.value)); }}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
             <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div><label className="wb-label">Days in for</label><input type="number" min="1" className="wb-input" value={days} onChange={(e) => { setDaysTouched(true); setDays(Math.max(1, parseInt(e.target.value) || 1)); }} /></div>
+            <div><label className="wb-label">Days in for</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => { setDaysTouched(true); setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS)); }} /></div>
           </div>
           <div>
             <label className="wb-label">Extra jobs (e.g. Turbo — a whole additional job type on top of the main one)</label>
