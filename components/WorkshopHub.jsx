@@ -102,6 +102,28 @@ const weekdayCount = (dateFrom, dateTo) => {
 const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2" };
 const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam"];
 const HOLIDAY_ENTITLEMENT = 28;
+// The holiday year runs 1 August to 31 July. Holiday is accrued one twelfth
+// of the entitlement (28/12 days) for each FULL month worked in it. Everyone
+// is assumed to have been here since the start of the holiday year unless a
+// later start date is given here (YYYY-MM-DD), e.g. { charlie: "2026-09-01" }.
+const STAFF_START_DATES = {};
+const holidayYearStart = (today = todayISO()) => {
+  const y = Number(today.slice(0, 4)), m = Number(today.slice(5, 7));
+  return `${m >= 8 ? y : y - 1}-08-01`;
+};
+// Full calendar months worked between a start date and today, within the
+// holiday year that began on yearStart (a part-month at the start doesn't count).
+const fullMonthsWorked = (startISO, yearStart, today = todayISO()) => {
+  let count = 0;
+  let [y, m] = yearStart.split("-").map(Number);
+  for (let i = 0; i < 12; i++) {
+    const monthStart = `${y}-${String(m).padStart(2, "0")}-01`;
+    const monthEnd = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    if (monthStart >= startISO && monthEnd < today) count++;
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return count;
+};
 const holidayColor = (name) => STAFF_HOLIDAY_COLORS[(name || "").trim().toLowerCase()] || "var(--amber)";
 
 // ============================================================
@@ -6325,12 +6347,14 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 
   // Weekdays only per entry — a Sat-Sun either side of a booked week
   // doesn't cost a day, since nobody's rostered to work them anyway.
-  // Each person gets HOLIDAY_ENTITLEMENT days a year; the Christmas shutdown
-  // and every other booked holiday come out of it. Counted for the current
-  // calendar year only (a holiday spanning New Year is split at the boundary).
-  const allowanceYear = new Date().getFullYear();
+  // Each person gets HOLIDAY_ENTITLEMENT days in the holiday year (1 Aug -
+  // 31 Jul), accrued per full month worked; the Christmas shutdown and every
+  // other booked holiday come out of it. A holiday spanning the year end is
+  // split at the boundary.
+  const yearStart = holidayYearStart();
+  const yearEnd = `${Number(yearStart.slice(0, 4)) + 1}-07-31`;
+  const yearLabel = `${yearStart.slice(0, 4)}/${yearEnd.slice(2, 4)}`;
   const tally = useMemo(() => {
-    const yearStart = `${allowanceYear}-01-01`, yearEnd = `${allowanceYear}-12-31`;
     const totals = {};
     STAFF_HOLIDAY_NAMES.forEach((n) => { totals[n] = 0; });
     holidays.forEach((h) => {
@@ -6339,8 +6363,12 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
       if (from > to) return;
       totals[h.name] = (totals[h.name] || 0) + weekdayCount(from, to);
     });
-    return Object.entries(totals).sort((a, b) => b[1] - a[1]);
-  }, [holidays, allowanceYear]);
+    return Object.entries(totals).map(([person, used]) => {
+      const start = STAFF_START_DATES[person.toLowerCase()] || yearStart;
+      const accrued = +(fullMonthsWorked(start < yearStart ? yearStart : start, yearStart) * (HOLIDAY_ENTITLEMENT / 12)).toFixed(2);
+      return { person, used, accrued, balance: +(accrued - used).toFixed(2) };
+    }).sort((a, b) => b.used - a.used);
+  }, [holidays, yearStart, yearEnd]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -6382,17 +6410,21 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 
       {tally.length > 0 && (
         <div className="wb-panel">
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {allowanceYear} — {HOLIDAY_ENTITLEMENT} days each</div>
-          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>Mon-Fri days booked this year, including the Christmas shutdown (28–31 Dec), taken off each person's {HOLIDAY_ENTITLEMENT}.</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {yearLabel} — {HOLIDAY_ENTITLEMENT} days each</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+            Holiday year runs 1 Aug – 31 Jul. Days accrue at {(HOLIDAY_ENTITLEMENT / 12).toFixed(2)} per full month worked. Mon-Fri days booked, including the Christmas shutdown (28–31 Dec), come off the {HOLIDAY_ENTITLEMENT}.
+            Balance = accrued to date minus days booked — it dips negative while holiday is booked ahead of being earned.
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
-            {tally.map(([person, days]) => (
+            {tally.map(({ person, used: days, accrued, balance }) => (
               <div key={person} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(person), display: "inline-block", flexShrink: 0 }} />
                   {person}
                 </span>
-                <span className="wh-mono" style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }} title={`${days} used of ${HOLIDAY_ENTITLEMENT}`}>
-                  {days} used · {HOLIDAY_ENTITLEMENT - days} left
+                <span className="wh-mono" style={{ textAlign: "right", lineHeight: 1.4 }}>
+                  <span style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }}>{days} of {HOLIDAY_ENTITLEMENT} booked</span>
+                  <span style={{ display: "block", fontSize: 11, color: balance < 0 ? "var(--red)" : "var(--muted)" }}>accrued {accrued} · balance {balance}</span>
                 </span>
               </div>
             ))}
