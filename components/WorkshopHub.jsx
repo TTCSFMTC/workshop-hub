@@ -1505,6 +1505,15 @@ export default function WorkshopHub() {
           .print-stocktake { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-stocktake thead { display: table-header-group; }
           .print-stocktake tr { break-inside: avoid; page-break-inside: avoid; }
+          /* Hidden isn't gone: visibility:hidden keeps the whole app's height, which
+             printed as blank extra pages after the job card. Take everything
+             except the printouts (and the wrappers they sit inside) out of the
+             layout entirely. */
+          html, body { height: auto !important; min-height: 0 !important; overflow: visible !important; }
+          .wh-root { height: auto !important; min-height: 0 !important; overflow: visible !important; }
+          .wh-root *:not([class^="print-"]):not([class^="print-"] *):not(:has([class^="print-"])) { display: none !important; }
+          /* A job card is a single sheet — never spill onto a second page. */
+          .print-job-card, .print-job-card-page { max-height: 94vh; overflow: hidden; }
           .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
