@@ -101,6 +101,7 @@ const weekdayCount = (dateFrom, dateTo) => {
 // calendar star and Holidays tab agree on who's who at a glance.
 const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2" };
 const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam"];
+const HOLIDAY_ENTITLEMENT = 28;
 const holidayColor = (name) => STAFF_HOLIDAY_COLORS[(name || "").trim().toLowerCase()] || "var(--amber)";
 
 // ============================================================
@@ -6324,13 +6325,22 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 
   // Weekdays only per entry — a Sat-Sun either side of a booked week
   // doesn't cost a day, since nobody's rostered to work them anyway.
+  // Each person gets HOLIDAY_ENTITLEMENT days a year; the Christmas shutdown
+  // and every other booked holiday come out of it. Counted for the current
+  // calendar year only (a holiday spanning New Year is split at the boundary).
+  const allowanceYear = new Date().getFullYear();
   const tally = useMemo(() => {
+    const yearStart = `${allowanceYear}-01-01`, yearEnd = `${allowanceYear}-12-31`;
     const totals = {};
+    STAFF_HOLIDAY_NAMES.forEach((n) => { totals[n] = 0; });
     holidays.forEach((h) => {
-      totals[h.name] = (totals[h.name] || 0) + weekdayCount(h.dateFrom, h.dateTo);
+      const from = h.dateFrom < yearStart ? yearStart : h.dateFrom;
+      const to = h.dateTo > yearEnd ? yearEnd : h.dateTo;
+      if (from > to) return;
+      totals[h.name] = (totals[h.name] || 0) + weekdayCount(from, to);
     });
     return Object.entries(totals).sort((a, b) => b[1] - a[1]);
-  }, [holidays]);
+  }, [holidays, allowanceYear]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -6372,15 +6382,18 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 
       {tally.length > 0 && (
         <div className="wb-panel">
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Total days per person (Mon-Fri only)</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {allowanceYear} — {HOLIDAY_ENTITLEMENT} days each</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>Mon-Fri days booked this year, including the Christmas shutdown (28–31 Dec), taken off each person's {HOLIDAY_ENTITLEMENT}.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
             {tally.map(([person, days]) => (
               <div key={person} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
                   <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(person), display: "inline-block", flexShrink: 0 }} />
                   {person}
                 </span>
-                <span className="wh-mono" style={{ fontWeight: 700 }}>{days}</span>
+                <span className="wh-mono" style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }} title={`${days} used of ${HOLIDAY_ENTITLEMENT}`}>
+                  {days} used · {HOLIDAY_ENTITLEMENT - days} left
+                </span>
               </div>
             ))}
           </div>
