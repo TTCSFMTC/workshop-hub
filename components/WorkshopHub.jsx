@@ -1446,9 +1446,19 @@ export default function WorkshopHub() {
         .wb-day.today .wb-daynum { color: var(--amber2); }
         .wb-daynum { font-size:11px; color:var(--muted); font-weight:600; }
         .wb-chip, .jc-chip { font-size:10px; background:#2b2410; color:var(--amber2); border-radius:3px; padding:1px 5px; margin-top:3px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .wb-newin { font-size:10px; line-height:1.3; border:2px solid #2979ff; border-radius:4px; padding:3px 5px; margin-top:4px; background:rgba(41,121,255,0.08); overflow:hidden; }
+        .wb-newin strong { display:block; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .wb-newin span { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--muted); }
         .wb-day-dots { display:none; flex-wrap:wrap; gap:2px; margin-top:4px; }
         .wb-day-dot { width:6px; height:6px; border-radius:50%; background:var(--amber2); flex-shrink:0; }
         .wb-day-more { font-size:8px; color:var(--muted); }
+        @media (max-width: 800px) {
+          .wb-grid-newin { grid-template-columns: 1fr !important; }
+          .wb-grid-newin .wb-day-empty, .wb-weekdays-newin { display:none; }
+          .wb-grid-newin .wb-day { min-height:0; }
+          .wb-newin { font-size:12px; }
+          .wb-newin strong { font-size:13px; }
+        }
         @media (max-width: 600px) {
           .wb-day { padding:3px 2px; min-height:40px; }
           .wb-day .wb-chip { display:none; }
@@ -2658,7 +2668,17 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
     bookings.forEach((b) => bookingDates(b).forEach((iso) => { map[iso] = map[iso] || []; map[iso].push(b); }));
     return map;
   }, [bookings]);
-  const dayBookings = bookingsByDay[selectedDay] || [];
+  // "New customers in" view: only cars being dropped off that day (not ones
+  // carried over from earlier days, not provisional holds), each with a short
+  // summary of the car and the job.
+  const [newInOnly, setNewInOnly] = useState(false);
+  const isNewIn = (b, iso) => b.date === iso && !b.provisional;
+  const dayBookings = (bookingsByDay[selectedDay] || []).filter((b) => !newInOnly || isNewIn(b, selectedDay));
+  const newInThisMonth = useMemo(() => {
+    const prefix = `${year}-${String(month + 1).padStart(2, "0")}`;
+    return bookings.filter((b) => !b.provisional && b.date && b.date.slice(0, 7) === prefix).length;
+  }, [bookings, year, month]);
+  const jtNameOf = (id) => jobTypes.find((j) => j.id === id)?.name || "";
   // On mobile the day panel normally sits below the whole month grid, so
   // tapping a tiny customer chip meant scrolling right past it to do
   // anything — this makes it open as a full-screen overlay instead.
@@ -2686,6 +2706,10 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           <div style={{ display: "flex", gap: 8 }}>
             <button className="wb-btn" onClick={onNewBooking}><Plus size={14} /> New booking</button>
             <button className="wb-btn-ghost" onClick={onProvisionalBooking} title="Hold a date offered to a customer who hasn't confirmed yet"><Bookmark size={14} /> Provisional</button>
+            <button
+              className={newInOnly ? "wb-btn" : "wb-btn-ghost"} onClick={() => setNewInOnly((v) => !v)}
+              title="Show only the cars being dropped off each day, with a summary of the car and job"
+            ><Car size={14} /> New customers in</button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={14} /></button>
@@ -2693,21 +2717,26 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
             <button className="wb-btn-ghost" onClick={() => setMonthCursor(new Date(year, month + 1, 1))}><ChevronRight size={14} /></button>
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
+        {newInOnly && (
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
+            <strong style={{ color: "#2979ff" }}>{newInThisMonth}</strong> new customer{newInThisMonth !== 1 ? "s" : ""} in this month — showing only the day each car is dropped off.
+          </div>
+        )}
+        <div className={newInOnly ? "wb-weekdays-newin" : undefined} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
           {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} style={{ fontSize: 10, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>{d}</div>)}
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
+        <div className={newInOnly ? "wb-grid-newin" : undefined} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
           {cells.map((d, i) => {
-            if (!d) return <div key={i} className="wb-day" style={{ visibility: "hidden" }} />;
+            if (!d) return <div key={i} className={`wb-day ${newInOnly ? "wb-day-empty" : ""}`} style={{ visibility: "hidden" }} />;
             const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-            const dayBk = bookingsByDay[iso] || [];
+            const dayBk = (bookingsByDay[iso] || []).filter((b) => !newInOnly || isNewIn(b, iso));
             const isToday = iso === todayISO();
             // Red star for any day someone's off — a quick visual check
             // before booking a job in, not tied to any particular booking.
             const onHoliday = (holidays || []).filter((h) => iso >= h.dateFrom && iso <= h.dateTo);
             return (
               <div
-                key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""}`}
+                key={i} className={`wb-day ${iso === selectedDay ? "selected" : ""} ${isToday ? "today" : ""} ${newInOnly && dayBk.length === 0 ? "wb-day-empty" : ""}`}
                 onClick={() => { setSelectedDay(iso); if (dayBk.length > 0) setMobileDayOpen(true); }}
                 style={{ position: "relative" }}
                 title={onHoliday.length > 0 ? `Holiday: ${onHoliday.map((h) => h.name).join(", ")}` : undefined}
@@ -2719,8 +2748,18 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     ))}
                   </div>
                 )}
-                <div className="wb-daynum">{d}</div>
-                {dayBk.slice(0, 8).map((b) => {
+                <div className="wb-daynum">{newInOnly ? `${new Date(`${iso}T00:00:00`).toLocaleDateString("en-GB", { weekday: "short" })} ${d}` : d}</div>
+                {newInOnly && dayBk.map((b) => {
+                  const extra = (b.extraJobTypeIds || []).length;
+                  return (
+                    <div key={b.id} className="wb-newin" title={`${b.customerName || "Booking"} — ${b.vehicleModel || ""} ${b.reg || ""} — ${jtNameOf(b.jobTypeId)}`}>
+                      <strong>{b.customerName || "Booking"}</strong>
+                      <span>{[b.reg, b.vehicleModel].filter(Boolean).join(" · ") || "car not recorded"}</span>
+                      <span style={{ color: "var(--text)" }}>{jtNameOf(b.jobTypeId) || "Job not set"}{extra > 0 ? ` +${extra}` : ""} · {b.days || 1}d</span>
+                    </div>
+                  );
+                })}
+                {!newInOnly && dayBk.slice(0, 8).map((b) => {
                   const st = bookingStatus(b);
                   // The drop-off day (a multi-day booking's first day) gets
                   // a bright blue border on top of the normal status/yellow
@@ -2745,8 +2784,8 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                     </span>
                   );
                 })}
-                {dayBk.length > 8 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 8} more</span>}
-                {dayBk.length > 0 && (
+                {!newInOnly && dayBk.length > 8 && <span style={{ fontSize: 10, color: "var(--muted)" }}>+{dayBk.length - 8} more</span>}
+                {!newInOnly && dayBk.length > 0 && (
                   <div className="wb-day-dots">
                     {dayBk.slice(0, 8).map((b) => {
                       const st = bookingStatus(b);
@@ -2766,7 +2805,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
           <div style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(selectedDay)}</div>
           <button className="wb-daypanel-close" onClick={() => setMobileDayOpen(false)} title="Close"><X size={18} /></button>
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>{dayBookings.length} booking{dayBookings.length !== 1 ? "s" : ""}</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>{dayBookings.length} {newInOnly ? "new customer" : "booking"}{dayBookings.length !== 1 ? "s" : ""}{newInOnly ? " in" : ""}</div>
         {dayBookings.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>No bookings this day yet.</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {dayBookings.map((b) => {
