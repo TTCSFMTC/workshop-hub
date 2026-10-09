@@ -39,7 +39,13 @@ function jobTypeLabel(booking, jobTypes) {
 }
 
 function buildWorkshopMessage(booking, jobTypes) {
-  const requiredBy = booking.date ? addDaysISO(booking.date, (booking.days || 1) - 1) : "";
+  // "N days" are working days — Saturday and Sunday are skipped.
+  const lastWorkingDay = (startISO, n) => {
+    let cur = startISO, count = 1;
+    while (count < Math.max(1, n || 1)) { cur = addDaysISO(cur, 1); const d = new Date(`${cur}T00:00:00Z`).getUTCDay(); if (d !== 0 && d !== 6) count++; }
+    return cur;
+  };
+  const requiredBy = booking.date ? lastWorkingDay(booking.date, booking.days) : "";
   return `New booking:
 Business: ${booking.business || "-"}
 Customer: ${booking.customerName || "-"}

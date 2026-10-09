@@ -82,7 +82,18 @@ const addDaysISO = (iso, days) => {
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 };
 // Every calendar day a multi-day booking spans, e.g. days=3 from 2026-07-08 -> [07-08, 07-09, 07-10].
-const bookingDates = (b) => Array.from({ length: b.days || 1 }, (_, i) => addDaysISO(b.date, i));
+// A job's "N days" are WORKING days: Monday to Friday, never Saturday or
+// Sunday. The drop-off day always counts as day 1 (even if it's a Saturday);
+// every day after that skips the weekend.
+const isWeekendISO = (iso) => { const d = new Date(`${iso}T00:00:00Z`).getUTCDay(); return d === 0 || d === 6; };
+const workingDatesFrom = (startISO, n) => {
+  const out = [startISO];
+  let cur = startISO;
+  while (out.length < Math.max(1, n || 1)) { cur = addDaysISO(cur, 1); if (!isWeekendISO(cur)) out.push(cur); }
+  return out;
+};
+const lastWorkingDay = (startISO, n) => workingDatesFrom(startISO, n).slice(-1)[0];
+const bookingDates = (b) => workingDatesFrom(b.date, b.days || 1);
 // Weekdays only between two dates inclusive — a holiday spanning a weekend
 // shouldn't count those two days, since nobody's rostered to work them
 // anyway. Same UTC-throughout approach as addDaysISO above, for the same
@@ -187,7 +198,7 @@ const daysBetweenISO = (fromIso, toIso) => {
 // reception taking a booking.
 async function syncBookingToGoogle({ googleEventId, date, days, jobTypeName, colorId }) {
   try {
-    const endDate = addDaysISO(date, days || 1);
+    const endDate = addDaysISO(lastWorkingDay(date, days), 1);
     const res = await fetch("/api/calendar-sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -281,7 +292,7 @@ function confirmationMessage(b) {
 
 Many thanks for sending all that through, and for reading through our terms and conditions.
 
-I can confirm your vehicle${b.reg ? ` (${b.reg})` : ""} is booked in on ${fmtDate(b.date)} for approximately ${b.days || 1} day(s) — that's just an estimate, and we'll keep you updated throughout.
+I can confirm your vehicle${b.reg ? ` (${b.reg})` : ""} is booked in on ${fmtDate(b.date)} for approximately ${b.days || 1} working day(s) — that's just an estimate, and we'll keep you updated throughout.
 
 We've agreed a retail price of £${(b.jobValue || 0).toFixed(2)} for this work.
 
@@ -2027,7 +2038,7 @@ function JobCardBody({ booking, jobTypes }) {
   // span, not a separate field — a job entered as 3 days from Mon is
   // wanted back by Wed, so this is computed from date+days rather than
   // needing office to type it in a second time.
-  const requiredByDate = booking.date ? addDaysISO(booking.date, (booking.days || 1) - 1) : "";
+  const requiredByDate = booking.date ? lastWorkingDay(booking.date, booking.days) : "";
   const rows = [
     ["Business", booking.business],
     ["Booking date", booking.date ? fmtDate(booking.date) : ""],
@@ -2564,7 +2575,7 @@ function stillToFinishRows(bookings, jobTypes) {
       const jt = jtIndex[b.jobTypeId];
       const extraNames = (b.extraJobTypeIds || []).map((id) => jtIndex[id]).filter(Boolean);
       const jobTypeLabel = [jt, ...extraNames].filter(Boolean).join(" + ") || "—";
-      const requiredBy = addDaysISO(b.date, (b.days || 1) - 1);
+      const requiredBy = lastWorkingDay(b.date, b.days);
       return {
         id: b.id,
         dateLabel: fmtDate(b.date),
@@ -3005,7 +3016,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 )}
                 {!minimised && b.days > 1 && (
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                    {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(addDaysISO(b.date, b.days - 1))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
+                    {selectedDay === b.date ? `In for ${b.days} days (${fmtDate(b.date)} – ${fmtDate(lastWorkingDay(b.date, b.days))})` : `Day ${bookingDates(b).indexOf(selectedDay) + 1} of ${b.days}`}
                   </div>
                 )}
                 {!minimised && (
@@ -3942,7 +3953,7 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
       if (!b.date) return;
       const finishDate = b.completed && b.completedAt
         ? new Date(b.completedAt).toISOString().slice(0, 10)
-        : addDaysISO(b.date, (b.days || 1) - 1);
+        : lastWorkingDay(b.date, b.days);
       const key = finishDate.slice(0, 7);
       if (key < currentKey) return;
       (byMonth[key] = byMonth[key] || []).push(b);
@@ -4004,7 +4015,7 @@ function ForecastTab({ bookings, jobTypes, settings, onOpenBooking }) {
     const dueToFinish = bookings.filter((b) => {
       const finishDate = b.completed && b.completedAt
         ? new Date(b.completedAt).toISOString().slice(0, 10)
-        : (b.date ? addDaysISO(b.date, (b.days || 1) - 1) : null);
+        : (b.date ? lastWorkingDay(b.date, b.days) : null);
       return finishDate && finishDate.slice(0, 7) === currentKey;
     });
     const finishedAlready = dueToFinish.filter((b) => b.completed).length;
@@ -4484,7 +4495,7 @@ function MonthlyTotalsTab({ bookings, jobTypes, parts, settings, staffWages, bon
   const months = useMemo(() => computeProfitMonths(bookings, jobTypes, parts, settings), [bookings, jobTypes, parts, settings]);
   const rows = useMemo(() => {
     const currentKey = todayISO().slice(0, 7);
-    const finishMonth = (b) => (b.completed && b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : addDaysISO(b.date, (b.days || 1) - 1).slice(0, 7));
+    const finishMonth = (b) => (b.completed && b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : lastWorkingDay(b.date, b.days).slice(0, 7));
     const booked = {}, invoiced = {};
     bookings.forEach((b) => {
       if (!b.date || !(b.jobValue > 0)) return;
@@ -5212,7 +5223,7 @@ function ProfitAndLossSection({ months, bonusRates, staffWages, fixedCosts, book
     const finishingRows = bookings.filter((b) => {
       const finishDate = b.completed && b.completedAt
         ? new Date(b.completedAt).toISOString().slice(0, 10)
-        : (b.date ? addDaysISO(b.date, (b.days || 1) - 1) : null);
+        : (b.date ? lastWorkingDay(b.date, b.days) : null);
       return finishDate && finishDate.slice(0, 7) === month;
     });
     const invoicedValue = finishingRows.reduce((sum, b) => sum + (b.zohoInvoiceId ? (b.jobValue || 0) : 0), 0);
@@ -6806,7 +6817,7 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Date offered</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div><label className="wb-label">Days</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS))} /></div>
+            <div><label className="wb-label">Working days</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS))} /></div>
           </div>
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -7037,7 +7048,7 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Job type</label><select className="wb-select" value={jobTypeId} onChange={(e) => { setJobTypeId(e.target.value); setExtraJobTypeIds((prev) => prev.filter((x) => x !== e.target.value)); }}>{jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}</select></div>
             <div><label className="wb-label">Booking date</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-            <div><label className="wb-label">Days in for</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => { setDaysTouched(true); setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS)); }} /></div>
+            <div><label className="wb-label">Working days in for (Mon–Fri)</label><input type="number" min={MIN_BOOKING_DAYS} className="wb-input" value={days} onChange={(e) => { setDaysTouched(true); setDays(Math.max(MIN_BOOKING_DAYS, parseInt(e.target.value) || MIN_BOOKING_DAYS)); }} /></div>
           </div>
           <div>
             <label className="wb-label">Extra jobs (e.g. Turbo — a whole additional job type on top of the main one)</label>
