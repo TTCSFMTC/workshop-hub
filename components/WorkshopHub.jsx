@@ -1636,6 +1636,10 @@ function OfficeMode({
   // few external lookup links when the number isn't in the system at all.
   const [callerQuery, setCallerQuery] = useState("");
   const [callerBoxOpen, setCallerBoxOpen] = useState(false);
+  // "Find a customer by reg" — searches every booking ever taken (not just
+  // current ones), ignoring spaces and case, so "sd02bar" finds "SD02 BAR".
+  const [regQuery, setRegQuery] = useState("");
+  const [regBoxOpen, setRegBoxOpen] = useState(false);
   // Set while converting a pending request into a real booking — prefills
   // NewBookingModal without treating it as an edit, and tells the onSave
   // handler below which request to mark converted once it's saved.
@@ -1690,6 +1694,16 @@ function OfficeMode({
       .slice(0, 8);
   }, [bookings, callerDigits]);
 
+  const normReg = (r) => String(r || "").replace(/\s+/g, "").toUpperCase();
+  const regNeedle = normReg(regQuery);
+  const regMatches = useMemo(() => {
+    if (regNeedle.length < 2) return [];
+    return allBookings
+      .filter((b) => normReg(b.reg).includes(regNeedle) || (regNeedle.length >= 3 && String(b.customerName || "").toUpperCase().replace(/\s+/g, "").includes(regNeedle)))
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+      .slice(0, 10);
+  }, [allBookings, regNeedle]);
+
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
   // tech to pick up, one card per booking taken.
@@ -1741,7 +1755,43 @@ function OfficeMode({
 
   return (
     <div>
-      <div className="wb-callerbox">
+      <div className="wb-callerbox" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", maxWidth: 320, width: "100%" }}>
+          <Search size={14} color="var(--muted)" style={{ position: "absolute", left: 12, top: 14 }} />
+          <input
+            className="wb-input"
+            style={{ paddingLeft: 34 }}
+            placeholder="Find a customer — type their reg…"
+            value={regQuery}
+            onChange={(e) => setRegQuery(e.target.value)}
+            onFocus={() => setRegBoxOpen(true)}
+            onBlur={() => setTimeout(() => setRegBoxOpen(false), 150)}
+          />
+          {regBoxOpen && regNeedle.length >= 2 && (
+            <div className="wb-callerdropdown wb-panel">
+              {regMatches.length > 0 ? (
+                regMatches.map((b) => (
+                  <div
+                    key={b.id}
+                    className="wb-callerresult"
+                    onMouseDown={() => { if (b.customerCancelled) openCancellationsForDate(b.date); else openBookingOnCalendar(b); setRegQuery(""); setRegBoxOpen(false); }}
+                  >
+                    <div style={{ fontWeight: 600 }}>
+                      {b.reg || "(no reg)"} <span style={{ fontWeight: 400, color: "var(--muted)" }}>— {b.customerName || "(no name)"}</span>
+                      {b.customerCancelled && <span style={{ marginLeft: 6, fontSize: 10, color: "var(--red)", fontWeight: 700 }}>CANCELLED</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                      {[b.vehicleModel, jobTypes.find((j) => j.id === b.jobTypeId)?.name].filter(Boolean).join(" · ")}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>{fmtDate(b.date)}{b.phone ? ` · ${b.phone}` : ""}{b.completed ? " · collected" : b.workshopCompleted ? " · done" : b.arrived ? " · in the workshop" : ""}</div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--muted)", padding: 4 }}>No booking found for that reg.</div>
+              )}
+            </div>
+          )}
+        </div>
         <div style={{ position: "relative", maxWidth: 320, width: "100%" }}>
           <Phone size={14} color="var(--muted)" style={{ position: "absolute", left: 12, top: 14 }} />
           <input
@@ -1762,7 +1812,7 @@ function OfficeMode({
                     className="wb-callerresult"
                     onMouseDown={() => { openBookingOnCalendar(b); setCallerQuery(""); setCallerBoxOpen(false); }}
                   >
-                    <div style={{ fontWeight: 600 }}>{b.customer_name || "(no name)"}</div>
+                    <div style={{ fontWeight: 600 }}>{b.customerName || "(no name)"}</div>
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>{b.reg} · {b.date} · {b.phone}</div>
                     {b.symptoms && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{b.symptoms}</div>}
                   </div>
