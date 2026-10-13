@@ -1647,10 +1647,6 @@ function OfficeMode({
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [printWagesMonth, setPrintWagesMonth] = useState(null);
   const [bookingRequests, setBookingRequests] = useState([]);
-  // Every online request ever submitted, whatever its status — kept so a
-  // customer who cancelled (or was declined) and comes back can be found
-  // with everything they originally told us, not just their pending ones.
-  const [pastRequests, setPastRequests] = useState([]);
   // "Who's calling?" — lets office staff check an incoming caller's number
   // against past bookings before or during the call, and falls back to a
   // few external lookup links when the number isn't in the system at all.
@@ -1681,10 +1677,6 @@ function OfficeMode({
     fetch("/api/office/booking-requests")
       .then((r) => r.json())
       .then((d) => setBookingRequests(d.requests || []))
-      .catch(() => {});
-    fetch("/api/office/booking-requests?all=1")
-      .then((r) => r.json())
-      .then((d) => setPastRequests(d.requests || []))
       .catch(() => {});
   };
   useEffect(() => { refreshBookingRequests(); }, []);
@@ -1727,25 +1719,6 @@ function OfficeMode({
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
       .slice(0, 10);
   }, [allBookings, regNeedle]);
-
-  // Online requests that have no booking row carrying their details — i.e.
-  // declined or still pending, or converted ones whose booking was later
-  // deleted. A converted request whose reg + phone still match a booking is
-  // skipped, since that booking already shows up in the searches above.
-  const requestsNotInBookings = useMemo(() => {
-    const bookingKeys = new Set(allBookings.map((b) => `${normReg(b.reg)}|${normalizePhone(b.phone)}`));
-    return pastRequests.filter((r) => !(r.status === "converted" && bookingKeys.has(`${normReg(r.reg)}|${normalizePhone(r.phone)}`)));
-  }, [pastRequests, allBookings]);
-  const regRequestMatches = useMemo(() => {
-    if (regNeedle.length < 2) return [];
-    return requestsNotInBookings
-      .filter((r) => normReg(r.reg).includes(regNeedle) || (regNeedle.length >= 3 && String(r.name || "").toUpperCase().replace(/\s+/g, "").includes(regNeedle)))
-      .slice(0, 6);
-  }, [requestsNotInBookings, regNeedle]);
-  const callerRequestMatches = useMemo(() => {
-    if (callerDigits.length < 3) return [];
-    return requestsNotInBookings.filter((r) => normalizePhone(r.phone).includes(callerDigits)).slice(0, 6);
-  }, [requestsNotInBookings, callerDigits]);
 
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
@@ -1812,9 +1785,8 @@ function OfficeMode({
           />
           {regBoxOpen && regNeedle.length >= 2 && (
             <div className="wb-callerdropdown wb-panel">
-              {regMatches.length > 0 || regRequestMatches.length > 0 ? (
-                <>
-                {regMatches.map((b) => (
+              {regMatches.length > 0 ? (
+                regMatches.map((b) => (
                   <div
                     key={b.id}
                     className="wb-callerresult"
@@ -1829,9 +1801,7 @@ function OfficeMode({
                     </div>
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>{fmtDate(b.date)}{b.phone ? ` · ${b.phone}` : ""}{b.completed ? " · collected" : b.workshopCompleted ? " · done" : b.arrived ? " · in the workshop" : ""}</div>
                   </div>
-                ))}
-                {regRequestMatches.map((r) => <PastRequestResult key={r.id} r={r} onPick={(r) => { setAcceptingRequest({ ...r, date: r.status !== "pending" && r.date < todayISO() ? undefined : r.date }); setRegQuery(""); setRegBoxOpen(false); }} />)}
-                </>
+                ))
               ) : (
                 <div style={{ fontSize: 12, color: "var(--muted)", padding: 4 }}>No booking found for that reg.</div>
               )}
@@ -1851,9 +1821,8 @@ function OfficeMode({
           />
           {callerBoxOpen && callerDigits.length >= 3 && (
             <div className="wb-callerdropdown wb-panel">
-              {callerMatches.length > 0 || callerRequestMatches.length > 0 ? (
-                <>
-                {callerMatches.map((b) => (
+              {callerMatches.length > 0 ? (
+                callerMatches.map((b) => (
                   <div
                     key={b.id}
                     className="wb-callerresult"
@@ -1863,9 +1832,7 @@ function OfficeMode({
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>{b.reg} · {b.date} · {b.phone}</div>
                     {b.symptoms && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{b.symptoms}</div>}
                   </div>
-                ))}
-                {callerRequestMatches.map((r) => <PastRequestResult key={r.id} r={r} onPick={(r) => { setAcceptingRequest({ ...r, date: r.status !== "pending" && r.date < todayISO() ? undefined : r.date }); setCallerQuery(""); setCallerBoxOpen(false); }} />)}
-                </>
+                ))
               ) : (
                 <div style={{ padding: 4 }}>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
