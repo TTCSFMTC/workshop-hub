@@ -113,6 +113,11 @@ const weekdayCount = (dateFrom, dateTo) => {
 const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2" };
 const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam"];
 const HOLIDAY_ENTITLEMENT = 28;
+// The monthly team bonus pot is shared between Ernesto and Ervin only — other
+// people on the wages list (anyone else's basic) never get a bonus share.
+const BONUS_STAFF = ["ernesto", "ervin"];
+const getsBonus = (w) => BONUS_STAFF.includes(String(w?.name || "").trim().toLowerCase());
+const bonusShareFor = (w, bonusPerPerson) => (getsBonus(w) ? bonusPerPerson : 0);
 // The holiday year runs 1 August to 31 July. Holiday is accrued one twelfth
 // of the entitlement (28/12 days) for each FULL month worked in it. Everyone
 // is assumed to have been here since the start of the holiday year unless a
@@ -1642,6 +1647,10 @@ function OfficeMode({
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [printWagesMonth, setPrintWagesMonth] = useState(null);
   const [bookingRequests, setBookingRequests] = useState([]);
+  // Every online request ever submitted, whatever its status — kept so a
+  // customer who cancelled (or was declined) and comes back can be found
+  // with everything they originally told us, not just their pending ones.
+  const [pastRequests, setPastRequests] = useState([]);
   // "Who's calling?" — lets office staff check an incoming caller's number
   // against past bookings before or during the call, and falls back to a
   // few external lookup links when the number isn't in the system at all.
@@ -1672,6 +1681,10 @@ function OfficeMode({
     fetch("/api/office/booking-requests")
       .then((r) => r.json())
       .then((d) => setBookingRequests(d.requests || []))
+      .catch(() => {});
+    fetch("/api/office/booking-requests?all=1")
+      .then((r) => r.json())
+      .then((d) => setPastRequests(d.requests || []))
       .catch(() => {});
   };
   useEffect(() => { refreshBookingRequests(); }, []);
@@ -1714,6 +1727,25 @@ function OfficeMode({
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
       .slice(0, 10);
   }, [allBookings, regNeedle]);
+
+  // Online requests that have no booking row carrying their details — i.e.
+  // declined or still pending, or converted ones whose booking was later
+  // deleted. A converted request whose reg + phone still match a booking is
+  // skipped, since that booking already shows up in the searches above.
+  const requestsNotInBookings = useMemo(() => {
+    const bookingKeys = new Set(allBookings.map((b) => `${normReg(b.reg)}|${normalizePhone(b.phone)}`));
+    return pastRequests.filter((r) => !(r.status === "converted" && bookingKeys.has(`${normReg(r.reg)}|${normalizePhone(r.phone)}`)));
+  }, [pastRequests, allBookings]);
+  const regRequestMatches = useMemo(() => {
+    if (regNeedle.length < 2) return [];
+    return requestsNotInBookings
+      .filter((r) => normReg(r.reg).includes(regNeedle) || (regNeedle.length >= 3 && String(r.name || "").toUpperCase().replace(/\s+/g, "").includes(regNeedle)))
+      .slice(0, 6);
+  }, [requestsNotInBookings, regNeedle]);
+  const callerRequestMatches = useMemo(() => {
+    if (callerDigits.length < 3) return [];
+    return requestsNotInBookings.filter((r) => normalizePhone(r.phone).includes(callerDigits)).slice(0, 6);
+  }, [requestsNotInBookings, callerDigits]);
 
   // Fires the OS print dialog the moment a new booking is saved — each job
   // card then lands in a physical pile at reception for the next available
@@ -1780,8 +1812,9 @@ function OfficeMode({
           />
           {regBoxOpen && regNeedle.length >= 2 && (
             <div className="wb-callerdropdown wb-panel">
-              {regMatches.length > 0 ? (
-                regMatches.map((b) => (
+              {regMatches.length > 0 || regRequestMatches.length > 0 ? (
+                <>
+                {regMatches.map((b) => (
                   <div
                     key={b.id}
                     className="wb-callerresult"
@@ -1796,7 +1829,9 @@ function OfficeMode({
                     </div>
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>{fmtDate(b.date)}{b.phone ? ` · ${b.phone}` : ""}{b.completed ? " · collected" : b.workshopCompleted ? " · done" : b.arrived ? " · in the workshop" : ""}</div>
                   </div>
-                ))
+                ))}
+                {regRequestMatches.map((r) => <PastRequestResult key={r.id} r={r} onPick={(r) => { setAcceptingRequest({ ...r, date: r.status !== "pending" && r.date < todayISO() ? undefined : r.date }); setRegQuery(""); setRegBoxOpen(false); }} />)}
+                </>
               ) : (
                 <div style={{ fontSize: 12, color: "var(--muted)", padding: 4 }}>No booking found for that reg.</div>
               )}
@@ -1816,8 +1851,9 @@ function OfficeMode({
           />
           {callerBoxOpen && callerDigits.length >= 3 && (
             <div className="wb-callerdropdown wb-panel">
-              {callerMatches.length > 0 ? (
-                callerMatches.map((b) => (
+              {callerMatches.length > 0 || callerRequestMatches.length > 0 ? (
+                <>
+                {callerMatches.map((b) => (
                   <div
                     key={b.id}
                     className="wb-callerresult"
@@ -1827,7 +1863,9 @@ function OfficeMode({
                     <div style={{ fontSize: 11, color: "var(--muted)" }}>{b.reg} · {b.date} · {b.phone}</div>
                     {b.symptoms && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{b.symptoms}</div>}
                   </div>
-                ))
+                ))}
+                {callerRequestMatches.map((r) => <PastRequestResult key={r.id} r={r} onPick={(r) => { setAcceptingRequest({ ...r, date: r.status !== "pending" && r.date < todayISO() ? undefined : r.date }); setCallerQuery(""); setCallerBoxOpen(false); }} />)}
+                </>
               ) : (
                 <div style={{ padding: 4 }}>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
@@ -2184,8 +2222,9 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
   const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
   const bonusJobs = computeBonusJobs(bookings, bonusRates, jobTypes, month);
   const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
-  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
-  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
+  const bonusSharers = monthRows.filter(getsBonus);
+  const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusShareFor(w, bonusPerPerson);
   const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
   const monthLabel = new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 
@@ -2211,7 +2250,7 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
                 <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{(w.basic || 0).toFixed(2)}</td>
                 <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{w.weekendFullDays || 0}</td>
                 <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{w.weekendHalfDays || 0}</td>
-                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{bonusPerPerson.toFixed(2)}</td>
+                <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>£{bonusShareFor(w, bonusPerPerson).toFixed(2)}</td>
                 <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc", fontWeight: 700 }}>£{rowTotal(w).toFixed(2)}</td>
               </tr>
             ))}
@@ -2253,7 +2292,7 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
           </tbody>
           <tfoot>
             <tr style={{ fontWeight: 700 }}>
-              <td colSpan={3} style={{ padding: "6px 8px 0 0", borderTop: "2px solid #000" }}>Total bonus pot — split {monthRows.length || 0} way{monthRows.length === 1 ? "" : "s"} (£{bonusPerPerson.toFixed(2)} each)</td>
+              <td colSpan={3} style={{ padding: "6px 8px 0 0", borderTop: "2px solid #000" }}>Total bonus pot — split {bonusSharers.length || 0} way{bonusSharers.length === 1 ? "" : "s"} between Ernesto &amp; Ervin (£{bonusPerPerson.toFixed(2)} each)</td>
               <td style={{ padding: "6px 8px 0", borderTop: "2px solid #000" }}>£{totalBonusPot.toFixed(2)}</td>
             </tr>
           </tfoot>
@@ -3845,8 +3884,9 @@ function computeStaffWagesForMonth(month, staffWages, bonusRates, bookings) {
   const monthRows = staffWages.filter((w) => w.month === month);
   const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
   const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
-  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
-  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
+  const bonusSharers = monthRows.filter(getsBonus);
+  const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusShareFor(w, bonusPerPerson);
   const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
   return { monthRows, bonusCounts, totalBonusPot, bonusPerPerson, totalOutlay, rowTotal };
 }
@@ -4276,13 +4316,14 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   // Auto-derived from actually completed + invoiced bookings — see
   // computeBonusCounts — nobody has to remember to type a count in by hand,
   // and it updates itself the moment a job gets marked complete and
-  // invoiced. One shared pot for the month, split equally across however
-  // many people are on this month's list (normally the two full-time techs).
+  // invoiced. One shared pot for the month, split equally between Ernesto
+  // and Ervin only — nobody else on the wages list gets a share.
   const bonusCounts = useMemo(() => computeBonusCounts(bookings, bonusRates, month), [bookings, bonusRates, month]);
   const totalBonusPot = useMemo(() => bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0), [bonusRates, bonusCounts]);
-  const bonusPerPerson = monthRows.length > 0 ? totalBonusPot / monthRows.length : 0;
+  const bonusSharers = monthRows.filter(getsBonus);
+  const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
 
-  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusPerPerson;
+  const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusShareFor(w, bonusPerPerson);
 
   const totalOutlay = monthRows.reduce((sum, w) => sum + rowTotal(w), 0);
   const monthTotals = months.monthList.find((m) => m.key === month)?.totals;
@@ -4332,7 +4373,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
                   <td><input type="number" className="wb-input" style={{ width: 80 }} value={w.basic} onChange={(e) => patch(w, { basic: parseFloat(e.target.value) || 0 })} /></td>
                   <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendFullDays} onChange={(e) => patch(w, { weekendFullDays: parseFloat(e.target.value) || 0 })} /></td>
                   <td><input type="number" className="wb-input" style={{ width: 60 }} value={w.weekendHalfDays} onChange={(e) => patch(w, { weekendHalfDays: parseFloat(e.target.value) || 0 })} /></td>
-                  <td className="wh-mono" style={{ color: "var(--green)" }}>£{bonusPerPerson.toFixed(2)}</td>
+                  <td className="wh-mono" style={{ color: "var(--green)" }}>£{bonusShareFor(w, bonusPerPerson).toFixed(2)}</td>
                   <td className="wh-mono" style={{ fontWeight: 700 }}>£{rowTotal(w).toFixed(2)}</td>
                   <td><button onClick={() => removeStaffWage(w.id)} title="Remove" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
                 </tr>
@@ -4392,10 +4433,10 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
           </div>
           <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "18px 20px" }}>
             <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 6, fontWeight: 700 }}>
-              Split {monthRows.length || 0} way{monthRows.length === 1 ? "" : "s"}
+              Split {bonusSharers.length || 0} way{bonusSharers.length === 1 ? "" : "s"} — Ernesto &amp; Ervin only
             </div>
             <div className="wh-mono" style={{ fontSize: 32, fontWeight: 800 }}>£{bonusPerPerson.toFixed(2)}</div>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>per person, added to wages above</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>each, added to Ernesto's and Ervin's wages above</div>
           </div>
         </div>
       </div>
