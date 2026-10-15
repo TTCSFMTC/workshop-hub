@@ -1899,7 +1899,7 @@ function OfficeMode({
           />
         )}
         {tab === "stock" && (
-          <StockTab stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
+          <StockTab bookings={bookings} stockRows={stockRows} jobTypes={jobTypes} receiveStock={receiveStock} updatePartField={updatePartField} removePart={removePart}
             stockBatches={stockBatches} orderStock={orderStock} deliverStock={deliverStock} cancelOrder={cancelOrder} amendOrder={amendOrder}
             priceHistory={priceHistory} recordPrice={recordPrice} brands={brands} addBrand={addBrand} removeBrand={removeBrand} renameBrand={renameBrand}
             addAuditLog={addAuditLog} onPrintOutstandingParts={() => setPrintOutstandingParts(true)} />
@@ -2818,7 +2818,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
         </div>
         {newInOnly && (
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
-            <strong style={{ color: "#2979ff" }}>{newInThisMonth}</strong> new customer{newInThisMonth !== 1 ? "s" : ""} in this month — showing only the day each car is dropped off.
+            <strong style={{ color: "#2979ff" }}>{newInThisMonth}</strong> new customer{newInThisMonth !== 1 ? "s" : ""} in this month — showing only the day each car is dropped off. <span style={{ color: "var(--red)", fontWeight: 700 }}>Red border</span> = job completed.
           </div>
         )}
         <div className={newInOnly ? "wb-weekdays-newin" : undefined} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 4 }}>
@@ -2851,7 +2851,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                 {newInOnly && dayBk.map((b) => {
                   const extra = (b.extraJobTypeIds || []).length;
                   return (
-                    <div key={b.id} className="wb-newin" title={`${b.customerName || "Booking"} — ${b.vehicleModel || ""} ${b.reg || ""} — ${jtNameOf(b.jobTypeId)}`}>
+                    <div
+                      key={b.id} className="wb-newin"
+                      style={b.workshopCompleted || b.completed ? { borderColor: "var(--red)", background: "rgba(226,87,76,0.10)" } : undefined}
+                      title={`${b.customerName || "Booking"} — ${b.vehicleModel || ""} ${b.reg || ""} — ${jtNameOf(b.jobTypeId)}${b.workshopCompleted || b.completed ? " — completed" : ""}`}
+                    >
                       <strong>{b.customerName || "Booking"}</strong>
                       <span>{[b.reg, b.vehicleModel].filter(Boolean).join(" · ") || "car not recorded"}</span>
                       <span style={{ color: "var(--text)" }}>{jtNameOf(b.jobTypeId) || "Job not set"}{extra > 0 ? ` +${extra}` : ""} · {b.days || 1}d</span>
@@ -5693,7 +5697,7 @@ function SuppliersTab({ priceHistory, parts, brands, jobTypes, stockBatches, upd
   );
 }
 
-function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
+function StockTab({ bookings, stockRows, jobTypes, receiveStock, updatePartField, removePart, stockBatches, orderStock, deliverStock, cancelOrder, amendOrder, priceHistory, recordPrice, brands, addBrand, removeBrand, renameBrand, addAuditLog, onPrintOutstandingParts }) {
   const [receiveAmounts, setReceiveAmounts] = useState({});
   const [orderAmounts, setOrderAmounts] = useState({}); // { [partId]: { qty, price } }
   const [bulkJobTypeId, setBulkJobTypeId] = useState("");
@@ -5702,6 +5706,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
   const [historyPart, setHistoryPart] = useState(null);
   const [priceCheckOpen, setPriceCheckOpen] = useState(false);
   const [stocktakeOpen, setStocktakeOpen] = useState(false);
+  const [weeklyOpen, setWeeklyOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => new Set()); // per-part rows, shared across brand sections
   // Sections start collapsed too, same reasoning as Job Types and the
   // per-part rows above — several brands' worth of parts at once was right
@@ -5812,6 +5817,7 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
         <button className="wb-btn-ghost" disabled={downloadingPartsPdf} style={downloadingPartsPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadOutstandingPartsPdf} title="Download the same list as a PDF"><Download size={13} /> {downloadingPartsPdf ? "Generating…" : "Download PDF"}</button>
         <button className="wb-btn-ghost" onClick={exportPriceHistory} disabled={priceHistory.length === 0}><FileText size={13} /> Export price history</button>
         <button className="wb-btn-ghost" onClick={() => setPriceCheckOpen(true)}><Search size={13} /> Find cheapest price</button>
+        <button className="wb-btn-ghost" onClick={() => setWeeklyOpen(true)} title="Parts needed each week (Mon–Sun) for the jobs starting that week, with a tick sheet to check against the shelves"><Printer size={13} /> Weekly parts list</button>
         <button className="wb-btn" onClick={() => setStocktakeOpen(true)} title="Type in what's physically on the shelf and correct the system in one go"><ListChecks size={13} /> Stocktake</button>
       </div>
       <div className="wb-panel" style={{ padding: 12, marginBottom: 10 }}>
@@ -5898,9 +5904,186 @@ function StockTab({ stockRows, jobTypes, receiveStock, updatePartField, removePa
       {priceCheckOpen && (
         <PartsPriceModal parts={stockRows} onClose={() => setPriceCheckOpen(false)} />
       )}
+      {weeklyOpen && (
+        <WeeklyPartsModal bookings={bookings} jobTypes={jobTypes} stockRows={stockRows} onClose={() => setWeeklyOpen(false)} />
+      )}
       {stocktakeOpen && (
         <StocktakeModal stockRows={stockRows} receiveStock={receiveStock} addAuditLog={addAuditLog} onClose={() => setStocktakeOpen(false)} />
       )}
+    </div>
+  );
+}
+
+// Parts needed for the jobs starting in one Monday-Sunday week, with what's in
+// stock against each, a per-job breakdown, and two printouts: the list itself
+// and a tick sheet to check against the shelves.
+function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
+  const mondayOf = (iso) => addDaysISO(iso, -((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7));
+  const [weekStart, setWeekStart] = useState(() => mondayOf(todayISO()));
+  const [printMode, setPrintMode] = useState(null); // null | "list" | "tick"
+  const weekEnd = addDaysISO(weekStart, 6);
+  const rangeLabel = `${fmtDate(weekStart)} – ${fmtDate(weekEnd)}`;
+
+  useEffect(() => {
+    if (!printMode) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintMode(null);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printMode]);
+
+  const partById = useMemo(() => Object.fromEntries(stockRows.map((r) => [r.id, r])), [stockRows]);
+  // Jobs dropped off this week that haven't been done yet — Labour Hours is a
+  // time charge, not a part to pick, so it's left off.
+  const jobs = useMemo(() => bookings
+    .filter((b) => b.date && b.date >= weekStart && b.date <= weekEnd && !b.provisional && !b.workshopCompleted && !b.completed)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((b) => ({
+      booking: b,
+      jobName: [b.jobTypeId, ...(b.extraJobTypeIds || [])].map((id) => jobTypes.find((j) => j.id === id)?.name).filter(Boolean).join(" + "),
+      lines: fullBookingBom(b, jobTypes).filter((l) => !/^labour hours$/i.test((partById[l.partId]?.name || "").trim())),
+    })), [bookings, weekStart, weekEnd, jobTypes, partById]);
+
+  const totals = useMemo(() => {
+    const map = {};
+    jobs.forEach(({ booking, lines }) => lines.forEach((l) => {
+      const t = (map[l.partId] = map[l.partId] || { partId: l.partId, need: 0, regs: [] });
+      t.need += l.qty;
+      if (booking.reg && !t.regs.includes(booking.reg)) t.regs.push(booking.reg);
+    }));
+    return Object.values(map)
+      .map((t) => {
+        const p = partById[t.partId];
+        return { ...t, name: p?.name || t.partId, partNumber: p?.partNumber || "", unit: p?.unit || "", stock: p?.stock ?? 0, onOrder: p?.onOrder ?? 0 };
+      })
+      .map((t) => ({ ...t, short: Math.max(0, +(t.need - t.stock).toFixed(2)) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [jobs, partById]);
+
+  return (
+    <div className="wb-modal-backdrop" onClick={onClose}>
+      {printMode && createPortal(<WeeklyPartsPrintout mode={printMode} rangeLabel={rangeLabel} jobs={jobs} totals={totals} partById={partById} />, document.body)}
+      <div className="wb-modal" style={{ maxWidth: 860 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Weekly parts list</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
+        </div>
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button className="wb-btn-ghost" onClick={() => setWeekStart(addDaysISO(weekStart, -7))}><ChevronLeft size={14} /></button>
+            <div style={{ fontWeight: 700, minWidth: 250, textAlign: "center" }}>{rangeLabel}</div>
+            <button className="wb-btn-ghost" onClick={() => setWeekStart(addDaysISO(weekStart, 7))}><ChevronRight size={14} /></button>
+            <button className="wb-btn-ghost" onClick={() => setWeekStart(mondayOf(todayISO()))}>This week</button>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" disabled={jobs.length === 0} onClick={() => setPrintMode("list")}><Printer size={13} /> Print parts list</button>
+              <button className="wb-btn" disabled={totals.length === 0} onClick={() => setPrintMode("tick")}><Printer size={13} /> Print tick sheet</button>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+            Jobs dropped off Monday–Sunday that aren't done yet — {jobs.length} job{jobs.length !== 1 ? "s" : ""}. "In stock" is what the system holds today.
+          </div>
+          {jobs.length === 0 ? (
+            <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "24px 0" }}>No jobs starting this week.</div>
+          ) : (
+            <div style={{ overflow: "auto", maxHeight: "55vh", display: "flex", flexDirection: "column", gap: 16 }}>
+              <table className="wb-table">
+                <thead><tr><th>Part</th><th>Need</th><th>In stock</th><th>Short</th><th>For</th></tr></thead>
+                <tbody>
+                  {totals.map((t) => (
+                    <tr key={t.partId}>
+                      <td>{t.name}{t.partNumber ? <span style={{ color: "var(--muted)", fontSize: 11 }}> · {t.partNumber}</span> : null}</td>
+                      <td className="wh-mono">{t.need}</td>
+                      <td className="wh-mono">{t.stock}{t.onOrder > 0 ? <span style={{ color: "var(--muted)", fontSize: 11 }}> (+{t.onOrder} on order)</span> : null}</td>
+                      <td className="wh-mono" style={{ fontWeight: 700, color: t.short > 0 ? "var(--red)" : "var(--green)" }}>{t.short > 0 ? t.short : "✓"}</td>
+                      <td style={{ fontSize: 11, color: "var(--muted)" }}>{t.regs.join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>By job</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {jobs.map(({ booking: b, jobName, lines }) => (
+                    <div key={b.id} style={{ background: "var(--panel2)", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+                      <div style={{ fontWeight: 700 }}>{fmtDate(b.date)} · <span className="wh-mono">{b.reg || "no reg"}</span> · {b.customerName || "Unnamed"} <span style={{ fontWeight: 400, color: "var(--muted)" }}>— {[b.vehicleModel, jobName].filter(Boolean).join(" · ")}</span></div>
+                      <div style={{ color: "var(--muted)", marginTop: 2 }}>{lines.length > 0 ? lines.map((l) => `${l.qty}× ${partById[l.partId]?.name || l.partId}`).join(", ") : "No parts on this job's recipe"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById }) {
+  const th = { textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" };
+  const td = { padding: "7px 8px", borderBottom: "1px solid #ccc", verticalAlign: "top" };
+  const box = <div style={{ border: "1px solid #000", width: 18, height: 18 }} />;
+  return (
+    <div className="print-stocktake">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>{mode === "tick" ? "Stock tick sheet" : "Parts needed"} — {rangeLabel}</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>
+          Printed {new Date().toLocaleString("en-GB")} — {jobs.length} job{jobs.length !== 1 ? "s" : ""} starting this week (Mon–Sun)
+        </div>
+        {mode === "tick" ? (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>
+              {["Have it", "Part", "Part no.", "Need", "System", "Counted", "Order", "For"].map((h) => <th key={h} style={th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {totals.map((t) => (
+                <tr key={t.partId}>
+                  <td style={td}>{box}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{t.name}</td>
+                  <td style={{ ...td, color: "#444" }}>{t.partNumber}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{t.need}</td>
+                  <td style={td}>{t.stock}</td>
+                  <td style={{ ...td, width: 70 }}><div style={{ border: "1px solid #000", height: 20 }} /></td>
+                  <td style={td}>{box}</td>
+                  <td style={{ ...td, fontSize: 10, color: "#444" }}>{t.regs.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>By job</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, marginBottom: 20 }}>
+              <thead><tr>{["Date", "Reg", "Customer / car", "Job", "Parts"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {jobs.map(({ booking: b, jobName, lines }) => (
+                  <tr key={b.id}>
+                    <td style={td}>{fmtDate(b.date)}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{b.reg || "—"}</td>
+                    <td style={td}>{b.customerName || "Unnamed"}<div style={{ color: "#555" }}>{b.vehicleModel}</div></td>
+                    <td style={td}>{jobName}</td>
+                    <td style={td}>{lines.map((l) => `${l.qty}× ${partById[l.partId]?.name || l.partId}`).join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Totals for the week</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead><tr>{["Part", "Need", "In stock", "Short"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {totals.map((t) => (
+                  <tr key={t.partId}>
+                    <td style={td}>{t.name}</td>
+                    <td style={td}>{t.need}</td>
+                    <td style={td}>{t.stock}</td>
+                    <td style={{ ...td, fontWeight: 700 }}>{t.short > 0 ? t.short : "✓"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
     </div>
   );
 }
