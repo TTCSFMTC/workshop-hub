@@ -39,3 +39,20 @@ export async function PATCH(request) {
   }
   return NextResponse.json({ ok: true });
 }
+
+// Permanently removes a request — for duplicates (the same customer submitting
+// the form twice) and junk. Unlike declining, nothing is kept.
+export async function DELETE(request) {
+  if (!(await requireSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const body = await request.json().catch(() => null);
+  const id = body?.id;
+  if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+
+  const { error } = await supabaseAdmin.from("booking_requests").delete().eq("id", id);
+  if (error) {
+    console.error("failed to delete booking request", error);
+    return NextResponse.json({ error: "Failed to delete request" }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true });
+}

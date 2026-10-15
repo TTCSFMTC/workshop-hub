@@ -1681,6 +1681,16 @@ function OfficeMode({
   };
   useEffect(() => { refreshBookingRequests(); }, []);
 
+  // Permanently deletes a website request (duplicates, junk) — no record kept.
+  const deleteRequest = (req) => {
+    if (!confirm(`Permanently delete the request from ${req.name}${req.reg ? ` (${req.reg})` : ""}? Use this for duplicates — it can't be undone.`)) return;
+    fetch("/api/office/booking-requests", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: req.id }),
+    }).then((r) => { if (!r.ok) alert("Couldn't delete that request — try again."); refreshBookingRequests(); });
+  };
+
   const declineRequest = (id) => {
     fetch("/api/office/booking-requests", {
       method: "PATCH",
@@ -1894,6 +1904,7 @@ function OfficeMode({
             requests={bookingRequests} jobTypes={jobTypes} bookings={bookings} holidays={holidays}
             onAccept={(req) => setAcceptingRequest(req)}
             onDecline={(req) => { if (confirm(`Decline the request from ${req.name} without offering another date?`)) declineRequest(req.id); }}
+            onDelete={deleteRequest}
             onOfferDate={(req, date) => { window.open(whatsappLink(req.phone, offerDateMessage(req, date)), "_blank"); declineRequest(req.id); }}
             onRefresh={refreshBookingRequests}
           />
@@ -6700,7 +6711,7 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
 // office want to accept it". A request whose requirements mention a chain
 // job and lands within 2 days of another chain job's span gets a warning
 // badge, since that's the one case worth a closer look even within capacity.
-function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, onDecline, onOfferDate, onRefresh }) {
+function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, onDecline, onDelete, onOfferDate, onRefresh }) {
   // Which request has its "offer another date" panel open, and the date picked.
   const [offerId, setOfferId] = useState(null);
   const [offerDate, setOfferDate] = useState("");
@@ -6831,6 +6842,9 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
                 <button className="wb-btn" style={{ padding: "8px 14px", minHeight: "auto" }} onClick={() => onAccept(req)}>Accept</button>
                 <button className="wb-btn-ghost" style={{ padding: "8px 14px", minHeight: "auto" }} onClick={() => { setOfferId(offerId === req.id ? null : req.id); setOfferDate(""); }}>
                   <CalendarX size={13} /> Offer another date
+                </button>
+                <button className="wb-btn-ghost" style={{ padding: "8px 14px", minHeight: "auto", color: "var(--red)", marginLeft: "auto" }} onClick={() => onDelete(req)} title="Permanently delete this request — for duplicates">
+                  <Trash2 size={13} /> Delete
                 </button>
               </div>
               {offerId === req.id && (() => {
