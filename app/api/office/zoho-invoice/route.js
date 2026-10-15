@@ -18,14 +18,14 @@ export async function POST(request) {
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 
-  const { business, customerName, phone, jobValue, reg, lineItems } = body;
+  const { business, customerName, phone, email, jobValue, reg, lineItems } = body;
   const orgId = ZOHO_ORG_IDS[business];
   if (!orgId) return NextResponse.json({ error: `No Zoho organization configured for "${business}"` }, { status: 400 });
   if (!customerName || !jobValue) return NextResponse.json({ error: "customerName and jobValue are required" }, { status: 400 });
   if (!Array.isArray(lineItems) || lineItems.length === 0) return NextResponse.json({ error: "lineItems are required" }, { status: 400 });
 
   try {
-    const contactId = await findOrCreateContact(orgId, { name: customerName, phone });
+    const contactId = await findOrCreateContact(orgId, { name: customerName, phone, email: (email || "").trim() || undefined });
     const notes = `Bank transfer details:\n${BANK_DETAILS.accountName}\nSort code: ${BANK_DETAILS.sortCode}\nAccount number: ${BANK_DETAILS.accountNumber}\n\nThank you for your business — we'd really appreciate a quick Google review: ${REVIEW_LINKS[business] || ""}`;
     // The price on the booking (and each job type's own price) is what the
     // customer was quoted — VAT-inclusive. Zoho adds VAT on top of whatever

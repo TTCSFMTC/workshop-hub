@@ -3651,7 +3651,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          business: booking.business, customerName: booking.customerName, phone: booking.phone,
+          business: booking.business, customerName: booking.customerName, phone: booking.phone, email: booking.email,
           jobValue: booking.jobValue, reg: booking.reg, lineItems,
         }),
       });
