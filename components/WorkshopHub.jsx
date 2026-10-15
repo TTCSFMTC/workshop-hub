@@ -1989,6 +1989,13 @@ function OfficeMode({
             } else {
               addBooking(b);
               setPrintJob(b);
+              // Same moment the job card prints, open the WhatsApp confirmation
+              // ready to send so none get missed. Needs a phone number and an
+              // agreed price (the confirmation quotes it); without either it
+              // can't be sent from here.
+              if (b.phone && b.jobValue > 0) {
+                window.open(whatsappLink(b.phone, confirmationMessage(b)), "_blank");
+              }
             }
             if (acceptingRequest) {
               fetch("/api/office/booking-requests", {
