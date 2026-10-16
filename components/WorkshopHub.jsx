@@ -7299,10 +7299,23 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
     if (jt?.standardPrice != null) return jt.standardPrice;
     return isTimingChainReplacement(jt) ? STANDARD_TIMING_CHAIN_PRICE.jobValue : 0;
   };
+  // Fills (and keeps filling) any picked job type's standard price while it's
+  // still blank or £0 — so a job type whose price only arrived after the form
+  // opened, or that was picked a moment too early, still gets its price. A
+  // price typed in by hand (above £0) is never touched.
   useEffect(() => {
     if (booking) return;
-    setJobTypePrices((prev) => (jobTypeId in prev ? prev : { ...prev, [jobTypeId]: priceForNewJobType(jobTypeId) }));
-  }, [jobTypeId]);
+    setJobTypePrices((prev) => {
+      let next = prev;
+      [jobTypeId, ...extraJobTypeIds].filter(Boolean).forEach((id) => {
+        if (prev[id] > 0) return;
+        const std = priceForNewJobType(id);
+        if (std > 0) next = { ...next, [id]: std };
+        else if (!(id in next)) next = { ...next, [id]: 0 };
+      });
+      return next;
+    });
+  }, [jobTypeId, extraJobTypeIds, jobTypes]);
   // Same idea, for how many days the job normally takes — see
   // defaultDaysForJobType above for which brand/job combos this covers.
   useEffect(() => {
