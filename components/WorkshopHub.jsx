@@ -1299,14 +1299,28 @@ export default function WorkshopHub() {
 
   const setStaffStartDateFn = (name, date) => withSaveState(async () => {
     const key = name.toLowerCase();
+    const before = staffStartDates[key];
     setStaffStartDates((prev) => { const next = { ...prev }; if (date) next[key] = date; else delete next[key]; return next; });
-    if (date) await upsertStaffStartDate(name, date); else await deleteStaffStartDate(name);
+    try {
+      if (date) await upsertStaffStartDate(name, date); else await deleteStaffStartDate(name);
+    } catch (e) {
+      setStaffStartDates((prev) => { const next = { ...prev }; if (before) next[key] = before; else delete next[key]; return next; });
+      alert("That start date did NOT save — the start dates table hasn't been created in the database yet (run migration 060 in Supabase), or the connection dropped.");
+      throw e;
+    }
   });
 
   const addSicknessFn = (name, dateFrom, dateTo, notes) => withSaveState(async () => {
     const entry = { id: uid("sick"), name, dateFrom, dateTo, notes: notes || "" };
     setSickness((prev) => [entry, ...prev]);
-    await insertSickness(entry);
+    try {
+      await insertSickness(entry);
+    } catch (e) {
+      // Never leave a record on screen that didn't actually save.
+      setSickness((prev) => prev.filter((x) => x.id !== entry.id));
+      alert("That sickness record did NOT save — the Sickness table hasn't been created in the database yet (run migration 059 in Supabase), or the connection dropped.");
+      throw e;
+    }
   });
   const removeSicknessFn = (id) => withSaveState(async () => {
     setSickness((prev) => prev.filter((x) => x.id !== id));
