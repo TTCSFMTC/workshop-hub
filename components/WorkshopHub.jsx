@@ -6779,6 +6779,27 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Start dates</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
+          The day each person started — holiday only accrues from this date (2.33 days per full month worked). Saves as soon as you pick a date.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          {STAFF_HOLIDAY_NAMES.map((n) => {
+            const v = staffStartDates[n.toLowerCase()] || "";
+            return (
+              <div key={n}>
+                <label className="wb-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(n), display: "inline-block" }} />{n}
+                </label>
+                <input type="date" className="wb-input" style={{ width: 160 }} value={v} onChange={(e) => setStaffStartDate && setStaffStartDate(n, e.target.value)} />
+                {!v && <div style={{ fontSize: 10, color: "var(--amber2)", marginTop: 2 }}>not set — assuming 1 Aug</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="wb-panel">
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
           <Sun size={16} color="var(--amber)" /> Holidays
         </div>
@@ -6834,13 +6855,8 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
                     <span style={{ display: "block", fontSize: 11, color: balance < 0 ? "var(--red)" : "var(--muted)" }}>accrued {accrued} · balance {balance}</span>
                   </span>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: startDate ? "var(--muted)" : "var(--amber2)" }}>
-                  <span>Started</span>
-                  <input
-                    type="date" className="wb-input" style={{ padding: "3px 6px", minHeight: 0, fontSize: 12, width: 140 }}
-                    value={startDate} onChange={(e) => setStaffStartDate && setStaffStartDate(person, e.target.value)}
-                  />
-                  {!startDate && <span>no start date — assuming 1 Aug</span>}
+                <div style={{ marginTop: 6, fontSize: 11, color: startDate ? "var(--muted)" : "var(--amber2)" }}>
+                  {startDate ? `Started ${fmtDate(startDate)}` : "No start date — set at the top of this page (assuming 1 Aug)"}
                 </div>
               </div>
             ))}
