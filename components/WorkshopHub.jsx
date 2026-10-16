@@ -1474,6 +1474,8 @@ export default function WorkshopHub() {
       <style>{`
         .wh-root { background: var(--bg); color: var(--text); font-family: var(--font-inter), 'Inter', ui-sans-serif, system-ui, sans-serif; min-height: 100vh; -webkit-tap-highlight-color: transparent; }
         .wh-mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+        /* Room under the last row so the bottom of every page (e.g. the last person's holiday box) can scroll clear of the Dock / window edge. */
+        .wh-root { padding-bottom: 120px; }
         .wh-topbar { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--line); position:sticky; top:0; background:#16181a; z-index:20; }
         .wh-title { font-weight:800; font-size:17px; display:flex; align-items:center; gap:8px; }
         .wh-modeswitch { display:flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
