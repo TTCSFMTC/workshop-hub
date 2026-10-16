@@ -7174,6 +7174,15 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
   const [jobTypeId, setJobTypeId] = useState("");
   const [date, setDate] = useState(defaultDate || todayISO());
   const [days, setDays] = useState(MIN_BOOKING_DAYS);
+  // Retail price (inc VAT) — fills in with the job type's standard price (the
+  // same price shown on the website) the moment a job type is picked, and can
+  // be overtyped.
+  const [price, setPrice] = useState("");
+  const pickJobType = (id) => {
+    setJobTypeId(id);
+    const std = jobTypes.find((j) => j.id === id)?.standardPrice;
+    setPrice(std != null ? String(std) : "");
+  };
 
   const canSave = reg.trim() && jobTypeId && date;
 
@@ -7202,10 +7211,14 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
           </div>
           <div>
             <label className="wb-label">Job type</label>
-            <select className="wb-select" value={jobTypeId} onChange={(e) => setJobTypeId(e.target.value)}>
+            <select className="wb-select" value={jobTypeId} onChange={(e) => pickJobType(e.target.value)}>
               <option value="">Select…</option>
               {jobTypes.map((jt) => <option key={jt.id} value={jt.id}>{jt.name}</option>)}
             </select>
+          </div>
+          <div>
+            <label className="wb-label">Retail price £ (inc VAT)</label>
+            <input type="number" min="0" step="0.01" className="wb-input" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="fills in when you pick the job type" />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div><label className="wb-label">Date offered</label><input type="date" className="wb-input" value={date} onChange={(e) => setDate(e.target.value)} /></div>
@@ -7219,7 +7232,8 @@ function ProvisionalBookingModal({ jobTypes, brands, defaultDate, onClose, onSav
             onClick={() => onSave({
               business, reg: reg.trim(), vehicleModel: [make, model.trim()].filter(Boolean).join(" ").trim(),
               customerName: reg.trim(), phone: "", email: "", symptoms: "", jobTypeId, date, days,
-              jobValue: 0, labourCost: 0, transportCost: 0,
+              jobValue: parseFloat(price) || 0, labourCost: 0, transportCost: 0,
+              jobTypePrices: parseFloat(price) > 0 ? [{ jobTypeId, price: parseFloat(price) }] : [],
               pickupRequired: false, pickupAddress: "", postcode: "", distanceMiles: null,
               provisional: true,
             })}
@@ -7304,10 +7318,14 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
   // opened, or that was picked a moment too early, still gets its price. A
   // price typed in by hand (above £0) is never touched.
   useEffect(() => {
-    if (booking) return;
+    // When editing, the job types already on the booking keep whatever was
+    // agreed — only a job type newly picked here (e.g. switching from a
+    // placeholder to the real job) gets its standard price filled in.
+    const original = booking ? new Set([booking.jobTypeId, ...(booking.extraJobTypeIds || [])]) : null;
     setJobTypePrices((prev) => {
       let next = prev;
       [jobTypeId, ...extraJobTypeIds].filter(Boolean).forEach((id) => {
+        if (original && original.has(id)) return;
         if (prev[id] > 0) return;
         const std = priceForNewJobType(id);
         if (std > 0) next = { ...next, [id]: std };
