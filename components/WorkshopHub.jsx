@@ -13,7 +13,7 @@ import { QuotesTab } from "./QuotesTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
-  insertHoliday, deleteHoliday, fetchSickness, insertSickness, deleteSickness,
+  insertHoliday, deleteHoliday, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
@@ -122,7 +122,7 @@ const bonusShareFor = (w, bonusPerPerson) => (getsBonus(w) ? bonusPerPerson : 0)
 // of the entitlement (28/12 days) for each FULL month worked in it. Everyone
 // is assumed to have been here since the start of the holiday year unless a
 // later start date is given here (YYYY-MM-DD), e.g. { charlie: "2026-09-01" }.
-const STAFF_START_DATES = {};
+// (Start dates are now entered per person on the Holidays tab and saved in the staff_start_dates table.)
 const holidayYearStart = (today = todayISO()) => {
   const y = Number(today.slice(0, 4)), m = Number(today.slice(5, 7));
   return `${m >= 8 ? y : y - 1}-08-01`;
@@ -602,6 +602,7 @@ export default function WorkshopHub() {
   const [brands, setBrands] = useState([]);
   const [holidays, setHolidays] = useState([]);
   const [sickness, setSickness] = useState([]);
+  const [staffStartDates, setStaffStartDates] = useState({});
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
   const [fixedCosts, setFixedCosts] = useState([]);
@@ -685,6 +686,7 @@ export default function WorkshopHub() {
       subscribeTable("brands", async () => setBrands(await fetchBrands())),
       subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
       subscribeTable("sickness", async () => setSickness(await fetchSickness().catch(() => []))),
+      subscribeTable("staff_start_dates", async () => setStaffStartDates(await fetchStaffStartDates().catch(() => ({})))),
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
@@ -703,6 +705,7 @@ export default function WorkshopHub() {
   useEffect(() => {
     if (!ready) return;
     fetchSickness().then(setSickness).catch(() => {});
+    fetchStaffStartDates().then(setStaffStartDates).catch(() => {});
   }, [ready]);
 
   const withSaveState = useCallback(async (fn) => {
@@ -1294,6 +1297,12 @@ export default function WorkshopHub() {
     await insertHoliday(holiday);
   });
 
+  const setStaffStartDateFn = (name, date) => withSaveState(async () => {
+    const key = name.toLowerCase();
+    setStaffStartDates((prev) => { const next = { ...prev }; if (date) next[key] = date; else delete next[key]; return next; });
+    if (date) await upsertStaffStartDate(name, date); else await deleteStaffStartDate(name);
+  });
+
   const addSicknessFn = (name, dateFrom, dateTo, notes) => withSaveState(async () => {
     const entry = { id: uid("sick"), name, dateFrom, dateTo, notes: notes || "" };
     setSickness((prev) => [entry, ...prev]);
@@ -1602,6 +1611,7 @@ export default function WorkshopHub() {
           updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescriptionFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
           sickness={sickness} addSickness={addSicknessFn} removeSickness={removeSicknessFn}
+          staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDateFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
@@ -1646,7 +1656,7 @@ function OfficeMode({
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
-  holidays, addHoliday, removeHoliday, sickness, addSickness, removeSickness,
+  holidays, addHoliday, removeHoliday, sickness, addSickness, removeSickness, staffStartDates, setStaffStartDate,
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
@@ -1956,7 +1966,7 @@ function OfficeMode({
             updateJobTypeStandardPrice={updateJobTypeStandardPrice} updateJobTypePublicBookable={updateJobTypePublicBookable} updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescription} />
         )}
         {tab === "holidays" && (
-          <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
+          <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDate} />
         )}
         {tab === "sickness" && (
           <ProfitabilityGate>
@@ -6725,7 +6735,7 @@ function SicknessTab({ sickness, addSickness, removeSickness }) {
   );
 }
 
-function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
+function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}, setStaffStartDate }) {
   const [name, setName] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -6757,11 +6767,12 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
       totals[h.name] = (totals[h.name] || 0) + weekdayCount(from, to);
     });
     return Object.entries(totals).map(([person, used]) => {
-      const start = STAFF_START_DATES[person.toLowerCase()] || yearStart;
+      const startDate = staffStartDates[person.toLowerCase()] || "";
+      const start = startDate || yearStart;
       const accrued = +(fullMonthsWorked(start < yearStart ? yearStart : start, yearStart) * (HOLIDAY_ENTITLEMENT / 12)).toFixed(2);
-      return { person, used, accrued, balance: +(accrued - used).toFixed(2) };
+      return { person, used, accrued, balance: +(accrued - used).toFixed(2), startDate };
     }).sort((a, b) => b.used - a.used);
-  }, [holidays, yearStart, yearEnd]);
+  }, [holidays, yearStart, yearEnd, staffStartDates]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -6809,16 +6820,26 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday }) {
             Balance = accrued to date minus days booked — it dips negative while holiday is booked ahead of being earned.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
-            {tally.map(({ person, used: days, accrued, balance }) => (
-              <div key={person} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(person), display: "inline-block", flexShrink: 0 }} />
-                  {person}
-                </span>
-                <span className="wh-mono" style={{ textAlign: "right", lineHeight: 1.4 }}>
-                  <span style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }}>{days} of {HOLIDAY_ENTITLEMENT} booked</span>
-                  <span style={{ display: "block", fontSize: 11, color: balance < 0 ? "var(--red)" : "var(--muted)" }}>accrued {accrued} · balance {balance}</span>
-                </span>
+            {tally.map(({ person, used: days, accrued, balance, startDate }) => (
+              <div key={person} style={{ fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(person), display: "inline-block", flexShrink: 0 }} />
+                    {person}
+                  </span>
+                  <span className="wh-mono" style={{ textAlign: "right", lineHeight: 1.4 }}>
+                    <span style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }}>{days} of {HOLIDAY_ENTITLEMENT} booked</span>
+                    <span style={{ display: "block", fontSize: 11, color: balance < 0 ? "var(--red)" : "var(--muted)" }}>accrued {accrued} · balance {balance}</span>
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: startDate ? "var(--muted)" : "var(--amber2)" }}>
+                  <span>Started</span>
+                  <input
+                    type="date" className="wb-input" style={{ padding: "3px 6px", minHeight: 0, fontSize: 12, width: 140 }}
+                    value={startDate} onChange={(e) => setStaffStartDate && setStaffStartDate(person, e.target.value)}
+                  />
+                  {!startDate && <span>no start date — assuming 1 Aug</span>}
+                </div>
               </div>
             ))}
           </div>
