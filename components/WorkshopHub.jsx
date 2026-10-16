@@ -113,6 +113,10 @@ const weekdayCount = (dateFrom, dateTo) => {
 const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2", angela: "#f06fa8" };
 const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam", "Angela"];
 const HOLIDAY_ENTITLEMENT = 28;
+// Anyone on a different yearly allowance (days per holiday year, e.g. part
+// time) — keyed by lower-case first name. Everyone else gets HOLIDAY_ENTITLEMENT.
+const HOLIDAY_ENTITLEMENT_BY_PERSON = { sam: 17 };
+const entitlementFor = (name) => HOLIDAY_ENTITLEMENT_BY_PERSON[String(name || "").toLowerCase()] ?? HOLIDAY_ENTITLEMENT;
 // The monthly team bonus pot is shared between Ernesto and Ervin only — other
 // people on the wages list (anyone else's basic) never get a bonus share.
 const BONUS_STAFF = ["ernesto", "ervin"];
@@ -6785,8 +6789,8 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
     return Object.entries(totals).map(([person, used]) => {
       const startDate = staffStartDates[person.toLowerCase()] || "";
       const start = startDate || yearStart;
-      const accrued = +(fullMonthsWorked(start < yearStart ? yearStart : start, yearStart) * (HOLIDAY_ENTITLEMENT / 12)).toFixed(2);
-      return { person, used, accrued, balance: +(accrued - used).toFixed(2), startDate };
+      const accrued = +(fullMonthsWorked(start < yearStart ? yearStart : start, yearStart) * (entitlementFor(person) / 12)).toFixed(2);
+      return { person, used, accrued, balance: +(accrued - used).toFixed(2), startDate, entitlement: entitlementFor(person) };
     }).sort((a, b) => b.used - a.used);
   }, [holidays, yearStart, yearEnd, staffStartDates]);
 
@@ -6851,13 +6855,13 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
 
       {tally.length > 0 && (
         <div className="wb-panel">
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {yearLabel} — {HOLIDAY_ENTITLEMENT} days each</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {yearLabel} — {HOLIDAY_ENTITLEMENT} days a year (Sam, part time: {entitlementFor("sam")})</div>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
-            Holiday year runs 1 Aug – 31 Jul. Days accrue at {(HOLIDAY_ENTITLEMENT / 12).toFixed(2)} per full month worked. Mon-Fri days booked, including the Christmas shutdown (28–31 Dec), come off the {HOLIDAY_ENTITLEMENT}.
+            Holiday year runs 1 Aug – 31 Jul. Days accrue at one twelfth of the yearly allowance per full month worked ({(HOLIDAY_ENTITLEMENT / 12).toFixed(2)} a month on {HOLIDAY_ENTITLEMENT}, {(entitlementFor("sam") / 12).toFixed(2)} for Sam). Mon-Fri days booked, including the Christmas shutdown (28–31 Dec), come off the allowance.
             Balance = accrued to date minus days booked — it dips negative while holiday is booked ahead of being earned.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
-            {tally.map(({ person, used: days, accrued, balance, startDate }) => (
+            {tally.map(({ person, used: days, accrued, balance, startDate, entitlement }) => (
               <div key={person} style={{ fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
