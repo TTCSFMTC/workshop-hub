@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
-  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp, BarChart3,
+  MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp, BarChart3, Thermometer,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX,
 } from "lucide-react";
@@ -13,7 +13,7 @@ import { QuotesTab } from "./QuotesTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
-  insertHoliday, deleteHoliday,
+  insertHoliday, deleteHoliday, fetchSickness, insertSickness, deleteSickness,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
@@ -110,8 +110,8 @@ const weekdayCount = (dateFrom, dateTo) => {
 };
 // Per-staff holiday colour, keyed by first name (case-insensitive) so the
 // calendar star and Holidays tab agree on who's who at a glance.
-const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2" };
-const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam"];
+const STAFF_HOLIDAY_COLORS = { ervin: "var(--red)", ernesto: "var(--blue)", chris: "var(--green)", charlie: "#b48cf5", sam: "#2fc4b2", angela: "#f06fa8" };
+const STAFF_HOLIDAY_NAMES = ["Chris", "Ernesto", "Ervin", "Charlie", "Sam", "Angela"];
 const HOLIDAY_ENTITLEMENT = 28;
 // The monthly team bonus pot is shared between Ernesto and Ervin only — other
 // people on the wages list (anyone else's basic) never get a bonus share.
@@ -601,6 +601,7 @@ export default function WorkshopHub() {
   const [stockBatches, setStockBatches] = useState([]);
   const [brands, setBrands] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [sickness, setSickness] = useState([]);
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
   const [fixedCosts, setFixedCosts] = useState([]);
@@ -683,6 +684,7 @@ export default function WorkshopHub() {
       subscribeTable("stock_batches", async () => setStockBatches(await fetchStockBatches())),
       subscribeTable("brands", async () => setBrands(await fetchBrands())),
       subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
+      subscribeTable("sickness", async () => setSickness(await fetchSickness().catch(() => []))),
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
@@ -694,6 +696,13 @@ export default function WorkshopHub() {
       subscribeTable("quotes", async () => setQuotes(await fetchQuotes())),
     ];
     return () => unsubs.forEach((u) => u());
+  }, [ready]);
+
+  // Sickness is fetched on its own (not part of the main load) so the app still
+  // starts normally before its table has been created.
+  useEffect(() => {
+    if (!ready) return;
+    fetchSickness().then(setSickness).catch(() => {});
   }, [ready]);
 
   const withSaveState = useCallback(async (fn) => {
@@ -1285,6 +1294,16 @@ export default function WorkshopHub() {
     await insertHoliday(holiday);
   });
 
+  const addSicknessFn = (name, dateFrom, dateTo, notes) => withSaveState(async () => {
+    const entry = { id: uid("sick"), name, dateFrom, dateTo, notes: notes || "" };
+    setSickness((prev) => [entry, ...prev]);
+    await insertSickness(entry);
+  });
+  const removeSicknessFn = (id) => withSaveState(async () => {
+    setSickness((prev) => prev.filter((x) => x.id !== id));
+    await deleteSickness(id);
+  });
+
   const removeHolidayFn = (holidayId) => withSaveState(async () => {
     setHolidays((prev) => prev.filter((h) => h.id !== holidayId));
     await deleteHoliday(holidayId);
@@ -1582,6 +1601,7 @@ export default function WorkshopHub() {
           updateJobTypePublicBookable={updateJobTypePublicBookableFn}
           updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescriptionFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
+          sickness={sickness} addSickness={addSicknessFn} removeSickness={removeSicknessFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
@@ -1626,7 +1646,7 @@ function OfficeMode({
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
-  holidays, addHoliday, removeHoliday,
+  holidays, addHoliday, removeHoliday, sickness, addSickness, removeSickness,
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
@@ -1861,7 +1881,7 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["sickness", "Sickness", Thermometer], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1937,6 +1957,11 @@ function OfficeMode({
         )}
         {tab === "holidays" && (
           <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} />
+        )}
+        {tab === "sickness" && (
+          <ProfitabilityGate>
+            <SicknessTab sickness={sickness} addSickness={addSickness} removeSickness={removeSickness} />
+          </ProfitabilityGate>
         )}
         {tab === "forecast" && (
           <ProfitabilityGate>
@@ -6596,6 +6621,104 @@ function NewJobTypeModal({ brands, onClose, onCreate }) {
             </select>
           </div>
           <button className="wb-btn" disabled={!name.trim()} style={!name.trim() ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={create}>Create job type</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Staff sickness record for everyone, workshop and office. Sits behind the
+// same second password as Profitability — absence records are private.
+// Counts Monday-Friday days (same as holidays) over the last 12 months, plus
+// how many separate absences, and flags anyone off sick today.
+function SicknessTab({ sickness, addSickness, removeSickness }) {
+  const [name, setName] = useState("");
+  const [from, setFrom] = useState(todayISO());
+  const [to, setTo] = useState(todayISO());
+  const [notes, setNotes] = useState("");
+  const today = todayISO();
+  const yearAgo = addDaysISO(today, -365);
+
+  const add = () => {
+    if (!name || !from || !to) return;
+    addSickness(name, from, to < from ? from : to, notes.trim());
+    setName(""); setNotes(""); setFrom(todayISO()); setTo(todayISO());
+  };
+
+  const people = useMemo(() => {
+    const map = {};
+    STAFF_HOLIDAY_NAMES.forEach((n) => { map[n] = { name: n, days: 0, episodes: 0, offToday: false }; });
+    sickness.forEach((s) => {
+      const p = (map[s.name] = map[s.name] || { name: s.name, days: 0, episodes: 0, offToday: false });
+      if (today >= s.dateFrom && today <= s.dateTo) p.offToday = true;
+      const a = s.dateFrom < yearAgo ? yearAgo : s.dateFrom;
+      const b = s.dateTo > today ? today : s.dateTo;
+      if (a <= b) { p.days += weekdayCount(a, b); p.episodes += 1; }
+    });
+    return Object.values(map).sort((x, y) => y.days - x.days || x.name.localeCompare(y.name));
+  }, [sickness, today, yearAgo]);
+
+  const sorted = [...sickness].sort((a, b) => (a.dateFrom < b.dateFrom ? 1 : a.dateFrom > b.dateFrom ? -1 : 0));
+  const canAdd = name && from && to;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <Thermometer size={16} color="var(--amber)" /> Sickness
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+          Every employee, workshop and office. Record the first and last day off — weekends aren't counted.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
+          <div>
+            <label className="wb-label">Who</label>
+            <select className="wb-select" style={{ width: 160 }} value={name} onChange={(e) => setName(e.target.value)}>
+              <option value="">Select…</option>
+              {STAFF_HOLIDAY_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div><label className="wb-label">First day off</label><input type="date" className="wb-input" value={from} onChange={(e) => { setFrom(e.target.value); if (to < e.target.value) setTo(e.target.value); }} /></div>
+          <div><label className="wb-label">Last day off</label><input type="date" className="wb-input" min={from} value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <div style={{ flex: 1, minWidth: 180 }}><label className="wb-label">Notes (optional)</label><input className="wb-input" placeholder="e.g. flu, back at work Thursday" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+          <button className="wb-btn" disabled={!canAdd} style={!canAdd ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}><Plus size={13} /> Add sickness</button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wb-table">
+            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              {sorted.map((s) => (
+                <tr key={s.id}>
+                  <td style={{ fontWeight: 600 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(s.name), display: "inline-block", marginRight: 7 }} />
+                    {s.name}{today >= s.dateFrom && today <= s.dateTo && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: "var(--red)" }}>OFF NOW</span>}
+                  </td>
+                  <td className="wh-mono">{fmtDate(s.dateFrom)}</td>
+                  <td className="wh-mono">{fmtDate(s.dateTo)}</td>
+                  <td className="wh-mono">{weekdayCount(s.dateFrom, s.dateTo)}</td>
+                  <td style={{ fontSize: 12, color: "var(--muted)" }}>{s.notes}</td>
+                  <td><button onClick={() => { if (confirm(`Delete ${s.name}'s sickness record (${fmtDate(s.dateFrom)})?`)) removeSickness(s.id); }} title="Delete" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
+                </tr>
+              ))}
+              {sorted.length === 0 && <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No sickness recorded yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Last 12 months by person</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>Working days off sick and number of separate absences.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
+          {people.map((p) => (
+            <div key={p.name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(p.name), display: "inline-block", flexShrink: 0 }} />
+                {p.name}{p.offToday && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--red)" }}>OFF</span>}
+              </span>
+              <span className="wh-mono" style={{ fontWeight: 700 }}>{p.days} day{p.days !== 1 ? "s" : ""} · {p.episodes} absence{p.episodes !== 1 ? "s" : ""}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
