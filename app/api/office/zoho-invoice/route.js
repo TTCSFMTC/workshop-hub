@@ -44,6 +44,9 @@ export async function POST(request) {
     });
   } catch (e) {
     console.error("Zoho invoice creation failed", e);
-    return NextResponse.json({ error: "Zoho invoice creation failed — check server logs" }, { status: 500 });
+    // Pass Zoho's own reason back (not just "check server logs") so whoever
+    // pressed the button can see — and report — exactly what went wrong.
+    const reason = String(e?.message || e).replace(/\s+/g, " ").slice(0, 400);
+    return NextResponse.json({ error: `Zoho invoice creation failed — ${reason}` }, { status: 500 });
   }
 }
