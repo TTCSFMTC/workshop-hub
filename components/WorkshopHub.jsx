@@ -1694,9 +1694,14 @@ function OfficeMode({
   const [printJob, setPrintJob] = useState(null);
   const [printJobs, setPrintJobs] = useState(null);
   const [printStillToFinish, setPrintStillToFinish] = useState(false);
+  const [printVehicles, setPrintVehicles] = useState(false);
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [printWagesMonth, setPrintWagesMonth] = useState(null);
   const [bookingRequests, setBookingRequests] = useState([]);
+  // Every online request ever submitted, whatever its status — kept so a
+  // customer who cancelled (or was declined) and comes back can be found
+  // with everything they originally told us, not just their pending ones.
+  const [pastRequests, setPastRequests] = useState([]);
   // "Who's calling?" — lets office staff check an incoming caller's number
   // against past bookings before or during the call, and falls back to a
   // few external lookup links when the number isn't in the system at all.
@@ -1810,6 +1815,15 @@ function OfficeMode({
     window.addEventListener("afterprint", clear);
     return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
   }, [printStillToFinish]);
+
+  // Same pattern again, for the daily "vehicles in the workshop" list.
+  useEffect(() => {
+    if (!printVehicles) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintVehicles(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printVehicles]);
 
   // Same pattern again, for the daily "outstanding parts" sheet.
   useEffect(() => {
@@ -1947,6 +1961,7 @@ function OfficeMode({
             onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
             onPrintStillToFinish={() => setPrintStillToFinish(true)}
+            onPrintVehicles={() => setPrintVehicles(true)}
           />
         )}
         {tab === "requests" && (
@@ -2077,6 +2092,7 @@ function OfficeMode({
       {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} />}
       {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} />}
       {printStillToFinish && <JobsStillToFinishPrintout rows={stillToFinishRows(bookings, jobTypes)} />}
+      {printVehicles && <WorkshopVehiclesPrintout rows={workshopVehicleRows(bookings, jobTypes)} />}
       {printOutstandingParts && <OutstandingPartsPrintout rows={outstandingPartsRows(stockBatches, parts)} />}
       {printWagesMonth && <WagesStatementPrintout month={printWagesMonth} bookings={bookings} bonusRates={bonusRates} staffWages={staffWages} jobTypes={jobTypes} />}
       {showReorderAlert && pendingReorder.length > 0 && (
@@ -2182,6 +2198,64 @@ function JobCardsPrintout({ bookings, jobTypes }) {
 // A single sheet listing every job still outstanding, oldest first —
 // printed each morning and worked through top to bottom, rather than one
 // card per booking like JobCardsPrintout above.
+// Cars physically on site right now: marked IN (arrived) and not yet collected —
+// includes finished ones waiting for the customer. Oldest arrival first.
+function workshopVehicleRows(bookings, jobTypes) {
+  const jtIndex = Object.fromEntries(jobTypes.map((j) => [j.id, j.name]));
+  const inDate = (b) => (b.arrivedAt ? new Date(b.arrivedAt).toISOString().slice(0, 10) : b.date);
+  return bookings
+    .filter((b) => b.arrived && !b.completed && !b.customerCancelled && b.date)
+    .sort((a, b) => (inDate(a) < inDate(b) ? -1 : inDate(a) > inDate(b) ? 1 : (a.date < b.date ? -1 : 1)))
+    .map((b) => {
+      const names = [b.jobTypeId, ...(b.extraJobTypeIds || [])].map((id) => jtIndex[id]).filter(Boolean);
+      return {
+        id: b.id,
+        dateIn: fmtDate(inDate(b)),
+        reg: b.reg || "—",
+        vehicle: b.vehicleModel || "",
+        customer: b.customerName || "Unnamed",
+        phone: b.phone || "",
+        job: names.join(" + ") || "—",
+        due: fmtDate(lastWorkingDay(b.date, b.days)),
+        status: b.workshopCompleted ? "DONE — awaiting collection" : "In progress",
+        done: !!b.workshopCompleted,
+      };
+    });
+}
+const VEH_COLS = ["In", "Reg", "Vehicle", "Customer", "Job", "Due out", "Status", "Notes"];
+function WorkshopVehiclesPrintout({ rows }) {
+  const td = { padding: "7px 8px", borderBottom: "1px solid #ccc", verticalAlign: "top" };
+  return (
+    <div className="print-still-to-finish">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Vehicles in the workshop — {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>
+          Printed {new Date().toLocaleString("en-GB")} — {rows.length} car{rows.length !== 1 ? "s" : ""} on site, oldest arrival first
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr>{VEH_COLS.map((h) => <th key={h} style={{ textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td style={td}>{r.dateIn}</td>
+                <td style={{ ...td, fontWeight: 800, fontSize: 13 }}>{r.reg}</td>
+                <td style={td}>{r.vehicle}</td>
+                <td style={td}>{r.customer}{r.phone ? <div style={{ color: "#555" }}>{r.phone}</div> : null}</td>
+                <td style={td}>{r.job}</td>
+                <td style={td}>{r.due}</td>
+                <td style={{ ...td, fontWeight: 700 }}>{r.status}</td>
+                <td style={{ ...td, width: 140 }}><div style={{ borderBottom: "1px solid #999", height: 18 }} /></td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={VEH_COLS.length} style={{ padding: "10px 8px", color: "#555" }}>No cars marked as in the workshop.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 const STF_COLS = ["Booked in", "Required by", "Customer", "Reg", "Vehicle", "Business", "Job type", "Status"];
 const STF_KEYS = ["dateLabel", "requiredByLabel", "customerName", "reg", "vehicleModel", "business", "jobTypeLabel", "status"];
 function JobsStillToFinishPrintout({ rows }) {
@@ -3305,7 +3379,7 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
 // see what's in, what's done, and what's ready to collect. Hides collected
 // jobs by default — those are done and out the door — but they're a tick
 // away.
-function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPrintStillToFinish }) {
+function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPrintStillToFinish, onPrintVehicles }) {
   const [showCollected, setShowCollected] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   // Which rows are ticked for a bulk reprint — e.g. tick every car
@@ -3367,6 +3441,9 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPr
           </label>
           <button className="wb-btn-ghost" onClick={onPrintStillToFinish} title="Print every outstanding job, oldest first">
             <Printer size={13} /> Print daily list
+          </button>
+          <button className="wb-btn" onClick={onPrintVehicles} title="Print the cars physically in the workshop right now, in date order">
+            <Printer size={13} /> Print vehicles in workshop
           </button>
           <button className="wb-btn-ghost" disabled={downloadingPdf} style={downloadingPdf ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={downloadStillToFinishPdf} title="Download the same list as a PDF to send to the guys">
             <Download size={13} /> {downloadingPdf ? "Generating…" : "Download PDF"}
