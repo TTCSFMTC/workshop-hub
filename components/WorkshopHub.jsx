@@ -1698,10 +1698,6 @@ function OfficeMode({
   const [printOutstandingParts, setPrintOutstandingParts] = useState(false);
   const [printWagesMonth, setPrintWagesMonth] = useState(null);
   const [bookingRequests, setBookingRequests] = useState([]);
-  // Every online request ever submitted, whatever its status — kept so a
-  // customer who cancelled (or was declined) and comes back can be found
-  // with everything they originally told us, not just their pending ones.
-  const [pastRequests, setPastRequests] = useState([]);
   // "Who's calling?" — lets office staff check an incoming caller's number
   // against past bookings before or during the call, and falls back to a
   // few external lookup links when the number isn't in the system at all.
