@@ -71,6 +71,9 @@ export async function POST(request) {
     return NextResponse.json({ ok: true, id: data.id });
   } catch (e) {
     console.error("quote PDF upload failed", e);
-    return NextResponse.json({ error: `Failed to process ${body.filename} — check server logs` }, { status: 500 });
+    // Pass the actual reason back (Drive, Supabase, etc.) rather than just
+    // "check server logs", so office can see — and report — what went wrong.
+    const reason = String(e?.message || e).replace(/\s+/g, " ").slice(0, 400);
+    return NextResponse.json({ error: `Failed to process ${body.filename} — ${reason}` }, { status: 500 });
   }
 }
