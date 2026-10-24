@@ -1,5 +1,12 @@
 {
   "crons": [
-    { "path": "/api/cron/lec-weekly", "schedule": "0 8 * * 6" }
+    {
+      "path": "/api/cron/lec-weekly",
+      "schedule": "0 8 * * 6"
+    },
+    {
+      "path": "/api/cron/lec-weekly?mode=first",
+      "schedule": "0 8 1 * *"
+    }
   ]
 }
