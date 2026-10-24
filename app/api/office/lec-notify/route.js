@@ -10,6 +10,9 @@ import { sendLecNewJobEmail } from "@/lib/resend";
 export async function POST(request) {
   const store = await cookies();
   if (!isValidSession(store.get(SESSION_COOKIE)?.value)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Instant emails are switched off (too many); Roxanne gets the Saturday and
+  // 1st-of-month lists only. Set LEC_INSTANT_EMAILS=on to bring them back.
+  if (process.env.LEC_INSTANT_EMAILS !== "on") return NextResponse.json({ ok: true, sent: false, disabled: true });
   const body = await request.json().catch(() => null);
   if (!body?.bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
   try {
