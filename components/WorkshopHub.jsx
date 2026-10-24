@@ -404,7 +404,7 @@ function reviewFollowUpMessage(b) {
   const link = REVIEW_LINKS[b.business] || "";
   return `Just a friendly reminder to leave us a Google review if you haven't already. ⭐
 
-Your feedback really helps our small family business and gives other Land Rover & Jaguar owners the confidence to choose us.
+Your feedback really helps our small family business and gives other drivers the confidence to choose us.
 
 It only takes a minute, and we genuinely appreciate every review.
 
