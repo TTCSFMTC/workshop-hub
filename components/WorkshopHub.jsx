@@ -921,6 +921,16 @@ export default function WorkshopHub() {
   // out of the FIFO batches once the job is actually marked workshop
   // completed (see updateBooking below), so stock reflects what's actually
   // been used rather than what's merely been booked in.
+  // Tells Lymm Engine Components (by email, server-side) about a job taken
+  // inside the next two weeks so their weekly list never goes stale. The server
+  // decides whether it qualifies; a failure here never affects the booking.
+  const notifyLec = (bookingId, kind) => {
+    fetch("/api/office/lec-notify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookingId, kind }),
+    }).catch(() => {});
+  };
+
   const addBooking = (booking) => withSaveState(async () => {
     const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
     const newBooking = { ...booking, id: uid("bk"), createdAt: Date.now() };
@@ -960,6 +970,8 @@ export default function WorkshopHub() {
       alert(`Failed to save the booking for ${newBooking.customerName || "this customer"} — nothing was saved.\n\n${detail}`);
       throw e;
     }
+
+    if (!newBooking.provisional) notifyLec(newBooking.id, "new");
 
     const googleEventId = await syncBookingToGoogle({ googleEventId: null, date: newBooking.date, days: newBooking.days, jobTypeName: jt?.name, colorId: jt?.color });
     if (googleEventId) {
@@ -1097,6 +1109,13 @@ export default function WorkshopHub() {
       jobs.push(...added.map((c) => insertBookingCustomPart({ ...c, bookingId: id })), ...removed.map((c) => removeBookingCustomPartRow(c.id)));
     }
     await Promise.all(jobs.filter(Boolean));
+
+    // A provisional hold confirmed, or a booking moved to a different date, can
+    // bring a job inside the two-week window — let the engine-parts supplier know.
+    if (before && !before.customerCancelled) {
+      if (before.provisional && patch.provisional === false) notifyLec(id, "confirmed");
+      else if ("date" in patch && patch.date && patch.date !== before.date && !before.provisional) notifyLec(id, "moved");
+    }
 
     if ("date" in patch || "jobTypeId" in patch || "days" in patch) {
       const current = { ...before, ...patch };
