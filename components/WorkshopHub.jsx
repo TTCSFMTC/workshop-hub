@@ -6085,7 +6085,7 @@ function StockTab({ bookings, stockRows, jobTypes, receiveStock, updatePartField
 function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
   const mondayOf = (iso) => addDaysISO(iso, -((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7));
   const [weekStart, setWeekStart] = useState(() => mondayOf(todayISO()));
-  const [printMode, setPrintMode] = useState(null); // null | "list" | "tick"
+  const [printMode, setPrintMode] = useState(null); // null | "list" | "tick" | "filters"
   const weekEnd = addDaysISO(weekStart, 6);
   const rangeLabel = `${fmtDate(weekStart)} – ${fmtDate(weekEnd)}`;
 
@@ -6109,6 +6109,14 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
       lines: fullBookingBom(b, jobTypes).filter((l) => !/^labour hours$/i.test((partById[l.partId]?.name || "").trim())),
     })), [bookings, weekStart, weekEnd, jobTypes, partById]);
 
+  // One row per registration with the oil filter(s) its job uses.
+  const filterRows = useMemo(() => jobs.map(({ booking, lines }) => ({
+    booking,
+    filters: lines.filter((l) => /oil filter/i.test(partById[l.partId]?.name || "")).map((l) => ({
+      qty: l.qty, name: partById[l.partId]?.name || l.partId, partNumber: partById[l.partId]?.partNumber || "",
+    })),
+  })), [jobs, partById]);
+
   const totals = useMemo(() => {
     const map = {};
     jobs.forEach(({ booking, lines }) => lines.forEach((l) => {
@@ -6127,7 +6135,7 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
 
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
-      {printMode && createPortal(<WeeklyPartsPrintout mode={printMode} rangeLabel={rangeLabel} jobs={jobs} totals={totals} partById={partById} />, document.body)}
+      {printMode && createPortal(<WeeklyPartsPrintout mode={printMode} rangeLabel={rangeLabel} jobs={jobs} totals={totals} partById={partById} filterRows={filterRows} />, document.body)}
       <div className="wb-modal" style={{ maxWidth: 860 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Weekly parts list</div>
@@ -6140,6 +6148,7 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
             <button className="wb-btn-ghost" onClick={() => setWeekStart(addDaysISO(weekStart, 7))}><ChevronRight size={14} /></button>
             <button className="wb-btn-ghost" onClick={() => setWeekStart(mondayOf(todayISO()))}>This week</button>
             <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+              <button className="wb-btn-ghost" disabled={jobs.length === 0} onClick={() => setPrintMode("filters")}><Printer size={13} /> Print oil filter list</button>
               <button className="wb-btn-ghost" disabled={jobs.length === 0} onClick={() => setPrintMode("list")}><Printer size={13} /> Print parts list</button>
               <button className="wb-btn" disabled={totals.length === 0} onClick={() => setPrintMode("tick")}><Printer size={13} /> Print tick sheet</button>
             </div>
@@ -6184,18 +6193,33 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
   );
 }
 
-function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById }) {
+function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById, filterRows }) {
   const th = { textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" };
   const td = { padding: "7px 8px", borderBottom: "1px solid #ccc", verticalAlign: "top" };
   const box = <div style={{ border: "1px solid #000", width: 18, height: 18 }} />;
   return (
     <div className="print-stocktake">
       <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
-        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>{mode === "tick" ? "Stock tick sheet" : "Parts needed"} — {rangeLabel}</div>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>{mode === "tick" ? "Stock tick sheet" : mode === "filters" ? "Oil filters by registration" : "Parts needed"} — {rangeLabel}</div>
         <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>
           Printed {new Date().toLocaleString("en-GB")} — {jobs.length} job{jobs.length !== 1 ? "s" : ""} starting this week (Mon–Sun)
         </div>
-        {mode === "tick" ? (
+        {mode === "filters" ? (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>{["Date", "Reg", "Car", "Oil filter", "Part no."].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {filterRows.map(({ booking: b, filters }) => (
+                <tr key={b.id}>
+                  <td style={td}>{fmtDate(b.date)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{b.reg || "—"}</td>
+                  <td style={td}>{b.vehicleModel}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{filters.length > 0 ? filters.map((f) => `${f.qty > 1 ? `${f.qty}× ` : ""}${f.name}`).join(", ") : "— none on this job —"}</td>
+                  <td style={{ ...td, color: "#444" }}>{filters.map((f) => f.partNumber).filter(Boolean).join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : mode === "tick" ? (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead><tr>
               {["Have it", "Part", "Part no.", "Need", "System", "Counted", "Order", "For"].map((h) => <th key={h} style={th}>{h}</th>)}
