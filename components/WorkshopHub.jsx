@@ -10,6 +10,7 @@ import {
   User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX,
 } from "lucide-react";
 import { QuotesTab } from "./QuotesTab";
+import { ChainBeltTab } from "./ChainBeltTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
@@ -1940,7 +1941,7 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["sickness", "Sickness", Thermometer], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["chainbelt", "Chain & Belt Quote", Wrench], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["sickness", "Sickness", Thermometer], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -1998,6 +1999,7 @@ function OfficeMode({
         {tab === "quotes" && (
           <QuotesTab quotes={quotes} updateQuoteField={updateQuoteField} removeQuote={removeQuote} />
         )}
+        {tab === "chainbelt" && <ChainBeltTab />}
         {tab === "supplierinvoices" && (
           <SupplierInvoicesTab
             suppliers={suppliers} addSupplier={addSupplier} updateSupplierField={updateSupplierField} removeSupplier={removeSupplier}
