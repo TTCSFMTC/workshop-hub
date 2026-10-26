@@ -14,7 +14,7 @@ import { ChainBeltTab } from "./ChainBeltTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
-  insertHoliday, deleteHoliday, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
+  insertHoliday, deleteHoliday, updateHolidayPaid, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
@@ -1315,10 +1315,26 @@ export default function WorkshopHub() {
     await deleteQuote(id);
   });
 
-  const addHolidayFn = (name, dateFrom, dateTo) => withSaveState(async () => {
-    const holiday = { id: uid("hol"), name, dateFrom, dateTo };
+  const addHolidayFn = (name, dateFrom, dateTo, paid = true) => withSaveState(async () => {
+    const holiday = { id: uid("hol"), name, dateFrom, dateTo, paid };
     setHolidays((prev) => [...prev, holiday]);
-    await insertHoliday(holiday);
+    try {
+      await insertHoliday(holiday);
+    } catch (e) {
+      setHolidays((prev) => prev.filter((h) => h.id !== holiday.id));
+      alert(`Couldn't save that ${paid ? "holiday" : "unpaid leave"}${paid ? "" : " — has migration 061 been run in Supabase?"}\n\n${e.message || e}`);
+    }
+  });
+
+  const setHolidayPaidFn = (id, paid) => withSaveState(async () => {
+    const before = holidays.find((h) => h.id === id)?.paid ?? true;
+    setHolidays((prev) => prev.map((h) => (h.id === id ? { ...h, paid } : h)));
+    try {
+      await updateHolidayPaid(id, paid);
+    } catch (e) {
+      setHolidays((prev) => prev.map((h) => (h.id === id ? { ...h, paid: before } : h)));
+      alert(`Couldn't change that — has migration 061 been run in Supabase?\n\n${e.message || e}`);
+    }
   });
 
   const setStaffStartDateFn = (name, date) => withSaveState(async () => {
@@ -1649,7 +1665,7 @@ export default function WorkshopHub() {
           updateJobTypeStandardPrice={updateJobTypeStandardPriceFn}
           updateJobTypePublicBookable={updateJobTypePublicBookableFn}
           updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescriptionFn}
-          holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn}
+          holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn} setHolidayPaid={setHolidayPaidFn}
           sickness={sickness} addSickness={addSicknessFn} removeSickness={removeSicknessFn}
           staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDateFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
@@ -1696,7 +1712,7 @@ function OfficeMode({
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
-  holidays, addHoliday, removeHoliday, sickness, addSickness, removeSickness, staffStartDates, setStaffStartDate,
+  holidays, addHoliday, removeHoliday, setHolidayPaid, sickness, addSickness, removeSickness, staffStartDates, setStaffStartDate,
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
@@ -1941,7 +1957,7 @@ function OfficeMode({
         </div>
       </div>
       <div className="wb-tabs">
-        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["chainbelt", "Chain & Belt Quote", Wrench], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["sickness", "Sickness", Thermometer], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
+        {[["calendar", "Calendar", Calendar], ["jobs", "Jobs", List], ["requests", "Booking Requests", Inbox], ["cancellations", "Cancellations", CalendarX], ["stock", "Stock & Reorder", Package], ["quotes", "Quotes", Receipt], ["chainbelt", "Chain & Belt Quote", Wrench], ["supplierinvoices", "Supplier Invoices", FileText], ["suppliers", "Suppliers", Truck], ["jobtypes", "Job Types", ListChecks], ["holidays", "Holidays", Sun], ["sickness", "Sickness", Thermometer], ["wages", "Wages Report", Receipt], ["forecast", "Forecast", TrendingUp], ["monthly", "Monthly Totals", BarChart3], ["profitability", "Profitability", PoundSterling], ["audit", "Corrections & Deletions", History], ["settings", "Settings", SettingsIcon]].map(([key, label, Icon]) => (
           <div key={key} className={`wb-tab ${tab === key ? "active" : ""}`} onClick={() => setTab(key)}>
             <Icon size={14} /> {label}
             {key === "stock" && lowStockItems.length > 0 && <span className="wb-badge-low" style={{ marginLeft: 4 }}>{lowStockItems.length}</span>}
@@ -2018,7 +2034,12 @@ function OfficeMode({
             updateJobTypeStandardPrice={updateJobTypeStandardPrice} updateJobTypePublicBookable={updateJobTypePublicBookable} updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescription} />
         )}
         {tab === "holidays" && (
-          <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDate} />
+          <HolidaysTab holidays={holidays} addHoliday={addHoliday} removeHoliday={removeHoliday} setHolidayPaid={setHolidayPaid} staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDate} />
+        )}
+        {tab === "wages" && (
+          <ProfitabilityGate>
+            <WagesReportTab holidays={holidays} sickness={sickness} />
+          </ProfitabilityGate>
         )}
         {tab === "sickness" && (
           <ProfitabilityGate>
@@ -6779,6 +6800,165 @@ function NewJobTypeModal({ brands, onClose, onCreate }) {
 // same second password as Profitability — absence records are private.
 // Counts Monday-Friday days (same as holidays) over the last 12 months, plus
 // how many separate absences, and flags anyone off sick today.
+// Monthly report for doing the wages: for one calendar month, each person's
+// paid holiday, unpaid leave and sickness days (Mon–Fri only, entries clipped
+// to the month), with the dates behind the numbers. Printable.
+function wagesReportData(month, holidays, sickness) {
+  const monthStart = `${month}-01`;
+  const monthEnd = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10);
+  const people = {};
+  const person = (n) => (people[n] = people[n] || { name: n, paid: 0, unpaid: 0, sick: 0, lines: [] });
+  STAFF_HOLIDAY_NAMES.forEach(person);
+  const add = (n, kind, dateFrom, dateTo, notes) => {
+    const from = dateFrom < monthStart ? monthStart : dateFrom;
+    const to = dateTo > monthEnd ? monthEnd : dateTo;
+    if (from > to) return;
+    const days = weekdayCount(from, to);
+    if (days === 0) return;
+    const p = person(n);
+    p[kind] += days;
+    p.lines.push({ kind, from, to, days, notes: notes || "" });
+  };
+  holidays.forEach((h) => add(h.name, h.paid === false ? "unpaid" : "paid", h.dateFrom, h.dateTo));
+  sickness.forEach((x) => add(x.name, "sick", x.dateFrom, x.dateTo, x.notes));
+  Object.values(people).forEach((p) => p.lines.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)));
+  const rows = Object.values(people);
+  return { rows, totals: rows.reduce((t, r) => ({ paid: t.paid + r.paid, unpaid: t.unpaid + r.unpaid, sick: t.sick + r.sick }), { paid: 0, unpaid: 0, sick: 0 }), monthStart, monthEnd };
+}
+const WAGES_KIND_LABEL = { paid: "Paid holiday", unpaid: "UNPAID leave", sick: "Sick" };
+
+function WagesReportTab({ holidays, sickness }) {
+  const shiftMonth = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
+  const [month, setMonth] = useState(() => shiftMonth(todayISO().slice(0, 7), -1)); // wages are done for last month
+  const [printing, setPrinting] = useState(false);
+  const label = new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const { rows, totals } = useMemo(() => wagesReportData(month, holidays, sickness), [month, holidays, sickness]);
+  const absent = rows.filter((r) => r.lines.length > 0);
+
+  useEffect(() => {
+    if (!printing) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrinting(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printing]);
+
+  const kindColor = { paid: "var(--muted)", unpaid: "var(--red)", sick: "var(--amber2)" };
+  return (
+    <div className="wb-panel">
+      {printing && createPortal(<WagesReportPrintout label={label} rows={rows} totals={totals} />, document.body)}
+      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+        <Receipt size={16} color="var(--amber)" /> Wages report — absences and holidays
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
+        For doing the wages: each person's paid holiday, <strong>unpaid leave</strong> and sickness for the month. Mon–Fri days only (weekends aren't counted); bank holidays aren't tracked here.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(month, -1))}><ChevronLeft size={14} /></button>
+        <div style={{ fontWeight: 700, minWidth: 150, textAlign: "center" }}>{label}</div>
+        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(month, 1))}><ChevronRight size={14} /></button>
+        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(todayISO().slice(0, 7), -1))}>Last month</button>
+        <button className="wb-btn" style={{ marginLeft: "auto" }} onClick={() => setPrinting(true)}><Printer size={13} /> Print report</button>
+      </div>
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
+        <table className="wb-table">
+          <thead><tr><th>Name</th><th>Paid holiday</th><th>Unpaid leave</th><th>Sick</th><th>Total days off</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}>
+                <td style={{ fontWeight: 600 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(r.name), display: "inline-block", marginRight: 7 }} />{r.name}</td>
+                <td className="wh-mono">{r.paid || "–"}</td>
+                <td className="wh-mono" style={{ fontWeight: r.unpaid ? 700 : 400, color: r.unpaid ? "var(--red)" : undefined }}>{r.unpaid || "–"}</td>
+                <td className="wh-mono">{r.sick || "–"}</td>
+                <td className="wh-mono" style={{ fontWeight: 700 }}>{r.paid + r.unpaid + r.sick || "–"}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ fontWeight: 700 }}>Total</td>
+              <td className="wh-mono" style={{ fontWeight: 700 }}>{totals.paid}</td>
+              <td className="wh-mono" style={{ fontWeight: 700 }}>{totals.unpaid}</td>
+              <td className="wh-mono" style={{ fontWeight: 700 }}>{totals.sick}</td>
+              <td className="wh-mono" style={{ fontWeight: 700 }}>{totals.paid + totals.unpaid + totals.sick}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Detail</div>
+      {absent.length === 0 ? (
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>No holidays, unpaid leave or sickness in {label}.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {absent.map((r) => r.lines.map((l, i) => (
+            <div key={`${r.name}-${i}`} style={{ background: "var(--panel2)", borderRadius: 6, padding: "6px 10px", fontSize: 13, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+              <span style={{ fontWeight: 700, minWidth: 70 }}>{r.name}</span>
+              <span style={{ fontWeight: 700, color: kindColor[l.kind], minWidth: 100 }}>{WAGES_KIND_LABEL[l.kind]}</span>
+              <span className="wh-mono">{fmtDate(l.from)}{l.to !== l.from ? ` – ${fmtDate(l.to)}` : ""}</span>
+              <span className="wh-mono" style={{ fontWeight: 700 }}>{l.days} day{l.days !== 1 ? "s" : ""}</span>
+              {l.notes && <span style={{ color: "var(--muted)", fontSize: 12 }}>{l.notes}</span>}
+            </div>
+          )))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WagesReportPrintout({ label, rows, totals }) {
+  const th = { textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" };
+  const td = { padding: "7px 8px", borderBottom: "1px solid #ccc", verticalAlign: "top" };
+  const absent = rows.filter((r) => r.lines.length > 0);
+  return (
+    <div className="print-stocktake">
+      <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Wages report — {label}</div>
+        <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>
+          Absences and holidays for the month (Mon–Fri days). Printed {new Date().toLocaleString("en-GB")}
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 22 }}>
+          <thead><tr>{["Name", "Paid holiday", "Unpaid leave", "Sick", "Total days off"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}>
+                <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
+                <td style={td}>{r.paid || "–"}</td>
+                <td style={{ ...td, fontWeight: r.unpaid ? 800 : 400 }}>{r.unpaid || "–"}</td>
+                <td style={td}>{r.sick || "–"}</td>
+                <td style={{ ...td, fontWeight: 700 }}>{r.paid + r.unpaid + r.sick || "–"}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...td, fontWeight: 800 }}>Total</td>
+              <td style={{ ...td, fontWeight: 800 }}>{totals.paid}</td>
+              <td style={{ ...td, fontWeight: 800 }}>{totals.unpaid}</td>
+              <td style={{ ...td, fontWeight: 800 }}>{totals.sick}</td>
+              <td style={{ ...td, fontWeight: 800 }}>{totals.paid + totals.unpaid + totals.sick}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Detail</div>
+        {absent.length === 0 ? (
+          <div style={{ fontSize: 12 }}>No holidays, unpaid leave or sickness this month.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr>{["Name", "Type", "Dates", "Days", "Notes"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {absent.map((r) => r.lines.map((l, i) => (
+                <tr key={`${r.name}-${i}`}>
+                  <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
+                  <td style={{ ...td, fontWeight: l.kind === "unpaid" ? 800 : 400 }}>{WAGES_KIND_LABEL[l.kind]}</td>
+                  <td style={td}>{fmtDate(l.from)}{l.to !== l.from ? ` – ${fmtDate(l.to)}` : ""}</td>
+                  <td style={td}>{l.days}</td>
+                  <td style={{ ...td, color: "#444" }}>{l.notes}</td>
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SicknessTab({ sickness, addSickness, removeSickness }) {
   const [name, setName] = useState("");
   const [from, setFrom] = useState(todayISO());
@@ -6873,15 +7053,16 @@ function SicknessTab({ sickness, addSickness, removeSickness }) {
   );
 }
 
-function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}, setStaffStartDate }) {
+function HolidaysTab({ holidays, addHoliday, removeHoliday, setHolidayPaid, staffStartDates = {}, setStaffStartDate }) {
   const [name, setName] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [paid, setPaid] = useState(true);
 
   const add = () => {
     if (!name.trim() || !from || !to) return;
-    addHoliday(name.trim(), from, to < from ? from : to);
-    setName(""); setFrom(""); setTo("");
+    addHoliday(name.trim(), from, to < from ? from : to, paid);
+    setName(""); setFrom(""); setTo(""); setPaid(true);
   };
 
   const sorted = [...holidays].sort((a, b) => (a.dateFrom < b.dateFrom ? -1 : 1));
@@ -6897,18 +7078,21 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
   const yearLabel = `${yearStart.slice(0, 4)}/${yearEnd.slice(2, 4)}`;
   const tally = useMemo(() => {
     const totals = {};
-    STAFF_HOLIDAY_NAMES.forEach((n) => { totals[n] = 0; });
+    const unpaidTotals = {};
+    STAFF_HOLIDAY_NAMES.forEach((n) => { totals[n] = 0; unpaidTotals[n] = 0; });
     holidays.forEach((h) => {
       const from = h.dateFrom < yearStart ? yearStart : h.dateFrom;
       const to = h.dateTo > yearEnd ? yearEnd : h.dateTo;
       if (from > to) return;
-      totals[h.name] = (totals[h.name] || 0) + weekdayCount(from, to);
+      // Unpaid leave doesn't come off the paid allowance — tallied separately.
+      if (h.paid === false) unpaidTotals[h.name] = (unpaidTotals[h.name] || 0) + weekdayCount(from, to);
+      else totals[h.name] = (totals[h.name] || 0) + weekdayCount(from, to);
     });
     return Object.entries(totals).map(([person, used]) => {
       const startDate = staffStartDates[person.toLowerCase()] || "";
       const start = startDate || yearStart;
       const accrued = +(fullMonthsWorked(start < yearStart ? yearStart : start, yearStart) * (entitlementFor(person) / 12)).toFixed(2);
-      return { person, used, accrued, balance: +(accrued - used).toFixed(2), startDate, entitlement: entitlementFor(person) };
+      return { person, used, unpaid: unpaidTotals[person] || 0, accrued, balance: +(accrued - used).toFixed(2), startDate, entitlement: entitlementFor(person) };
     }).sort((a, b) => b.used - a.used);
   }, [holidays, yearStart, yearEnd, staffStartDates]);
 
@@ -6943,13 +7127,20 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
           <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} list="staff-holiday-names" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /><datalist id="staff-holiday-names">{STAFF_HOLIDAY_NAMES.map((n) => <option key={n} value={n} />)}</datalist></div>
           <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <div>
+            <label className="wb-label">Type</label>
+            <select className="wb-select" style={{ width: 150 }} value={paid ? "paid" : "unpaid"} onChange={(e) => setPaid(e.target.value === "paid")}>
+              <option value="paid">Paid holiday</option>
+              <option value="unpaid">Unpaid leave</option>
+            </select>
+          </div>
           <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
             <Plus size={13} /> Add holiday
           </button>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="wb-table">
-            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th>Type</th><th></th></tr></thead>
             <tbody>
               {sorted.map((h) => (
                 <tr key={h.id}>
@@ -6960,11 +7151,18 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
                   <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
                   <td className="wh-mono">{fmtDate(h.dateTo)}</td>
                   <td className="wh-mono">{weekdayCount(h.dateFrom, h.dateTo)}</td>
+                  <td>
+                    <button
+                      onClick={() => setHolidayPaid && setHolidayPaid(h.id, h.paid === false)}
+                      title={h.paid === false ? "Unpaid leave — click to make it paid holiday" : "Paid holiday — click to make it unpaid leave"}
+                      style={{ background: "none", border: `1px solid ${h.paid === false ? "var(--red)" : "var(--line)"}`, color: h.paid === false ? "var(--red)" : "var(--muted)", borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                    >{h.paid === false ? "UNPAID" : "Paid"}</button>
+                  </td>
                   <td><button onClick={() => removeHoliday(h.id)} title="Delete holiday" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
                 </tr>
               ))}
               {sorted.length === 0 && (
-                <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No holidays booked in yet.</td></tr>
+                <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No holidays booked in yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -6975,11 +7173,11 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
         <div className="wb-panel">
           <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Holiday allowance {yearLabel} — {HOLIDAY_ENTITLEMENT} days a year (Sam, part time: {entitlementFor("sam")})</div>
           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
-            Holiday year runs 1 Aug – 31 Jul. Days accrue at one twelfth of the yearly allowance per full month worked ({(HOLIDAY_ENTITLEMENT / 12).toFixed(2)} a month on {HOLIDAY_ENTITLEMENT}, {(entitlementFor("sam") / 12).toFixed(2)} for Sam). Mon-Fri days booked, including the Christmas shutdown (28–31 Dec), come off the allowance.
+            Holiday year runs 1 Aug – 31 Jul. Days accrue at one twelfth of the yearly allowance per full month worked ({(HOLIDAY_ENTITLEMENT / 12).toFixed(2)} a month on {HOLIDAY_ENTITLEMENT}, {(entitlementFor("sam") / 12).toFixed(2)} for Sam). Mon-Fri days of paid holiday booked, including the Christmas shutdown (28–31 Dec), come off the allowance; unpaid leave doesn't.
             Balance = accrued to date minus days booked — it dips negative while holiday is booked ahead of being earned.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8 }}>
-            {tally.map(({ person, used: days, accrued, balance, startDate, entitlement }) => (
+            {tally.map(({ person, used: days, unpaid, accrued, balance, startDate, entitlement }) => (
               <div key={person} style={{ fontSize: 13, background: "var(--panel2)", borderRadius: 6, padding: "6px 10px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -6987,8 +7185,9 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, staffStartDates = {}
                     {person}
                   </span>
                   <span className="wh-mono" style={{ textAlign: "right", lineHeight: 1.4 }}>
-                    <span style={{ fontWeight: 700, color: days > HOLIDAY_ENTITLEMENT ? "var(--red)" : undefined }}>{days} of {HOLIDAY_ENTITLEMENT} booked</span>
+                    <span style={{ fontWeight: 700, color: days > entitlement ? "var(--red)" : undefined }}>{days} of {entitlement} booked</span>
                     <span style={{ display: "block", fontSize: 11, color: balance < 0 ? "var(--red)" : "var(--muted)" }}>accrued {accrued} · balance {balance}</span>
+                    {unpaid > 0 && <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: "var(--red)" }}>+ {unpaid} unpaid day{unpaid !== 1 ? "s" : ""}</span>}
                   </span>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 11, color: startDate ? "var(--muted)" : "var(--amber2)" }}>
