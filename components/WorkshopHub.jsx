@@ -7151,20 +7151,17 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, setHolidayPaid, staf
           <div><label className="wb-label">Name</label><input className="wb-input" style={{ width: 160 }} list="staff-holiday-names" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Chris" /><datalist id="staff-holiday-names">{STAFF_HOLIDAY_NAMES.map((n) => <option key={n} value={n} />)}</datalist></div>
           <div><label className="wb-label">From</label><input type="date" className="wb-input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="wb-label">To</label><input type="date" className="wb-input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-          <div>
-            <label className="wb-label">Type</label>
-            <select className="wb-select" style={{ width: 150 }} value={paid ? "paid" : "unpaid"} onChange={(e) => setPaid(e.target.value === "paid")}>
-              <option value="paid">Paid holiday</option>
-              <option value="unpaid">Unpaid leave</option>
-            </select>
-          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", paddingBottom: 9 }}>
+            <input type="checkbox" style={{ width: 18, height: 18, cursor: "pointer" }} checked={!paid} onChange={(e) => setPaid(!e.target.checked)} />
+            Unpaid leave
+          </label>
           <button className="wb-btn" disabled={!name.trim() || !from || !to} style={!name.trim() || !from || !to ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={add}>
             <Plus size={13} /> Add holiday
           </button>
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="wb-table">
-            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th>Type</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>From</th><th>To</th><th>Days (Mon-Fri)</th><th>Unpaid leave</th><th></th></tr></thead>
             <tbody>
               {sorted.map((h) => (
                 <tr key={h.id}>
@@ -7175,12 +7172,13 @@ function HolidaysTab({ holidays, addHoliday, removeHoliday, setHolidayPaid, staf
                   <td className="wh-mono">{fmtDate(h.dateFrom)}</td>
                   <td className="wh-mono">{fmtDate(h.dateTo)}</td>
                   <td className="wh-mono">{weekdayCount(h.dateFrom, h.dateTo)}</td>
-                  <td>
-                    <button
-                      onClick={() => setHolidayPaid && setHolidayPaid(h.id, h.paid === false)}
-                      title={h.paid === false ? "Unpaid leave — click to make it paid holiday" : "Paid holiday — click to make it unpaid leave"}
-                      style={{ background: "none", border: `1px solid ${h.paid === false ? "var(--red)" : "var(--line)"}`, color: h.paid === false ? "var(--red)" : "var(--muted)", borderRadius: 4, padding: "2px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
-                    >{h.paid === false ? "UNPAID" : "Paid"}</button>
+                  <td style={{ textAlign: "center" }}>
+                    <input
+                      type="checkbox" style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--red)" }}
+                      checked={h.paid === false}
+                      onChange={(e) => setHolidayPaid && setHolidayPaid(h.id, !e.target.checked)}
+                      title={h.paid === false ? "Unpaid leave — untick to make it paid holiday" : "Paid holiday — tick if this is unpaid leave"}
+                    />
                   </td>
                   <td><button onClick={() => removeHoliday(h.id)} title="Delete holiday" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
                 </tr>
