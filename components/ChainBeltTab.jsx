@@ -42,6 +42,14 @@ const HUB_JOB_PATTERNS = {
   "PSA/Stellantis 1.2 PureTech": /puretech/i,
   "Peugeot/Citroën 1.6 HDi": /1\.6 hdi/i,
 };
+// Engines where the price depends on a question put to the customer. The
+// question is asked BEFORE any price is shown; "yes" picks the hub job whose
+// name matches yesPattern, "no" picks the standard one (everything else).
+const ENGINE_QUESTIONS = {
+  "Ford 1.0 EcoBoost (wet belt": { question: "Is the oil warning light showing on the dash?", yesPattern: /oil light/i },
+};
+const questionFor = (engineName) => ENGINE_QUESTIONS[Object.keys(ENGINE_QUESTIONS).find((k) => engineName.startsWith(k))] || null;
+
 const FALLBACK_STOPWORDS = new Set(["timing", "chain", "belt", "wet", "dry", "later", "earlier", "replacement", "kit", "and"]);
 function hubJobsFor(engineName, jobTypes) {
   const key = Object.keys(HUB_JOB_PATTERNS).find((k) => engineName.startsWith(k));
@@ -73,10 +81,19 @@ export function ChainBeltTab({ jobTypes = [] }) {
   const engine = result?.matches?.[engineIdx] || null;
   const kind = engine ? kindOf(engine) : null;
   // Our own job(s) on the hub for this engine, and the fixed price if there is one.
-  const hubJobs = useMemo(() => (engine ? hubJobsFor(engine.name, jobTypes) : []), [engine, jobTypes]);
+  const [answer, setAnswer] = useState(null); // null (not asked yet) | "yes" | "no"
+  const question = engine ? questionFor(engine.name) : null;
+  const awaitingAnswer = !!question && answer === null;
+  const hubJobs = useMemo(() => {
+    if (!engine) return [];
+    const all = hubJobsFor(engine.name, jobTypes);
+    if (!question) return all;
+    if (answer === null) return [];
+    return all.filter((j) => question.yesPattern.test(j.name) === (answer === "yes"));
+  }, [engine, jobTypes, question, answer]);
   const hubJob = hubJobs.find((j) => j.standardPrice > 0) || null;
 
-  const selectEngine = (matches, i) => setEngineIdx(i);
+  const selectEngine = (matches, i) => { setEngineIdx(i); setAnswer(null); };
 
   const lookup = async (e) => {
     e?.preventDefault();
@@ -85,6 +102,7 @@ export function ChainBeltTab({ jobTypes = [] }) {
     setError("");
     setResult(null);
     setEngineIdx(0);
+    setAnswer(null);
     setAutodataHrs("");
     try {
       const res = await fetch("/api/office/belt-or-chain", {
@@ -201,8 +219,26 @@ export function ChainBeltTab({ jobTypes = [] }) {
 
           {engine && (
             <>
+              {/* Question first, for engines whose price depends on the answer */}
+              {awaitingAnswer && (
+                <div className="wb-panel" style={{ borderLeft: "6px solid var(--amber)" }}>
+                  <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 10 }}>{question.question}</div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button type="button" className="wb-btn" style={{ flex: 1, fontSize: 16, padding: "12px 0" }} onClick={() => setAnswer("yes")}>Yes</button>
+                    <button type="button" className="wb-btn-ghost" style={{ flex: 1, fontSize: 16, padding: "12px 0" }} onClick={() => setAnswer("no")}>No</button>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 8 }}>The price depends on the answer, so ask the customer before quoting.</div>
+                </div>
+              )}
+
               {/* Our job on the hub */}
+              {!awaitingAnswer && (
               <div className="wb-panel" style={{ borderLeft: `6px solid ${hubJob ? "var(--green)" : "var(--amber)"}` }}>
+                {question && (
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 8 }}>
+                    {question.question} <strong>{answer === "yes" ? "Yes" : "No"}</strong> · <a href="#" onClick={(e) => { e.preventDefault(); setAnswer(null); }}>change</a>
+                  </div>
+                )}
                 {hubJobs.length === 0 ? (
                   <div style={{ fontSize: 13 }}>
                     <strong>Not a job on the hub yet.</strong>
@@ -220,7 +256,10 @@ export function ChainBeltTab({ jobTypes = [] }) {
                   </>
                 )}
               </div>
+              )}
 
+              {!awaitingAnswer && (
+              <>
               {/* Autodata */}
               <div className="wb-panel">
                 <label className="wb-label">Autodata time (hrs)</label>
@@ -265,6 +304,8 @@ export function ChainBeltTab({ jobTypes = [] }) {
                   <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>Enter the Autodata time and the price comes up.</div>
                 )}
               </div>
+              </>
+              )}
             </>
           )}
         </>
