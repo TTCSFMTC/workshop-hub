@@ -2015,7 +2015,7 @@ function OfficeMode({
         {tab === "quotes" && (
           <QuotesTab quotes={quotes} updateQuoteField={updateQuoteField} removeQuote={removeQuote} />
         )}
-        {tab === "chainbelt" && <ChainBeltTab />}
+        {tab === "chainbelt" && <ChainBeltTab jobTypes={jobTypes} />}
         {tab === "supplierinvoices" && (
           <SupplierInvoicesTab
             suppliers={suppliers} addSupplier={addSupplier} updateSupplierField={updateSupplierField} removeSupplier={removeSupplier}

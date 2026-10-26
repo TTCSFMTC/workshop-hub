@@ -27,6 +27,37 @@ const PARTS_TEMPLATE = {
   dry: ["Timing belt kit", "Water pump", "Coolant"],
 };
 
+// Which of OUR hub job types (and so which fixed price) a DVSA-matched engine
+// is. Explicit patterns for the engines on the list; any engine added later
+// falls back to "every distinctive word of its name appears in the job name".
+const HUB_JOB_PATTERNS = {
+  "JLR Ingenium 2.0 diesel": /ingenium.*diesel/i,
+  "JLR Ingenium 2.0 petrol": /ingenium.*petrol/i,
+  "Nissan 1.2 DIG-T": /nissan.*dig-?t/i,
+  "Ford 1.0 EcoBoost (wet belt": /ford 1\.0 ecoboost wet belt/i,
+  "Ford 1.0 EcoBoost (timing chain": /ford 1\.0 ecoboost timing chain/i,
+  "Ford EcoBlue 1.5": /ecoblue wet belt \((std|transit)\)/i,
+  "Ford EcoBlue 2.0": /ecoblue wet belt \((ranger|transit|std)\)/i,
+  "VAG 2.0 TSI": /vag 2\.0 tsi/i,
+  "VAG 2.0 TDI": /vag 2\.0 tdi/i,
+  "Renault 1.2 TCe": /renault 1\.2 tce/i,
+  "Renault/Vauxhall/Nissan 2.3 dCi": /2\.3 d(ci|ti)/i,
+  "Vauxhall 1.4 Ecotec": /vauxhall 1\.4 ecotec/i,
+  "PSA/Stellantis 1.2 PureTech": /puretech/i,
+  "Peugeot/Citroën 1.6 HDi": /1\.6 hdi/i,
+};
+const FALLBACK_STOPWORDS = new Set(["timing", "chain", "belt", "wet", "dry", "later", "earlier", "replacement", "kit", "and"]);
+function hubJobsFor(engineName, jobTypes) {
+  const key = Object.keys(HUB_JOB_PATTERNS).find((k) => engineName.startsWith(k));
+  const matches = (jobTypes || []).filter((j) => {
+    if (key) return HUB_JOB_PATTERNS[key].test(j.name);
+    const words = engineName.toLowerCase().replace(/\(.*?\)/g, " ").split(/[^a-z0-9.]+/).filter((w) => w && !FALLBACK_STOPWORDS.has(w));
+    return words.length > 0 && words.every((w) => j.name.toLowerCase().includes(w));
+  });
+  // Public (advertised) jobs with a price first.
+  return matches.sort((a, b) => (b.publicBookable ? 1 : 0) - (a.publicBookable ? 1 : 0) || (b.standardPrice ? 1 : 0) - (a.standardPrice ? 1 : 0));
+}
+
 const num = (v) => {
   const n = parseFloat(String(v ?? "").replace(/[^0-9.]/g, ""));
   return Number.isNaN(n) ? 0 : n;
@@ -45,7 +76,7 @@ const savedParts = {
   },
 };
 
-export function ChainBeltTab() {
+export function ChainBeltTab({ jobTypes = [] }) {
   const [reg, setReg] = useState("");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [error, setError] = useState("");
@@ -57,6 +88,10 @@ export function ChainBeltTab() {
 
   const engine = result?.matches?.[engineIdx] || null;
   const kind = engine ? kindOf(engine) : null;
+  const [useHubPrice, setUseHubPrice] = useState(true);
+  // Our own job(s) on the hub for this engine, and the fixed price if there is one.
+  const hubJobs = useMemo(() => (engine ? hubJobsFor(engine.name, jobTypes) : []), [engine, jobTypes]);
+  const hubJob = hubJobs.find((j) => j.standardPrice > 0) || null;
 
   // Load the saved (or template) parts list whenever an engine is picked.
   const selectEngine = (matches, i) => {
@@ -105,7 +140,17 @@ export function ChainBeltTab() {
   }, [autodataHrs, parts]);
 
   const vehicleName = result ? [result.make, result.model].filter(Boolean).map(titleCase).join(" ") : "";
-  const message = engine && q.adHrs > 0
+  const hubMessage = engine && hubJob && useHubPrice
+    ? [
+        `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
+        "",
+        `${KIND_LABEL[kind]} replacement`,
+        `Total: ${money(hubJob.standardPrice)} inc VAT`,
+        "",
+        "Let us know if you'd like to book in.",
+      ].join("\n")
+    : "";
+  const autodataMessage = engine && q.adHrs > 0
     ? [
         `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
         "",
@@ -118,6 +163,7 @@ export function ChainBeltTab() {
         "Let us know if you'd like to book in.",
       ].join("\n")
     : "";
+  const message = hubMessage || autodataMessage;
 
   const copy = async () => {
     try {
@@ -186,6 +232,37 @@ export function ChainBeltTab() {
 
           {engine && (
             <>
+              {/* Our job on the hub */}
+              <div className="wb-panel" style={{ borderLeft: `6px solid ${hubJob ? "var(--green)" : "var(--amber)"}` }}>
+                {hubJobs.length === 0 ? (
+                  <div style={{ fontSize: 13 }}>
+                    <strong>Not a job on the hub yet.</strong>
+                    <span style={{ color: "var(--muted)" }}> There&apos;s no job type for {engine.name} — quote it from Autodata below, and add a job type if you want it priced and bookable.</span>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>{hubJobs.length > 1 ? "Our jobs on the hub for this engine" : "Our job on the hub"}</div>
+                    {hubJobs.map((j) => (
+                      <div key={j.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 14, padding: "4px 0" }}>
+                        <span>{j.name}{j.publicBookable ? <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: "var(--green)" }}>ON WEBSITE</span> : null}</span>
+                        <span className="wh-mono" style={{ fontWeight: 700 }}>{j.standardPrice > 0 ? `${money(j.standardPrice)} inc VAT` : "no price set"}</span>
+                      </div>
+                    ))}
+                    {hubJob && (
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 8, cursor: "pointer" }}>
+                        <input type="checkbox" checked={useHubPrice} onChange={(e) => setUseHubPrice(e.target.checked)} />
+                        Quote our set price ({money(hubJob.standardPrice)}) in the WhatsApp message
+                      </label>
+                    )}
+                    {hubJob && q.adHrs > 0 && (
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 6 }}>
+                        Autodata-based quote below is {money(q.total)} — {q.total > hubJob.standardPrice ? `${money(q.total - hubJob.standardPrice)} more than` : q.total < hubJob.standardPrice ? `${money(hubJob.standardPrice - q.total)} less than` : "the same as"} our set price.
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
               {/* Autodata */}
               <div className="wb-panel">
                 <label className="wb-label">Autodata time (hrs)</label>
@@ -223,7 +300,6 @@ export function ChainBeltTab() {
                 <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontSize: 22, fontWeight: 800 }}>
                   <span>Total</span><span className="wh-mono">{money(q.total)}</span>
                 </div>
-                {/* Website price comparison goes here once we know which site to check. */}
                 {message ? (
                   <>
                     <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 13.5, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginTop: 12 }}>{message}</pre>
@@ -232,7 +308,7 @@ export function ChainBeltTab() {
                     </button>
                   </>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>Enter the Autodata time to finish the quote.</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>{hubJob ? "Tick \"Quote our set price\" above, or enter the Autodata time, to get a message to copy." : "Enter the Autodata time to finish the quote."}</div>
                 )}
               </div>
             </>
