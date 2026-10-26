@@ -37,7 +37,7 @@ export async function POST(request, { params }) {
   if (!signatureName?.trim()) return NextResponse.json({ error: "Printed name is required" }, { status: 400 });
   if (decision === "approved" && !signatureDataUrl) return NextResponse.json({ error: "Signature is required to approve" }, { status: 400 });
 
-  const { data: approval, error: e1 } = await supabase.from("job_approvals").select("id, status, job_card_id, booking_id, price, description, ai_writeup").eq("token", token).maybeSingle();
+  const { data: approval, error: e1 } = await supabase.from("job_approvals").select("*").eq("token", token).maybeSingle();
   if (e1 || !approval) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (approval.status !== "sent") return NextResponse.json({ error: "This request has already been responded to" }, { status: 409 });
 
@@ -85,7 +85,7 @@ async function addApprovedWorkToBooking({ bookingId, approval }) {
   const description = `Extra work (customer approved): ${note.length > 140 ? `${note.slice(0, 137)}…` : note || "see job card"}`;
   const { error: e1 } = await supabase.from("booking_custom_parts").insert({
     id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    booking_id: booking.id, description, cost: 0, retail: price,
+    booking_id: booking.id, description, cost: Number(approval.cost) || 0, retail: price,
   });
   if (e1) throw e1;
   const { error: e2 } = await supabase.from("bookings").update({ job_value: Number(booking.job_value || 0) + price }).eq("id", booking.id);

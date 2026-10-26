@@ -20,7 +20,7 @@ export async function POST(request) {
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 
-  const { approvalId, price, inStock } = body;
+  const { approvalId, price, cost, inStock } = body;
   if (!approvalId || !price) return NextResponse.json({ error: "approvalId and price are required" }, { status: 400 });
 
   const { data: approval, error: e1 } = await supabase.from("job_approvals").select("*").eq("id", approvalId).maybeSingle();
@@ -50,7 +50,7 @@ export async function POST(request) {
 
     const sentAt = new Date().toISOString();
     const { error: e3 } = await supabase.from("job_approvals").update({
-      ai_writeup: writeup, price, in_stock: !!inStock, status: "sent", sent_at: sentAt,
+      ai_writeup: writeup, price, ...(Number(cost) > 0 ? { cost: Number(cost) } : {}), in_stock: !!inStock, status: "sent", sent_at: sentAt,
     }).eq("id", approvalId);
     if (e3) throw e3;
 

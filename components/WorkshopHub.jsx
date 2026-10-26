@@ -3564,12 +3564,12 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
       const res = await fetch("/api/office/send-approval", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approvalId: approval.id, price, inStock: !!draft.inStock }),
+        body: JSON.stringify({ approvalId: approval.id, price, cost: Number(draft.cost) > 0 ? Number(draft.cost) : undefined, inStock: !!draft.inStock }),
       });
       const data = await res.json();
       if (!res.ok) { alert(data.error || "Failed to generate the approval report."); setSendingId(null); return; }
       // Optimistic — realtime will bring in the server's ai_writeup/status once it lands.
-      updateJobApproval(approval.id, { price, inStock: !!draft.inStock, status: "sent", sentAt: Date.now() });
+      updateJobApproval(approval.id, { price, ...(Number(draft.cost) > 0 ? { cost: Number(draft.cost) } : {}), inStock: !!draft.inStock, status: "sent", sentAt: Date.now() });
 
       // Goes to the customer over WhatsApp only — no email. The link opens
       // the full write-up with approve/decline.
@@ -3608,6 +3608,8 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
                 <input type="number" min="0" step="0.01" placeholder="Price £" className="wb-input" style={{ width: 100 }}
                   value={draft.price ?? ""} onChange={(e) => setDraft(a.id, { price: e.target.value })} />
+                <input type="number" min="0" step="0.01" placeholder="Cost £" className="wb-input" style={{ width: 100 }} title="What the parts / work cost us — goes onto the booking when the customer approves"
+                  value={draft.cost ?? ""} onChange={(e) => setDraft(a.id, { cost: e.target.value })} />
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
                   <input type="checkbox" checked={!!draft.inStock} onChange={(e) => setDraft(a.id, { inStock: e.target.checked })} />
                   In stock — can be done while it's in
