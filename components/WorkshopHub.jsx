@@ -2748,6 +2748,11 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
 // The colour/label for whichever traffic-light stage a booking has
 // currently reached — shared by the calendar chip, the day-panel name,
 // and the Jobs table, so they can never fall out of sync with each other.
+// Engine rebuilds can only be done by Ervin, so they get their own solid purple
+// on the calendar — nothing else uses it — to see at a glance what's in.
+const REBUILD_PURPLE = "#a23dff";
+const isRebuildBooking = (b, jobTypes) => [b.jobTypeId, ...(b.extraJobTypeIds || [])].some((id) => /rebuild/i.test(jobTypes.find((j) => j.id === id)?.name || ""));
+
 function bookingStatus(b) {
   if (b.completed) return { color: "var(--green)", label: "Collected" };
   if (b.workshopCompleted) return { color: "#ffb84d", label: "Workshop completed" };
@@ -3057,6 +3062,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   // colouring, so a glance at the month view shows what's
                   // coming in that day without losing the status colour.
                   const isDropOffDay = iso === b.date;
+                  const rebuild = isRebuildBooking(b, jobTypes);
                   return (
                     <span
                       key={b.id}
@@ -3066,12 +3072,13 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                           ? { background: "#ffffff", color: "#1a1a1a", border: "1px solid #d0d0d0" }
                           : {
                               ...(st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : {}),
+                              ...(rebuild ? { background: REBUILD_PURPLE, color: "#fff", border: `1px solid ${REBUILD_PURPLE}`, fontWeight: 800 } : {}),
                               ...(isDropOffDay ? { border: "2px solid #2979ff" } : {}),
                             }
                       }
-                      title={b.provisional ? "Provisional — not yet confirmed" : isDropOffDay ? "Drop-off day" : st.label}
+                      title={b.provisional ? "Provisional — not yet confirmed" : `${rebuild ? "ENGINE REBUILD (Ervin) — " : ""}${isDropOffDay ? "Drop-off day" : st.label}`}
                     >
-                      {b.customerName || "Booking"}
+                      {rebuild ? "🔧 " : ""}{b.customerName || "Booking"}
                     </span>
                   );
                 })}
@@ -3119,6 +3126,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       {b.customerName || "Unnamed"}
                     </div>
                   </div>
+                  {isRebuildBooking(b, jobTypes) && (
+                    <div style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 800, color: "#fff", background: REBUILD_PURPLE, borderRadius: 4, padding: "2px 8px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      🔧 Engine rebuild — Ervin
+                    </div>
+                  )}
                   {!minimised && b.provisional && (
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", display: "flex", alignItems: "center", gap: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       <Bookmark size={12} /> Provisional — not yet confirmed
