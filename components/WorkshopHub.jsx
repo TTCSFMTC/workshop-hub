@@ -2731,8 +2731,11 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
           title={booking.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
           onClick={() => {
             const turningOn = !booking.completed;
+            // Completing straight from "not done" counts as DONE too (stock comes
+            // off, it can be invoiced) but the "vehicle is ready" WhatsApp is
+            // never sent — only the collection one below.
             updateBooking(booking.id, turningOn
-              ? { completed: true, completedAt: Date.now(), followupSent: false }
+              ? { completed: true, completedAt: Date.now(), followupSent: false, ...(booking.workshopCompleted ? {} : { workshopCompleted: true, workshopCompletedAt: Date.now() }) }
               : { completed: false, completedAt: null });
             if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, collectionThankYouMessage(booking)), "_blank");
           }}
