@@ -63,11 +63,12 @@ function hubJobsFor(engineName, jobTypes) {
 }
 
 // How long the job takes, as the website advertises it (JLR Ingenium 3-4 days,
-// EcoBlue Transit / Ranger 3, everything else 2 working days).
+// EcoBlue Transit / Ranger 3, everything else 2-3 working days — never quote
+// less than that).
 function turnaroundFor(text) {
   if (/ingenium|jlr|land rover|jaguar/i.test(text)) return "3–4 working days";
   if (/ecoblue/i.test(text) && /transit|ranger/i.test(text)) return "3 working days";
-  return "2 working days";
+  return "2–3 working days";
 }
 
 const num = (v) => {
