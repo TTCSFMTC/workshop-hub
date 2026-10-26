@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { Search, Wrench, ExternalLink, Plus, X, Copy, Check } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { Search, ExternalLink, Copy, Check } from "lucide-react";
 
 // Chain & Belt quote tab.
 // Reg -> /api/office/belt-or-chain (DVSA MOT History API + curated engine list,
-// same route the booking modal's "Belt/chain?" button uses) -> Autodata hours
-// typed in -> quote at the fixed labour rate.
+// same route the booking modal's "Belt/chain?" button uses) -> matched to our
+// own job on the hub (fixed price, parts included) -> Autodata hours typed in
+// -> the price comes up. No parts to enter: our set price already includes them.
+// A job we haven't got on the hub is quoted on labour only.
 //
 // Pricing rules (Chris, Oct 2026):
 //   - Labour £75/hr + VAT, whatever the job.
@@ -20,12 +22,6 @@ const AUTODATA_URL = "https://workshop.autodata-group.com/";
 const KIND_LABEL = { chain: "Timing chain", wet: "Wet belt", dry: "Timing belt" };
 const KIND_COLOR = { chain: "var(--blue)", wet: "var(--red)", dry: "var(--green)" };
 const kindOf = (m) => (m.type === "chain" ? "chain" : /wet belt/i.test(m.name) ? "wet" : "dry");
-
-const PARTS_TEMPLATE = {
-  chain: ["Timing chain kit (chain, guides, tensioner)", "Gaskets & seals", "Engine oil", "Oil filter", "Coolant"],
-  wet: ["Wet belt kit (belt, tensioner, idler)", "Gaskets & seals", "Engine oil", "Oil filter"],
-  dry: ["Timing belt kit", "Water pump", "Coolant"],
-};
 
 // Which of OUR hub job types (and so which fixed price) a DVSA-matched engine
 // is. Explicit patterns for the engines on the list; any engine added later
@@ -65,17 +61,6 @@ const num = (v) => {
 const money = (n) => `£${(Math.round(n * 100) / 100).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const titleCase = (s) => String(s || "").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
-// Remembers parts prices per engine on this device, so the second Ingenium
-// quote of the week is already filled in.
-const savedParts = {
-  get(name) {
-    try { return JSON.parse(localStorage.getItem(`cbq-parts:${name}`) || "null"); } catch { return null; }
-  },
-  set(name, parts) {
-    try { localStorage.setItem(`cbq-parts:${name}`, JSON.stringify(parts)); } catch {}
-  },
-};
-
 export function ChainBeltTab({ jobTypes = [] }) {
   const [reg, setReg] = useState("");
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
@@ -83,26 +68,15 @@ export function ChainBeltTab({ jobTypes = [] }) {
   const [result, setResult] = useState(null);
   const [engineIdx, setEngineIdx] = useState(0);
   const [autodataHrs, setAutodataHrs] = useState("");
-  const [parts, setParts] = useState([]);
   const [copied, setCopied] = useState(false);
 
   const engine = result?.matches?.[engineIdx] || null;
   const kind = engine ? kindOf(engine) : null;
-  const [useHubPrice, setUseHubPrice] = useState(true);
   // Our own job(s) on the hub for this engine, and the fixed price if there is one.
   const hubJobs = useMemo(() => (engine ? hubJobsFor(engine.name, jobTypes) : []), [engine, jobTypes]);
   const hubJob = hubJobs.find((j) => j.standardPrice > 0) || null;
 
-  // Load the saved (or template) parts list whenever an engine is picked.
-  const selectEngine = (matches, i) => {
-    setEngineIdx(i);
-    const m = matches?.[i];
-    setParts(m ? savedParts.get(m.name) || PARTS_TEMPLATE[kindOf(m)].map((name) => ({ name, cost: "" })) : []);
-  };
-
-  useEffect(() => {
-    if (engine && parts.length) savedParts.set(engine.name, parts);
-  }, [parts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selectEngine = (matches, i) => setEngineIdx(i);
 
   const lookup = async (e) => {
     e?.preventDefault();
@@ -133,14 +107,12 @@ export function ChainBeltTab({ jobTypes = [] }) {
     const adHrs = num(autodataHrs);
     const chargedHrs = adHrs > 0 ? adHrs + HIDDEN_EXTRA_HOURS : 0;
     const labour = chargedHrs * LABOUR_RATE;
-    const partsTotal = parts.reduce((s, p) => s + num(p.cost), 0);
-    const net = labour + partsTotal;
-    const vat = net * VAT_RATE;
-    return { adHrs, labour, partsTotal, net, vat, total: net + vat };
-  }, [autodataHrs, parts]);
+    const vat = labour * VAT_RATE;
+    return { adHrs, labour, vat, total: labour + vat };
+  }, [autodataHrs]);
 
   const vehicleName = result ? [result.make, result.model].filter(Boolean).map(titleCase).join(" ") : "";
-  const hubMessage = engine && hubJob && useHubPrice
+  const hubMessage = engine && hubJob && q.adHrs > 0
     ? [
         `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
         "",
@@ -150,13 +122,12 @@ export function ChainBeltTab({ jobTypes = [] }) {
         "Let us know if you'd like to book in.",
       ].join("\n")
     : "";
-  const autodataMessage = engine && q.adHrs > 0
+  const autodataMessage = engine && !hubJob && q.adHrs > 0
     ? [
         `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
         "",
         `${KIND_LABEL[kind]} replacement`,
         `Labour: ${money(q.labour)}`,
-        `Parts: ${money(q.partsTotal)}`,
         `VAT: ${money(q.vat)}`,
         `Total: ${money(q.total)} inc VAT`,
         "",
@@ -172,8 +143,6 @@ export function ChainBeltTab({ jobTypes = [] }) {
       setTimeout(() => setCopied(false), 1800);
     } catch {}
   };
-
-  const updatePart = (i, field, value) => setParts((prev) => prev.map((p, j) => (j === i ? { ...p, [field]: value } : p)));
 
   return (
     <div style={{ maxWidth: 680, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -248,17 +217,6 @@ export function ChainBeltTab({ jobTypes = [] }) {
                         <span className="wh-mono" style={{ fontWeight: 700 }}>{j.standardPrice > 0 ? `${money(j.standardPrice)} inc VAT` : "no price set"}</span>
                       </div>
                     ))}
-                    {hubJob && (
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 8, cursor: "pointer" }}>
-                        <input type="checkbox" checked={useHubPrice} onChange={(e) => setUseHubPrice(e.target.checked)} />
-                        Quote our set price ({money(hubJob.standardPrice)}) in the WhatsApp message
-                      </label>
-                    )}
-                    {hubJob && q.adHrs > 0 && (
-                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 6 }}>
-                        Autodata-based quote below is {money(q.total)} — {q.total > hubJob.standardPrice ? `${money(q.total - hubJob.standardPrice)} more than` : q.total < hubJob.standardPrice ? `${money(hubJob.standardPrice - q.total)} less than` : "the same as"} our set price.
-                      </div>
-                    )}
                   </>
                 )}
               </div>
@@ -277,29 +235,25 @@ export function ChainBeltTab({ jobTypes = [] }) {
                 </div>
               </div>
 
-              {/* Parts */}
-              <div className="wb-panel">
-                <label className="wb-label">Parts (selling price)</label>
-                {parts.map((p, i) => (
-                  <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-                    <input className="wb-input" style={{ flex: 1 }} value={p.name} onChange={(e) => updatePart(i, "name", e.target.value)} />
-                    <input className="wb-input" style={{ width: 100 }} inputMode="decimal" placeholder="£" value={p.cost} onChange={(e) => updatePart(i, "cost", e.target.value)} />
-                    <button type="button" className="wb-btn-ghost" style={{ padding: "0 10px" }} aria-label="Remove part" onClick={() => setParts((prev) => prev.filter((_, j) => j !== i))}><X size={14} /></button>
-                  </div>
-                ))}
-                <button type="button" className="wb-btn-ghost" onClick={() => setParts((prev) => [...prev, { name: "", cost: "" }])}><Plus size={14} /> Add part</button>
-              </div>
 
               {/* Quote */}
               <div className="wb-panel">
-                {[["Labour", q.labour], ["Parts", q.partsTotal], ["VAT 20%", q.vat]].map(([label, v]) => (
-                  <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--line)", fontSize: 14 }}>
-                    <span>{label}</span><span className="wh-mono">{money(v)}</span>
+                {q.adHrs > 0 && hubJob ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 22, fontWeight: 800 }}>
+                    <span>Price <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>— {hubJob.name}</span></span><span className="wh-mono">{money(hubJob.standardPrice)}</span>
                   </div>
-                ))}
-                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontSize: 22, fontWeight: 800 }}>
-                  <span>Total</span><span className="wh-mono">{money(q.total)}</span>
-                </div>
+                ) : q.adHrs > 0 ? (
+                  <>
+                    {[["Labour", q.labour], ["VAT 20%", q.vat]].map(([label, v]) => (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid var(--line)", fontSize: 14 }}>
+                        <span>{label}</span><span className="wh-mono">{money(v)}</span>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, fontSize: 22, fontWeight: 800 }}>
+                      <span>Total (labour only)</span><span className="wh-mono">{money(q.total)}</span>
+                    </div>
+                  </>
+                ) : null}
                 {message ? (
                   <>
                     <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 13.5, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginTop: 12 }}>{message}</pre>
@@ -308,7 +262,7 @@ export function ChainBeltTab({ jobTypes = [] }) {
                     </button>
                   </>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>{hubJob ? "Tick \"Quote our set price\" above, or enter the Autodata time, to get a message to copy." : "Enter the Autodata time to finish the quote."}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>Enter the Autodata time and the price comes up.</div>
                 )}
               </div>
             </>
