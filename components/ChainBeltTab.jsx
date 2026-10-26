@@ -62,6 +62,14 @@ function hubJobsFor(engineName, jobTypes) {
   return matches.sort((a, b) => (b.publicBookable ? 1 : 0) - (a.publicBookable ? 1 : 0) || (b.standardPrice ? 1 : 0) - (a.standardPrice ? 1 : 0));
 }
 
+// How long the job takes, as the website advertises it (JLR Ingenium 3-4 days,
+// EcoBlue Transit / Ranger 3, everything else 2 working days).
+function turnaroundFor(text) {
+  if (/ingenium|jlr|land rover|jaguar/i.test(text)) return "3–4 working days";
+  if (/ecoblue/i.test(text) && /transit|ranger/i.test(text)) return "3 working days";
+  return "2 working days";
+}
+
 const num = (v) => {
   const n = parseFloat(String(v ?? "").replace(/[^0-9.]/g, ""));
   return Number.isNaN(n) ? 0 : n;
@@ -130,26 +138,31 @@ export function ChainBeltTab({ jobTypes = [] }) {
   }, [autodataHrs]);
 
   const vehicleName = result ? [result.make, result.model].filter(Boolean).map(titleCase).join(" ") : "";
+  const turnaround = engine ? turnaroundFor(`${engine.name} ${hubJob?.name || ""}`) : "";
+  const intro = result ? `Hi, thank you for your enquiry about ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}. Here's your quote:` : "";
+  const outro = "Thanks again for getting in touch — let us know if you'd like to book in.";
   const hubMessage = engine && hubJob && q.adHrs > 0
     ? [
-        `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
+        intro,
         "",
         `${KIND_LABEL[kind]} replacement`,
-        `Total: ${money(hubJob.standardPrice)} inc VAT`,
+        `Price: ${money(hubJob.standardPrice)} inc VAT (fixed price, parts and labour included)`,
+        `Turnaround: ${turnaround}`,
         "",
-        "Let us know if you'd like to book in.",
+        outro,
       ].join("\n")
     : "";
   const autodataMessage = engine && !hubJob && q.adHrs > 0
     ? [
-        `Hi, here's your quote for ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}:`,
+        intro,
         "",
         `${KIND_LABEL[kind]} replacement`,
         `Labour: ${money(q.labour)}`,
         `VAT: ${money(q.vat)}`,
-        `Total: ${money(q.total)} inc VAT`,
+        `Total: ${money(q.total)} inc VAT (labour only — parts quoted separately)`,
+        `Turnaround: ${turnaround}`,
         "",
-        "Let us know if you'd like to book in.",
+        outro,
       ].join("\n")
     : "";
   const message = hubMessage || autodataMessage;
