@@ -7,9 +7,10 @@ import { Search, ExternalLink, Copy, Check } from "lucide-react";
 // Chain & Belt quote tab.
 // Reg -> /api/office/belt-or-chain (DVSA MOT History API + curated engine list,
 // same route the booking modal's "Belt/chain?" button uses) -> matched to our
-// own job on the hub (fixed price, parts included) -> Autodata hours typed in
-// -> the price comes up. No parts to enter: our set price already includes them.
-// A job we haven't got on the hub is quoted on labour only.
+// own job on the hub (fixed price, parts included) -> the price and the
+// copy-ready message come up straight away. No hours or parts to enter for a
+// job we have on the hub; Autodata hours are only asked for when there isn't
+// one (that quote is labour only).
 //
 // Pricing rules (Chris, Oct 2026):
 //   - Labour £75/hr + VAT, whatever the job.
@@ -50,6 +51,14 @@ const ENGINE_QUESTIONS = {
   "Ford 1.0 EcoBoost (wet belt": { question: "Is the oil warning light showing on the dash?", yesPattern: /oil light/i },
 };
 const questionFor = (engineName) => ENGINE_QUESTIONS[Object.keys(ENGINE_QUESTIONS).find((k) => engineName.startsWith(k))] || null;
+
+// Extra on the set price for engines that cost us more to do — added to the
+// quote and explained to the customer in the message.
+const ENGINE_SURCHARGE = {
+  "Ford 1.0 EcoBoost": 50,
+  "PSA/Stellantis 1.2 PureTech": 50,
+};
+const surchargeFor = (engineName) => ENGINE_SURCHARGE[Object.keys(ENGINE_SURCHARGE).find((k) => engineName.startsWith(k))] || 0;
 
 const FALLBACK_STOPWORDS = new Set(["timing", "chain", "belt", "wet", "dry", "later", "earlier", "replacement", "kit", "and"]);
 function hubJobsFor(engineName, jobTypes) {
@@ -162,12 +171,15 @@ export function ChainBeltTab({ jobTypes = [] }) {
   const turnaround = engine ? turnaroundFor(`${engine.name} ${hubJob?.name || ""}`) : "";
   const intro = result ? `Hi, thank you for your enquiry about ${result.reg}${vehicleName ? ` (${vehicleName})` : ""}. Here's your quote:` : "";
   const outro = "Thanks again for getting in touch — let us know if you'd like to book in.";
-  const hubMessage = engine && hubJob && q.adHrs > 0
+  const surcharge = engine && hubJob ? surchargeFor(engine.name) : 0;
+  const hubPrice = hubJob ? hubJob.standardPrice + surcharge : null;
+  const hubMessage = engine && hubJob
     ? [
         intro,
         "",
         `${KIND_LABEL[kind]} replacement`,
-        `Price: ${money(hubJob.standardPrice)} inc VAT (fixed price, parts and labour included)`,
+        `Price: ${money(hubPrice)} inc VAT (fixed price, parts and labour included)`,
+        ...(surcharge > 0 ? ["Please note, due to the engine model there is a slight lift in price."] : []),
         `Turnaround: ${turnaround}`,
         "",
         outro,
@@ -189,7 +201,7 @@ export function ChainBeltTab({ jobTypes = [] }) {
   const message = hubMessage || autodataMessage;
 
   // The price quoted (inc VAT) goes onto this check's history line once it's showing.
-  const quotedPrice = engine && q.adHrs > 0 ? (hubJob ? hubJob.standardPrice : q.total) : null;
+  const quotedPrice = engine ? (hubJob ? hubPrice : q.adHrs > 0 ? q.total : null) : null;
   const quotedJob = hubJob?.name || engine?.name || "";
   useEffect(() => {
     if (!checkId || quotedPrice === null) return;
@@ -309,7 +321,8 @@ export function ChainBeltTab({ jobTypes = [] }) {
 
               {!awaitingAnswer && (
               <>
-              {/* Autodata */}
+              {/* Autodata hours — only when we have no set price for this engine */}
+              {!hubJob && (
               <div className="wb-panel">
                 <label className="wb-label">Autodata time (hrs)</label>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -322,14 +335,22 @@ export function ChainBeltTab({ jobTypes = [] }) {
                   Search {result.reg} in Autodata, Repair times, {KIND_LABEL[kind].toLowerCase()} replacement.
                 </div>
               </div>
+              )}
 
 
               {/* Quote */}
               <div className="wb-panel">
-                {q.adHrs > 0 && hubJob ? (
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 22, fontWeight: 800 }}>
-                    <span>Price <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>— {hubJob.name}</span></span><span className="wh-mono">{money(hubJob.standardPrice)}</span>
-                  </div>
+                {hubJob ? (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 22, fontWeight: 800 }}>
+                      <span>Price <span style={{ fontSize: 12, fontWeight: 400, color: "var(--muted)" }}>— {hubJob.name}</span></span><span className="wh-mono">{money(hubPrice)}</span>
+                    </div>
+                    {surcharge > 0 && (
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>
+                        Includes {money(surcharge)} on our {money(hubJob.standardPrice)} set price for this engine; the message tells the customer there's a slight lift in price.
+                      </div>
+                    )}
+                  </>
                 ) : q.adHrs > 0 ? (
                   <>
                     {[["Labour", q.labour], ["VAT 20%", q.vat]].map(([label, v]) => (
@@ -350,7 +371,7 @@ export function ChainBeltTab({ jobTypes = [] }) {
                     </button>
                   </>
                 ) : (
-                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>Enter the Autodata time and the price comes up.</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 10 }}>{hubJob ? "" : "Enter the Autodata time and the price comes up."}</div>
                 )}
               </div>
               </>
