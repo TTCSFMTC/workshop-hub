@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { fetchChainBeltChecks, insertChainBeltCheck, updateChainBeltCheck, subscribeTable } from "@/lib/data";
 import { Search, ExternalLink, Copy, Check } from "lucide-react";
 
 // Chain & Belt quote tab.
@@ -91,6 +92,17 @@ export function ChainBeltTab({ jobTypes = [] }) {
   const kind = engine ? kindOf(engine) : null;
   // Our own job(s) on the hub for this engine, and the fixed price if there is one.
   const [answer, setAnswer] = useState(null); // null (not asked yet) | "yes" | "no"
+  // History: one row per reg checked, kept in Supabase so it's the same on every device.
+  const [history, setHistory] = useState([]);
+  const [historyOk, setHistoryOk] = useState(true);
+  const [checkId, setCheckId] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const load = () => fetchChainBeltChecks().then((rows) => { if (live) { setHistory(rows); setHistoryOk(true); } }).catch(() => { if (live) setHistoryOk(false); });
+    load();
+    const unsub = subscribeTable("chain_belt_checks", load);
+    return () => { live = false; unsub(); };
+  }, []);
   const question = engine ? questionFor(engine.name) : null;
   const awaitingAnswer = !!question && answer === null;
   const hubJobs = useMemo(() => {
@@ -110,6 +122,7 @@ export function ChainBeltTab({ jobTypes = [] }) {
     setStatus("loading");
     setError("");
     setResult(null);
+    setCheckId(null);
     setEngineIdx(0);
     setAnswer(null);
     setAutodataHrs("");
@@ -124,6 +137,13 @@ export function ChainBeltTab({ jobTypes = [] }) {
       setResult(data);
       selectEngine(data.matches, 0);
       setStatus("done");
+      // Log the check straight away (price and WhatsApp status fill in later).
+      const id = `chk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const vehicle = [data.make, data.model].filter(Boolean).map(titleCase).join(" ");
+      const row = { id, reg: data.reg || reg, vehicle, job: data.matches?.[0]?.name || "", price: null, whatsappSent: false };
+      setCheckId(id);
+      setHistory((prev) => [{ ...row, createdAt: new Date().toISOString() }, ...prev]);
+      insertChainBeltCheck(row).catch(() => setHistoryOk(false));
     } catch (err) {
       setError(err.message);
       setStatus("error");
@@ -168,11 +188,26 @@ export function ChainBeltTab({ jobTypes = [] }) {
     : "";
   const message = hubMessage || autodataMessage;
 
+  // The price quoted (inc VAT) goes onto this check's history line once it's showing.
+  const quotedPrice = engine && q.adHrs > 0 ? (hubJob ? hubJob.standardPrice : q.total) : null;
+  const quotedJob = hubJob?.name || engine?.name || "";
+  useEffect(() => {
+    if (!checkId || quotedPrice === null) return;
+    setHistory((prev) => prev.map((h) => (h.id === checkId ? { ...h, price: quotedPrice, job: quotedJob } : h)));
+    updateChainBeltCheck(checkId, { price: quotedPrice, job: quotedJob }).catch(() => setHistoryOk(false));
+  }, [checkId, quotedPrice, quotedJob]);
+
+  const setSent = (id, sent) => {
+    setHistory((prev) => prev.map((h) => (h.id === id ? { ...h, whatsappSent: sent } : h)));
+    updateChainBeltCheck(id, { whatsappSent: sent }).catch(() => setHistoryOk(false));
+  };
+
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(message);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
+      if (checkId) setSent(checkId, true); // copied to send = WhatsApp sent
     } catch {}
   };
 
@@ -324,6 +359,41 @@ export function ChainBeltTab({ jobTypes = [] }) {
           )}
         </>
       )}
+
+      {/* History: one line per check */}
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, marginBottom: 2 }}>Checks so far</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+          One line per registration checked. WhatsApp turns to Y when you copy the message — untick it if you didn&apos;t actually send it.
+        </div>
+        {!historyOk && (
+          <div style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 8 }}>History isn&apos;t saving — has migration 063 been run in Supabase?</div>
+        )}
+        {history.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>No checks yet.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="wb-table">
+              <thead><tr><th>Date</th><th>Reg</th><th>Make / model</th><th>Price</th><th>WhatsApp sent</th></tr></thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id}>
+                    <td className="wh-mono" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{new Date(h.createdAt).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+                    <td className="wh-mono" style={{ fontWeight: 700 }}>{h.reg}</td>
+                    <td style={{ fontSize: 13 }}>{h.vehicle || "—"}</td>
+                    <td className="wh-mono">{h.price !== null ? money(h.price) : "—"}</td>
+                    <td>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: 700, color: h.whatsappSent ? "var(--green)" : "var(--muted)" }}>
+                        <input type="checkbox" checked={h.whatsappSent} onChange={(e) => setSent(h.id, e.target.checked)} /> {h.whatsappSent ? "Y" : "N"}
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
