@@ -14,7 +14,7 @@ import { ChainBeltTab } from "./ChainBeltTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
-  insertHoliday, deleteHoliday, updateHolidayPaid, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
+  insertHoliday, deleteHoliday, updateHolidayPaid, fetchWeeklyPartsOrdered, setWeeklyPartOrdered, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
@@ -6110,6 +6110,25 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
   const [weekStart, setWeekStart] = useState(() => mondayOf(todayISO()));
   const [printMode, setPrintMode] = useState(null); // null | "list" | "tick" | "filters"
   const weekEnd = addDaysISO(weekStart, 6);
+  // Parts ticked as ordered for this week — shared across devices via Supabase.
+  const [orderedIds, setOrderedIds] = useState([]);
+  useEffect(() => {
+    let live = true;
+    const load = () => fetchWeeklyPartsOrdered(weekStart).then((ids) => { if (live) setOrderedIds(ids); }).catch(() => { if (live) setOrderedIds([]); });
+    load();
+    const unsub = subscribeTable("weekly_parts_ordered", load);
+    return () => { live = false; unsub(); };
+  }, [weekStart]);
+  const toggleOrdered = async (partId) => {
+    const nowOrdered = !orderedIds.includes(partId);
+    setOrderedIds((prev) => (nowOrdered ? [...prev, partId] : prev.filter((x) => x !== partId)));
+    try {
+      await setWeeklyPartOrdered(weekStart, partId, nowOrdered);
+    } catch (e) {
+      setOrderedIds((prev) => (nowOrdered ? prev.filter((x) => x !== partId) : [...prev, partId]));
+      alert(`Couldn't save that tick — has migration 062 been run in Supabase?\n\n${e.message || e}`);
+    }
+  };
   const rangeLabel = `${fmtDate(weekStart)} – ${fmtDate(weekEnd)}`;
 
   useEffect(() => {
@@ -6158,7 +6177,7 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
 
   return (
     <div className="wb-modal-backdrop" onClick={onClose}>
-      {printMode && createPortal(<WeeklyPartsPrintout mode={printMode} rangeLabel={rangeLabel} jobs={jobs} totals={totals} partById={partById} filterRows={filterRows} />, document.body)}
+      {printMode && createPortal(<WeeklyPartsPrintout mode={printMode} rangeLabel={rangeLabel} jobs={jobs} totals={totals} partById={partById} filterRows={filterRows} orderedIds={orderedIds} />, document.body)}
       <div className="wb-modal" style={{ maxWidth: 860 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ padding: 16, borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><Package size={16} color="var(--amber)" /> Weekly parts list</div>
@@ -6177,17 +6196,18 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
             </div>
           </div>
           <div style={{ fontSize: 11, color: "var(--muted)" }}>
-            Jobs dropped off Monday–Sunday that aren't done yet — {jobs.length} job{jobs.length !== 1 ? "s" : ""}. "In stock" is what the system holds today.
+            Jobs dropped off Monday–Sunday that aren't done yet — {jobs.length} job{jobs.length !== 1 ? "s" : ""}. "In stock" is what the system holds today. Tick Ordered once a part has been ordered — it's saved for this week and shows on the prints.
           </div>
           {jobs.length === 0 ? (
             <div style={{ textAlign: "center", color: "var(--muted)", fontSize: 13, padding: "24px 0" }}>No jobs starting this week.</div>
           ) : (
             <div style={{ overflow: "auto", maxHeight: "55vh", display: "flex", flexDirection: "column", gap: 16 }}>
               <table className="wb-table">
-                <thead><tr><th>Part</th><th>Need</th><th>In stock</th><th>Short</th><th>For</th></tr></thead>
+                <thead><tr><th>Ordered</th><th>Part</th><th>Need</th><th>In stock</th><th>Short</th><th>For</th></tr></thead>
                 <tbody>
                   {totals.map((t) => (
-                    <tr key={t.partId}>
+                    <tr key={t.partId} style={orderedIds.includes(t.partId) ? { opacity: 0.55 } : undefined}>
+                      <td style={{ textAlign: "center" }}><input type="checkbox" style={{ width: 18, height: 18, cursor: "pointer" }} checked={orderedIds.includes(t.partId)} onChange={() => toggleOrdered(t.partId)} title="Tick when this has been ordered" /></td>
                       <td>{t.name}{t.partNumber ? <span style={{ color: "var(--muted)", fontSize: 11 }}> · {t.partNumber}</span> : null}</td>
                       <td className="wh-mono">{t.need}</td>
                       <td className="wh-mono">{t.stock}{t.onOrder > 0 ? <span style={{ color: "var(--muted)", fontSize: 11 }}> (+{t.onOrder} on order)</span> : null}</td>
@@ -6216,7 +6236,7 @@ function WeeklyPartsModal({ bookings, jobTypes, stockRows, onClose }) {
   );
 }
 
-function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById, filterRows }) {
+function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById, filterRows, orderedIds = [] }) {
   const th = { textAlign: "left", borderBottom: "2px solid #000", padding: "5px 8px", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em" };
   const td = { padding: "7px 8px", borderBottom: "1px solid #ccc", verticalAlign: "top" };
   const box = <div style={{ border: "1px solid #000", width: 18, height: 18 }} />;
@@ -6256,7 +6276,7 @@ function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById, filterR
                   <td style={{ ...td, fontWeight: 700 }}>{t.need}</td>
                   <td style={td}>{t.stock}</td>
                   <td style={{ ...td, width: 70 }}><div style={{ border: "1px solid #000", height: 20 }} /></td>
-                  <td style={td}>{box}</td>
+                  <td style={td}>{orderedIds.includes(t.partId) ? <div style={{ border: "1px solid #000", width: 18, height: 18, textAlign: "center", fontWeight: 800, lineHeight: "18px" }}>✓</div> : box}</td>
                   <td style={{ ...td, fontSize: 10, color: "#444" }}>{t.regs.join(", ")}</td>
                 </tr>
               ))}
@@ -6281,10 +6301,11 @@ function WeeklyPartsPrintout({ mode, rangeLabel, jobs, totals, partById, filterR
             </table>
             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Totals for the week</div>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-              <thead><tr>{["Part", "Need", "In stock", "Short"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <thead><tr>{["Ordered", "Part", "Need", "In stock", "Short"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
                 {totals.map((t) => (
                   <tr key={t.partId}>
+                    <td style={{ ...td, fontWeight: 800 }}>{orderedIds.includes(t.partId) ? "✓" : <div style={{ border: "1px solid #000", width: 14, height: 14 }} />}</td>
                     <td style={td}>{t.name}</td>
                     <td style={td}>{t.need}</td>
                     <td style={td}>{t.stock}</td>
