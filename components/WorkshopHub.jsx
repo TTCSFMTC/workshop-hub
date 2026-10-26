@@ -6824,12 +6824,11 @@ function NewJobTypeModal({ brands, onClose, onCreate }) {
 // same second password as Profitability — absence records are private.
 // Counts Monday-Friday days (same as holidays) over the last 12 months, plus
 // how many separate absences, and flags anyone off sick today.
-// Monthly report for doing the wages: for one calendar month, each person's
-// paid holiday, unpaid leave and sickness days (Mon–Fri only, entries clipped
-// to the month), with the dates behind the numbers. Printable.
-function wagesReportData(month, holidays, sickness) {
-  const monthStart = `${month}-01`;
-  const monthEnd = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10);
+// Report for doing the wages: for a date range (a calendar month, or the pay
+// period 21st–20th), each person's paid holiday, unpaid leave and sickness
+// days (Mon–Fri only, entries clipped to the range), with the dates behind the
+// numbers. Printable.
+function wagesReportData(monthStart, monthEnd, holidays, sickness) {
   const people = {};
   const person = (n) => (people[n] = people[n] || { name: n, paid: 0, unpaid: 0, sick: 0, lines: [] });
   STAFF_HOLIDAY_NAMES.forEach(person);
@@ -6853,10 +6852,18 @@ const WAGES_KIND_LABEL = { paid: "Paid holiday", unpaid: "UNPAID leave", sick: "
 
 function WagesReportTab({ holidays, sickness }) {
   const shiftMonth = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
-  const [month, setMonth] = useState(() => shiftMonth(todayISO().slice(0, 7), -1)); // wages are done for last month
+  const monthEndOf = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
+  // Pay period ending on the 20th of `m` runs from the 21st of the month before.
+  const payPeriod = (m) => ({ from: `${shiftMonth(m, -1)}-21`, to: `${m}-20` });
+  const calMonth = (m) => ({ from: `${m}-01`, to: monthEndOf(m) });
+  // Wages go out on the 20th, so open on the latest pay period that has ended.
+  const [range, setRange] = useState(() => { const t = todayISO(); return payPeriod(t.slice(8, 10) > "20" ? t.slice(0, 7) : shiftMonth(t.slice(0, 7), -1)); });
   const [printing, setPrinting] = useState(false);
-  const label = new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  const { rows, totals } = useMemo(() => wagesReportData(month, holidays, sickness), [month, holidays, sickness]);
+  const isPay = range.to.slice(8, 10) === "20" && range.from === `${shiftMonth(range.to.slice(0, 7), -1)}-21`;
+  const isCal = range.from.slice(8, 10) === "01" && range.to === monthEndOf(range.from.slice(0, 7));
+  const step = (n) => setRange(isPay ? payPeriod(shiftMonth(range.to.slice(0, 7), n)) : isCal ? calMonth(shiftMonth(range.from.slice(0, 7), n)) : range);
+  const label = `${fmtDate(range.from)} – ${fmtDate(range.to)}`;
+  const { rows, totals } = useMemo(() => wagesReportData(range.from, range.to, holidays, sickness), [range, holidays, sickness]);
   const absent = rows.filter((r) => r.lines.length > 0);
 
   useEffect(() => {
@@ -6875,13 +6882,18 @@ function WagesReportTab({ holidays, sickness }) {
         <Receipt size={16} color="var(--amber)" /> Wages report — absences and holidays
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14 }}>
-        For doing the wages: each person's paid holiday, <strong>unpaid leave</strong> and sickness for the month. Mon–Fri days only (weekends aren't counted); bank holidays aren't tracked here.
+        For doing the wages: each person's paid holiday, <strong>unpaid leave</strong> and sickness for the period. Mon–Fri days only (weekends aren't counted); bank holidays aren't tracked here.
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(month, -1))}><ChevronLeft size={14} /></button>
-        <div style={{ fontWeight: 700, minWidth: 150, textAlign: "center" }}>{label}</div>
-        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(month, 1))}><ChevronRight size={14} /></button>
-        <button className="wb-btn-ghost" onClick={() => setMonth(shiftMonth(todayISO().slice(0, 7), -1))}>Last month</button>
+        <button className="wb-btn-ghost" disabled={!isPay && !isCal} onClick={() => step(-1)}><ChevronLeft size={14} /></button>
+        <div style={{ fontWeight: 700, minWidth: 250, textAlign: "center" }}>{label}</div>
+        <button className="wb-btn-ghost" disabled={!isPay && !isCal} onClick={() => step(1)}><ChevronRight size={14} /></button>
+        <button className="wb-btn-ghost" style={isPay ? { borderColor: "var(--amber)" } : {}} onClick={() => { const t = todayISO(); setRange(payPeriod(t.slice(8, 10) > "20" ? t.slice(0, 7) : shiftMonth(t.slice(0, 7), -1))); }}>Pay period (21st–20th)</button>
+        <button className="wb-btn-ghost" style={isCal ? { borderColor: "var(--amber)" } : {}} onClick={() => setRange(calMonth(shiftMonth(todayISO().slice(0, 7), -1)))}>Last calendar month</button>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+          or from <input type="date" className="wb-input" style={{ width: 150 }} value={range.from} onChange={(e) => e.target.value && setRange((r) => ({ from: e.target.value, to: e.target.value > r.to ? e.target.value : r.to }))} />
+          to <input type="date" className="wb-input" style={{ width: 150 }} min={range.from} value={range.to} onChange={(e) => e.target.value && setRange((r) => ({ ...r, to: e.target.value < r.from ? r.from : e.target.value }))} />
+        </span>
         <button className="wb-btn" style={{ marginLeft: "auto" }} onClick={() => setPrinting(true)}><Printer size={13} /> Print report</button>
       </div>
       <div style={{ overflowX: "auto", marginBottom: 16 }}>
@@ -6936,7 +6948,7 @@ function WagesReportPrintout({ label, rows, totals }) {
       <div style={{ padding: 24, color: "#000", background: "#fff", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 2 }}>Wages report — {label}</div>
         <div style={{ fontSize: 11, color: "#555", marginBottom: 16 }}>
-          Absences and holidays for the month (Mon–Fri days). Printed {new Date().toLocaleString("en-GB")}
+          Absences and holidays for the period (Mon–Fri days). Printed {new Date().toLocaleString("en-GB")}
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 22 }}>
           <thead><tr>{["Name", "Paid holiday", "Unpaid leave", "Sick", "Total days off"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
