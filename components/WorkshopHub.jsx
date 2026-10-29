@@ -2127,8 +2127,8 @@ function OfficeMode({
           }}
         />
       )}
-      {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} parts={parts} />}
-      {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} parts={parts} />}
+      {printJob && <JobCardPrintout booking={printJob} jobTypes={jobTypes} />}
+      {printJobs && printJobs.length > 0 && <JobCardsPrintout bookings={printJobs} jobTypes={jobTypes} />}
       {printStillToFinish && <JobsStillToFinishPrintout rows={stillToFinishRows(bookings, jobTypes)} />}
       {printVehicles && <WorkshopVehiclesPrintout rows={workshopVehicleRows(bookings, jobTypes)} />}
       {printOutstandingParts && <OutstandingPartsPrintout rows={outstandingPartsRows(stockBatches, parts)} />}
@@ -2162,28 +2162,17 @@ function OfficeMode({
 // can go straight into a physical pile at reception — techs work through the
 // pile one job card at a time. Plain black-on-white regardless of the app's
 // dark theme, since it's meant for a printer, not a screen.
-// Everything a car is booked in for: every job type on the booking plus any
-// one-off "Other" lines (e.g. a water pump) typed onto it.
-const bookedInForLabel = (booking, jobTypes) => {
+// Everything a car is booked in for, one entry each: every job type on the
+// booking plus any one-off "Other" lines (e.g. a water pump) typed onto it.
+const bookedInForList = (booking, jobTypes) => {
   const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
   const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
-  return [jt?.name, ...extraJts.map((e) => e.name), ...(booking.customParts || []).map((c) => c.description)].filter(Boolean).join(" + ");
+  return [jt?.name, ...extraJts.map((e) => e.name), ...(booking.customParts || []).map((c) => c.description)].filter(Boolean);
 };
-// Parts to put on the job: the full recipe (job types, extras, quantity
-// overrides) as "qty unit × name" lines, then the one-off "Other" parts.
-// Labour Hours is a time charge, not a part to pick.
-const bookingPartLines = (booking, jobTypes, parts) => {
-  const idx = Object.fromEntries((parts || []).map((p) => [p.id, p]));
-  const lines = fullBookingBom(booking, jobTypes)
-    .filter((l) => !/^labour hours$/i.test((idx[l.partId]?.name || "").trim()))
-    .map((l) => `${l.qty}${idx[l.partId]?.unit && idx[l.partId].unit !== "each" ? ` ${idx[l.partId].unit}` : ""} × ${idx[l.partId]?.name || l.partId}`);
-  (booking.customParts || []).forEach((c) => lines.push(`1 × ${c.description}`));
-  return lines;
-};
+const bookedInForLabel = (booking, jobTypes) => bookedInForList(booking, jobTypes).join(" + ");
 
-function JobCardBody({ booking, jobTypes, parts }) {
-  const jobTypeLabel = bookedInForLabel(booking, jobTypes);
-  const partLines = bookingPartLines(booking, jobTypes, parts);
+function JobCardBody({ booking, jobTypes }) {
+  const bookedIn = bookedInForList(booking, jobTypes);
   // The customer's requested-by date is the last day of the booked-in
   // span, not a separate field — a job entered as 3 days from Mon is
   // wanted back by Wed, so this is computed from date+days rather than
@@ -2198,7 +2187,7 @@ function JobCardBody({ booking, jobTypes, parts }) {
     ["Phone", booking.phone],
     ["Vehicle registration", booking.reg],
     ["Vehicle model", booking.vehicleModel],
-    ["Booked in for", jobTypeLabel],
+    ["Booked in for", bookedIn.length ? <div>{bookedIn.map((n, i) => <div key={i} style={{ fontWeight: 700 }}>{bookedIn.length > 1 ? `${i + 1}. ` : ""}{n}</div>)}</div> : ""],
   ].filter(([, value]) => value);
 
   return (
@@ -2215,14 +2204,6 @@ function JobCardBody({ booking, jobTypes, parts }) {
           ))}
         </tbody>
       </table>
-      {partLines.length > 0 && (
-        <>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Parts for this job</div>
-          <div style={{ border: "1px solid #000", borderRadius: 4, padding: 6, fontSize: 11, marginBottom: 12, columnCount: partLines.length > 6 ? 2 : 1 }}>
-            {partLines.map((l, i) => <div key={i} style={{ breakInside: "avoid" }}>☐ {l}</div>)}
-          </div>
-        </>
-      )}
       <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Customer notes</div>
       <div style={{ border: "1px solid #000", borderRadius: 4, padding: 6, minHeight: 50, fontSize: 11, whiteSpace: "pre-wrap", marginBottom: 12 }}>
         {booking.symptoms || "—"}
