@@ -1989,7 +1989,7 @@ function OfficeMode({
         )}
         {tab === "jobs" && (
           <JobsTableTab
-            bookings={bookings} jobTypes={jobTypes}
+            bookings={bookings} jobTypes={jobTypes} updateBooking={updateBooking}
             onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
             onPrintStillToFinish={() => setPrintStillToFinish(true)}
@@ -2725,26 +2725,13 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
       <TrafficLightButton
         on={booking.workshopCompleted} color="#ffb84d" textOn="#1a1508" label="DONE"
         title={booking.workshopCompleted ? "Mark as not yet workshop completed" : "Mark workshop completed — ready for collection, can be invoiced"}
-        onClick={() => {
-          const turningOn = !booking.workshopCompleted;
-          updateBooking(booking.id, turningOn ? { workshopCompleted: true, workshopCompletedAt: Date.now() } : { workshopCompleted: false, workshopCompletedAt: null });
-          if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, workshopCompletedMessage(booking)), "_blank");
-        }}
+        onClick={() => toggleWorkshopDone(booking, updateBooking)}
       />
       {showCollected && (
         <TrafficLightButton
           on={booking.completed} color="var(--green)" textOn="#fff" label="COMP"
           title={booking.completed ? "Mark as not yet collected" : "Mark collected — counts in Profitability"}
-          onClick={() => {
-            const turningOn = !booking.completed;
-            // Completing straight from "not done" counts as DONE too (stock comes
-            // off, it can be invoiced) but the "vehicle is ready" WhatsApp is
-            // never sent — only the collection one below.
-            updateBooking(booking.id, turningOn
-              ? { completed: true, completedAt: Date.now(), followupSent: false, ...(booking.workshopCompleted ? {} : { workshopCompleted: true, workshopCompletedAt: Date.now() }) }
-              : { completed: false, completedAt: null });
-            if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, collectionThankYouMessage(booking)), "_blank");
-          }}
+          onClick={() => toggleCollectedComplete(booking, updateBooking)}
         />
       )}
     </div>
@@ -2761,6 +2748,24 @@ const isRebuildBooking = (b, jobTypes) => [b.jobTypeId, ...(b.extraJobTypeIds ||
 
 function bookingStatus(b) {
   if (b.completed) return { color: "var(--green)", label: "Collected" };
+// DONE / COMP behaviour lives here so the calendar buttons and the Jobs tab
+// ticks can never drift apart.
+function toggleWorkshopDone(booking, updateBooking) {
+  const turningOn = !booking.workshopCompleted;
+  updateBooking(booking.id, turningOn ? { workshopCompleted: true, workshopCompletedAt: Date.now() } : { workshopCompleted: false, workshopCompletedAt: null });
+  if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, workshopCompletedMessage(booking)), "_blank");
+}
+function toggleCollectedComplete(booking, updateBooking) {
+  const turningOn = !booking.completed;
+  // Completing straight from "not done" counts as DONE too (stock comes
+  // off, it can be invoiced) but the "vehicle is ready" WhatsApp is
+  // never sent — only the collection one below.
+  updateBooking(booking.id, turningOn
+    ? { completed: true, completedAt: Date.now(), followupSent: false, ...(booking.workshopCompleted ? {} : { workshopCompleted: true, workshopCompletedAt: Date.now() }) }
+    : { completed: false, completedAt: null });
+  if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, collectionThankYouMessage(booking)), "_blank");
+}
+
   if (b.workshopCompleted) return { color: "#ffb84d", label: "Workshop completed" };
   if (b.arrived) return { color: "var(--red)", label: "Arrived" };
   return { color: null, label: "Not started" };
@@ -3438,7 +3443,7 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
 // see what's in, what's done, and what's ready to collect. Hides collected
 // jobs by default — those are done and out the door — but they're a tick
 // away.
-function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPrintStillToFinish, onPrintVehicles }) {
+function JobsTableTab({ bookings, jobTypes, updateBooking, onOpenBooking, onPrintSelected, onPrintStillToFinish, onPrintVehicles }) {
   const [showCollected, setShowCollected] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   // Which rows are ticked for a bulk reprint — e.g. tick every car
@@ -3536,7 +3541,7 @@ function JobsTableTab({ bookings, jobTypes, onOpenBooking, onPrintSelected, onPr
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No jobs to show.</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No jobs to show.</td></tr>
             )}
           </tbody>
         </table>
@@ -3571,6 +3576,7 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approvalId: approval.id, price, cost: Number(draft.cost) > 0 ? Number(draft.cost) : undefined, inStock: !!draft.inStock }),
+              <th style={{ textAlign: "center" }}>Done</th><th style={{ textAlign: "center" }}>Complete &amp; invoice</th>
       });
       const data = await res.json();
       if (!res.ok) { alert(data.error || "Failed to generate the approval report."); setSendingId(null); return; }
@@ -3585,6 +3591,12 @@ function PendingApprovalBanner({ jobApprovals, jobCards, bookings, jobTypes, upd
       const msg = `Hi ${firstName(card?.customerName || booking?.customerName)}, we've found some extra work needed on your ${cardVehicle || booking?.vehicleModel || "vehicle"} (${card?.reg || booking?.reg || ""}) while carrying out the booked job.\n\nPrice for the extra work: £${price.toFixed(2)}\n${draft.inStock ? "The part is in stock, so we can do it while your vehicle is still with us." : "The part isn't in stock, so it would need to be ordered."}\n\nPlease tap the link to see the details and approve or decline:\n${data.approveUrl}`;
       window.open(whatsappLink(booking.phone, msg), "_blank");
     } catch {
+                  <td style={{ textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" style={{ width: 24, height: 24, cursor: "pointer", accentColor: "#ffb84d" }} checked={!!b.workshopCompleted} onChange={() => toggleWorkshopDone(b, updateBooking)} title={b.workshopCompleted ? "Mark as not yet done" : "Done — same as DONE on the calendar"} />
+                  </td>
+                  <td style={{ textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" style={{ width: 24, height: 24, cursor: "pointer", accentColor: "var(--green)" }} checked={!!b.completed} onChange={() => toggleCollectedComplete(b, updateBooking)} title={b.completed ? "Mark as not yet complete" : "Complete & invoice — same as COMP on the calendar"} />
+                  </td>
       alert("Failed to send the approval report — check your connection and try again.");
     }
     setSendingId(null);
