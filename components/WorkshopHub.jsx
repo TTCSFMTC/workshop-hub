@@ -2169,7 +2169,6 @@ const bookedInForList = (booking, jobTypes) => {
   const extraJts = (booking.extraJobTypeIds || []).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean);
   return [jt?.name, ...extraJts.map((e) => e.name), ...(booking.customParts || []).map((c) => c.description)].filter(Boolean);
 };
-const bookedInForLabel = (booking, jobTypes) => bookedInForList(booking, jobTypes).join(" + ");
 
 function JobCardBody({ booking, jobTypes }) {
   const bookedIn = bookedInForList(booking, jobTypes);
@@ -8330,7 +8329,7 @@ function JobBreakdown({ booking, jobTypes, parts }) {
     <div className="jc-card" style={{ background: "#1c1710", border: "1px solid #3a2d10" }}>
       <div className="jc-section-title" style={{ color: "var(--amber2)" }}><ListChecks size={16} /> What's needed — from the booking</div>
       <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>
-        {bookedInForLabel(booking, jobTypes) || "No job type set"}
+        {jt?.name || "No job type set"}{extraJts.length > 0 && ` + ${extraJts.map((e) => e.name).join(" + ")}`}
       </div>
       {booking.symptoms && <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 10, fontStyle: "italic" }}>"{booking.symptoms}"</div>}
       {bom.length > 0 && (
