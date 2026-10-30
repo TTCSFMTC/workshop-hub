@@ -1989,7 +1989,7 @@ function OfficeMode({
         )}
         {tab === "jobs" && (
           <JobsTableTab
-            bookings={bookings} jobTypes={jobTypes} updateBooking={updateBooking}
+            bookings={bookings} jobTypes={jobTypes} parts={parts} updateBooking={updateBooking}
             onOpenBooking={openBookingOnCalendar}
             onPrintSelected={setPrintJobs}
             onPrintStillToFinish={() => setPrintStillToFinish(true)}
@@ -3454,7 +3454,7 @@ function CancellationsTab({ allBookings, jobTypes, updateBooking, onOpenBooking,
 // see what's in, what's done, and what's ready to collect. Hides collected
 // jobs by default — those are done and out the door — but they're a tick
 // away.
-function JobsTableTab({ bookings, jobTypes, updateBooking, onOpenBooking, onPrintSelected, onPrintStillToFinish, onPrintVehicles }) {
+function JobsTableTab({ bookings, jobTypes, parts, updateBooking, onOpenBooking, onPrintSelected, onPrintStillToFinish, onPrintVehicles }) {
   const [showCollected, setShowCollected] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   // Which rows are ticked for a bulk reprint — e.g. tick every car
@@ -3468,6 +3468,20 @@ function JobsTableTab({ bookings, jobTypes, updateBooking, onOpenBooking, onPrin
       .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   }, [bookings, showCollected]);
   const allVisibleSelected = rows.length > 0 && rows.every((b) => selected.has(b.id));
+  // Complete & invoice: same as COMP, then the Zoho invoice is raised straight
+  // away (once only — never a second one if the job already has an invoice).
+  const [invoicingIds, setInvoicingIds] = useState(() => new Set());
+  const completeAndInvoice = async (b) => {
+    const turningOn = !b.completed;
+    toggleCollectedComplete(b, updateBooking);
+    if (!turningOn || b.zohoInvoiceId || invoicingIds.has(b.id)) return;
+    if (!(b.jobValue > 0)) { alert(`${b.customerName || "This job"} has no job value set, so no Zoho invoice was created. It's marked complete — set the price and use "Create Zoho invoice" on the booking.`); return; }
+    setInvoicingIds((prev) => new Set(prev).add(b.id));
+    const { data, error } = await sendBookingToZoho(b, jobTypes, parts);
+    setInvoicingIds((prev) => { const next = new Set(prev); next.delete(b.id); return next; });
+    if (error) { alert(`${error}\n\n${b.customerName || "The job"} is marked complete but NOT invoiced — use "Create Zoho invoice" on the booking.`); return; }
+    updateBooking(b.id, { zohoInvoiceId: data.invoiceId, zohoInvoiceNumber: data.invoiceNumber, zohoInvoiceUrl: data.invoiceUrl });
+  };
   const toggleRow = (id) => setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   const toggleAllVisible = () => setSelected((prev) => {
     if (allVisibleSelected) return new Set();
@@ -3553,7 +3567,8 @@ function JobsTableTab({ bookings, jobTypes, updateBooking, onOpenBooking, onPrin
                     <input type="checkbox" style={{ width: 24, height: 24, cursor: "pointer", accentColor: "#ffb84d" }} checked={!!b.workshopCompleted} onChange={() => toggleWorkshopDone(b, updateBooking)} title={b.workshopCompleted ? "Mark as not yet done" : "Done — same as DONE on the calendar"} />
                   </td>
                   <td style={{ textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" style={{ width: 24, height: 24, cursor: "pointer", accentColor: "var(--green)" }} checked={!!b.completed} onChange={() => toggleCollectedComplete(b, updateBooking)} title={b.completed ? "Mark as not yet complete" : "Complete & invoice — same as COMP on the calendar"} />
+                    <input type="checkbox" style={{ width: 24, height: 24, cursor: "pointer", accentColor: "var(--green)" }} checked={!!b.completed} disabled={invoicingIds.has(b.id)} onChange={() => completeAndInvoice(b)} title={b.completed ? "Mark as not yet complete" : "Complete and send the invoice to Zoho"} />
+                    {b.zohoInvoiceId && <div style={{ fontSize: 10, color: "var(--green)", fontWeight: 700 }}>Invoiced{b.zohoInvoiceNumber ? ` #${b.zohoInvoiceNumber}` : ""}</div>}
                   </td>
                 </tr>
               );
@@ -3815,24 +3830,11 @@ function computeProfit({ jobValue, labourCost, transportCost, partsCost, extraCo
   return { vat, profit: jobValue - vat - partsCost - labourCost - transportCost - (extraCostsTotal || 0) };
 }
 
-// Job value/labour/parts cost and profit used to be visible here — this is
-// now pricing entry and transport/invoicing only. Profit stays visible in
-// one place, the password-gated Profitability tab, rather than to anyone
-// scanning a booking on the calendar.
-function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost }) {
-  const [open, setOpen] = useState(false);
-  const [creatingInvoice, setCreatingInvoice] = useState(false);
-  const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
-  const draftQuoteEmail = () => {
-    const recipients = (settings.transportCompanies || []).map((c) => c.email).filter(Boolean).join(",");
-    const subject = encodeURIComponent(`Collection quote — ${booking.customerName || "customer"} — ${booking.reg || ""}`);
-    const body = encodeURIComponent(`Hi,\n\nCould you quote to collect and return a customer vehicle for us?\n\nCustomer: ${booking.customerName || ""}\nVehicle registration: ${booking.reg || ""}\nPickup postcode: ${booking.postcode || ""}\nApprox distance: ${booking.distanceMiles || "?"} miles\nJob date: ${booking.date}\nJob type: ${jt?.name || ""}\n\nPlease treat this vehicle with care — it's the customer's own car.\n\nThanks,\nThe Timing Chain Specialists`);
-    window.open(`mailto:${recipients}?subject=${subject}&body=${body}`, "_blank");
-  };
-  const messageTransport = () => {
-    if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
-    window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking, settings.transportContactName)), "_blank");
-  };
+// Builds the Zoho invoice for a booking and posts it — shared by the booking's
+// "Create Zoho invoice" button and the Jobs tab's "Complete & invoice" tick so
+// both always produce the same invoice. Returns { data } or { error }.
+async function sendBookingToZoho(booking, jobTypes, parts) {
+  const jt = jobTypes.find((j) => j.id === booking.jobTypeId);
   // "Timing Chain Kit, Camshaft Adjuster, ..." for one job type's own
   // recipe — same source data as the "Parts used" list shown on the card,
   // just names only (no quantities) for Zoho's line item description box.
@@ -3849,9 +3851,7 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
       .map((l) => parts.find((p) => p.id === l.partId)?.name || l.partId)
       .join(", ");
   };
-  const createZohoInvoice = async () => {
-    setCreatingInvoice(true);
-    try {
+  try {
       // One invoice line per job type on the booking (Timing Chain Replacement,
       // Piston Cooling Jet Solenoid, etc. each priced separately) — never split
       // further into the individual parts within a job type, but each line's
@@ -3890,11 +3890,36 @@ function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, a
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert(data.error || "Zoho invoice creation failed."); return; }
-      updateBooking(booking.id, { zohoInvoiceId: data.invoiceId, zohoInvoiceNumber: data.invoiceNumber, zohoInvoiceUrl: data.invoiceUrl });
+      if (!res.ok) return { error: data.error || "Zoho invoice creation failed." };
+      return { data };
     } catch (e) {
-      alert("Zoho invoice creation failed — network error.");
+      return { error: "Zoho invoice creation failed — network error." };
     }
+}
+
+// Job value/labour/parts cost and profit used to be visible here — this is
+// now pricing entry and transport/invoicing only. Profit stays visible in
+// one place, the password-gated Profitability tab, rather than to anyone
+// scanning a booking on the calendar.
+function JobCostBlock({ booking, jt, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost }) {
+  const [open, setOpen] = useState(false);
+  const [creatingInvoice, setCreatingInvoice] = useState(false);
+  const needsQuote = booking.business === "Timing Chain Specialists" && typeof booking.distanceMiles === "number" && booking.distanceMiles > 150;
+  const draftQuoteEmail = () => {
+    const recipients = (settings.transportCompanies || []).map((c) => c.email).filter(Boolean).join(",");
+    const subject = encodeURIComponent(`Collection quote — ${booking.customerName || "customer"} — ${booking.reg || ""}`);
+    const body = encodeURIComponent(`Hi,\n\nCould you quote to collect and return a customer vehicle for us?\n\nCustomer: ${booking.customerName || ""}\nVehicle registration: ${booking.reg || ""}\nPickup postcode: ${booking.postcode || ""}\nApprox distance: ${booking.distanceMiles || "?"} miles\nJob date: ${booking.date}\nJob type: ${jt?.name || ""}\n\nPlease treat this vehicle with care — it's the customer's own car.\n\nThanks,\nThe Timing Chain Specialists`);
+    window.open(`mailto:${recipients}?subject=${subject}&body=${body}`, "_blank");
+  };
+  const messageTransport = () => {
+    if (!settings.transportContactPhone) { alert(`Add a phone number for ${settings.transportContactName || "the transport contact"} in Settings first.`); return; }
+    window.open(whatsappLink(settings.transportContactPhone, transportPriceRequestMessage(booking, settings.transportContactName)), "_blank");
+  };
+  const createZohoInvoice = async () => {
+    setCreatingInvoice(true);
+    const { data, error } = await sendBookingToZoho(booking, jobTypes, parts);
+    if (error) alert(error);
+    else updateBooking(booking.id, { zohoInvoiceId: data.invoiceId, zohoInvoiceNumber: data.invoiceNumber, zohoInvoiceUrl: data.invoiceUrl });
     setCreatingInvoice(false);
   };
   return (
