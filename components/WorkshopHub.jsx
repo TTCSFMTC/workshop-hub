@@ -2762,6 +2762,10 @@ function TrafficLightButtons({ booking, updateBooking, showCollected = true, onM
 // Engine rebuilds can only be done by Ervin, so they get their own solid purple
 // on the calendar — nothing else uses it — to see at a glance what's in.
 const REBUILD_PURPLE = "#a23dff";
+// Ingenium jobs (Land Rover/Jaguar) get a bright green chip with black text so
+// they stand out on the calendar — rebuilds keep their purple if both apply.
+const INGENIUM_GREEN = "#39ff14";
+const isIngeniumBooking = (b, jobTypes) => [b.jobTypeId, ...(b.extraJobTypeIds || [])].some((id) => /ingenium/i.test(jobTypes.find((j) => j.id === id)?.name || ""));
 const isRebuildBooking = (b, jobTypes) => [b.jobTypeId, ...(b.extraJobTypeIds || [])].some((id) => /rebuild/i.test(jobTypes.find((j) => j.id === id)?.name || ""));
 
 function bookingStatus(b) {
@@ -3074,6 +3078,7 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                   // coming in that day without losing the status colour.
                   const isDropOffDay = iso === b.date;
                   const rebuild = isRebuildBooking(b, jobTypes);
+                  const ingenium = isIngeniumBooking(b, jobTypes);
                   return (
                     <span
                       key={b.id}
@@ -3083,11 +3088,12 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                           ? { background: "#ffffff", color: "#1a1a1a", border: "1px solid #d0d0d0" }
                           : {
                               ...(st.color ? { color: st.color, background: "transparent", border: `1px solid ${st.color}` } : {}),
+                              ...(ingenium ? { background: INGENIUM_GREEN, color: "#000", border: `1px solid ${INGENIUM_GREEN}`, fontWeight: 800 } : {}),
                               ...(rebuild ? { background: REBUILD_PURPLE, color: "#fff", border: `1px solid ${REBUILD_PURPLE}`, fontWeight: 800 } : {}),
                               ...(isDropOffDay ? { border: "2px solid #2979ff" } : {}),
                             }
                       }
-                      title={b.provisional ? "Provisional — not yet confirmed" : `${rebuild ? "ENGINE REBUILD (Ervin) — " : ""}${isDropOffDay ? "Drop-off day" : st.label}`}
+                      title={b.provisional ? "Provisional — not yet confirmed" : `${rebuild ? "ENGINE REBUILD (Ervin) — " : ""}${ingenium ? "INGENIUM — " : ""}${isDropOffDay ? "Drop-off day" : st.label}`}
                     >
                       {rebuild ? "🔧 " : ""}{b.customerName || "Booking"}
                     </span>
@@ -3137,6 +3143,11 @@ function CalendarTab({ monthCursor, setMonthCursor, bookings, selectedDay, setSe
                       {b.customerName || "Unnamed"}
                     </div>
                   </div>
+                  {isIngeniumBooking(b, jobTypes) && (
+                    <div style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 800, color: "#000", background: INGENIUM_GREEN, borderRadius: 4, padding: "2px 8px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      Ingenium
+                    </div>
+                  )}
                   {isRebuildBooking(b, jobTypes) && (
                     <div style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 800, color: "#fff", background: REBUILD_PURPLE, borderRadius: 4, padding: "2px 8px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                       🔧 Engine rebuild — Ervin
