@@ -368,6 +368,27 @@ If you were happy with the service, we'd really appreciate a quick Google review
 Thanks again for your support!`;
 }
 
+// Sent instead of the two separate messages when COMP is pressed on a job that
+// was never marked DONE — covers both the "completed" and the "thank you".
+function completedAndCollectedMessage(b) {
+  const link = REVIEW_LINKS[b.business] || "";
+  return `Great news ${firstName(b.customerName)}, your vehicle has been completed and collected — thank you for choosing ${b.business}! We really appreciate the trust you've placed in us.
+
+If any payment is still outstanding, our bank details are:
+
+Account name: Christopher Wilson T/A Warrington 4x4 (business account)
+Sort code: ${BANK_DETAILS.sortCode}
+Account number: ${BANK_DETAILS.accountNumber}
+
+After major repairs it's common to see a brief settling-in period — you might notice a coolant or engine management light as residual air works through the system. This is usually normal, but do let us know if you're ever concerned.
+
+We'd recommend servicing every 12 months or 8,000 miles, whichever comes first.
+
+If you were happy with the service, we'd really appreciate a quick Google review: ${link}
+
+Thanks again for your support!`;
+}
+
 // Bookings due a 2-days-before reminder: within the next 2 days, originally
 // booked with more than 2 days' notice (short-notice bookings never had a
 // meaningful "2 days before" window), and not already reminded.
@@ -2719,12 +2740,12 @@ function toggleWorkshopDone(booking, updateBooking) {
 function toggleCollectedComplete(booking, updateBooking) {
   const turningOn = !booking.completed;
   // Completing straight from "not done" counts as DONE too (stock comes
-  // off, it can be invoiced) but the "vehicle is ready" WhatsApp is
-  // never sent — only the collection one below.
+  // off, it can be invoiced) and sends one joint WhatsApp covering both the
+  // "vehicle is ready" and the collection thank-you, instead of two.
   updateBooking(booking.id, turningOn
     ? { completed: true, completedAt: Date.now(), followupSent: false, ...(booking.workshopCompleted ? {} : { workshopCompleted: true, workshopCompletedAt: Date.now() }) }
     : { completed: false, completedAt: null });
-  if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, collectionThankYouMessage(booking)), "_blank");
+  if (turningOn && booking.phone) window.open(whatsappLink(booking.phone, booking.workshopCompleted ? collectionThankYouMessage(booking) : completedAndCollectedMessage(booking)), "_blank");
 }
 
 function TrafficLightButtons({ booking, updateBooking, showCollected = true, onMarkArrived }) {
