@@ -7377,6 +7377,16 @@ function BookingRequestsTab({ requests, jobTypes, bookings, holidays, onAccept, 
           const warn = chainWarn || techsOff.length > 0;
           return (
             <div key={req.id} className="wb-panel" style={{ padding: 12, ...(warn ? { borderColor: "var(--red)" } : {}) }}>
+              {req.is_ingenium && (
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#000", background: "#39ff14", borderRadius: 4, padding: "2px 8px", display: "inline-block", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Ingenium
+                </div>
+              )}
+              {req.office_flags && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber, #f5a623)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  <AlertTriangle size={12} /> Needs your approval — {req.office_flags}
+                </div>
+              )}
               {req.is_emergency && (
                 <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", display: "flex", alignItems: "center", gap: 4, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                   <AlertTriangle size={12} /> Emergency — call to confirm

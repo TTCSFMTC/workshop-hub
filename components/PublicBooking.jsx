@@ -5,8 +5,13 @@ import { ChevronLeft, ChevronRight, Check, Wrench, AlertTriangle, HelpCircle, Ca
 import { fetchJobTypes } from "@/lib/data";
 import { BUSINESSES } from "@/lib/constants";
 
-const DAILY_CAP = 3;
+// Matches PUBLIC_DAILY_CAP in lib/bookingCapacity.js: the old 3, plus 25%.
+const DAILY_CAP = 4;
 const MIN_NOTICE_DAYS = 7;
+// JLR Ingenium has its own availability — matches ingeniumSlotsFor in
+// lib/ingenium.js: one a day Mon–Thu, three on Friday, one on Saturday (8 a week).
+const INGENIUM_SLOTS = { 0: 0, 1: 1, 2: 1, 3: 1, 4: 1, 5: 3, 6: 1 };
+const ingeniumSlotsFor = (iso) => INGENIUM_SLOTS[new Date(`${iso}T00:00:00Z`).getUTCDay()] ?? 0;
 // Matches WORKSHOP_DAYS / estimatedDaysFor in app/api/public/book/route.js —
 // shown here purely so the customer sees the same total before submitting;
 // the server recomputes it independently rather than trusting this value.
@@ -81,8 +86,8 @@ const EmergencyNudge = () => (
       <AlertTriangle size={16} /> That's a bit soon for a standard booking
     </div>
     <div style={{ fontSize: 13 }}>
-      We do have emergency appointments — please fill in the booking below or call us on{" "}
-      <a href={`tel:${CONTACT_PHONE}`} style={{ color: "var(--amber2)" }}>{CONTACT_PHONE}</a>.
+      You can still send your request below and our office will confirm whether we can fit you in — or call us on{" "}
+      <a href={`tel:${CONTACT_PHONE}`} style={{ color: "var(--amber2)" }}>{CONTACT_PHONE}</a>. We also have emergency appointments.
     </div>
     <ContactEscapeHatch />
   </div>
@@ -144,12 +149,16 @@ const ResultAndSubmit = ({ result, canSubmit, submitting, submit, termsViewed, s
     <TermsGate termsViewed={termsViewed} setTermsViewed={setTermsViewed} termsAccepted={termsAccepted} setTermsAccepted={setTermsAccepted} />
     {result?.error && <div style={{ color: "var(--red)", fontSize: 13 }}>{result.error}</div>}
     {result?.error && result.offerContact && <ContactEscapeHatch />}
-    {result?.ok && <div style={{ color: "var(--green)", fontSize: 14, fontWeight: 700 }}>Thanks — your booking request has been sent. We'll be in touch to confirm.</div>}
+    {result?.ok && <div style={{ color: "var(--green)", fontSize: 14, fontWeight: 700 }}>Thanks — your booking request has been logged. It isn't confirmed yet: our office will review it and be in touch to confirm.</div>}
     <button className="pb-btn" disabled={!canSubmit || submitting} onClick={submit}>{submitting ? "Sending…" : "Request this booking"}</button>
   </>
 );
 
-const Calendar = ({ year, month, monthCursor, setMonthCursor, cells, availability, capFor, minBookableISO, selectedDay, openDay }) => (
+// mode "standard": every future day can be requested and none ever shows Full —
+// a day with anything booked just reads "Partially booked", and office approves
+// every request. mode "ingenium": JLR Ingenium slots (no minimum notice), where a
+// day with no slot left reads "Not available" and the customer can ask for another date.
+const Calendar = ({ year, month, monthCursor, setMonthCursor, cells, availability, capFor, minBookableISO, selectedDay, openDay, mode = "standard" }) => (
   <div className="pb-panel">
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
       <button className="pb-btn" style={{ width: "auto", padding: "8px 12px" }} onClick={() => setMonthCursor(new Date(year, month - 1, 1))}><ChevronLeft size={16} /></button>
@@ -165,11 +174,12 @@ const Calendar = ({ year, month, monthCursor, setMonthCursor, cells, availabilit
         const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
         const count = availability[iso] || 0;
         const dayCap = capFor(iso);
-        const isFull = count >= dayCap;
+        const ingenium = mode === "ingenium";
+        const isFull = ingenium && count >= dayCap;
         const isPast = iso < todayISO();
-        const isTooSoon = !isPast && iso < minBookableISO;
-        const statusClass = isFull ? "full" : count > 0 ? "amber" : "green";
-        const statusLabel = isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Full" : count > 0 ? "Some availability" : "Availability";
+        const isTooSoon = !ingenium && !isPast && iso < minBookableISO;
+        const statusClass = isFull ? "full" : !ingenium && count > 0 ? "amber" : "green";
+        const statusLabel = isPast ? "" : isTooSoon ? "Needs 7 days notice" : isFull ? "Not available" : ingenium ? (dayCap > 1 ? `${dayCap - count} available` : "Available") : count > 0 ? "Partially booked" : "Availability";
         return (
           <div key={i} className={`pb-day ${isFull ? "full" : ""} ${isPast ? "past" : ""} ${isTooSoon ? "soon" : ""} ${iso === selectedDay ? "selected" : ""}`} onClick={() => openDay(iso, count)}>
             <div className="pb-daynum">{d}</div>
@@ -197,6 +207,16 @@ export default function PublicBooking() {
   const [emergencyDate1, setEmergencyDate1] = useState("");
   const [emergencyDate2, setEmergencyDate2] = useState("");
   const [transportType, setTransportType] = useState("none"); // "none" | "collect" | "collect_deliver" — chain jobs only, see TransportChoice
+  // Standard path only: the customer's registration is checked first so JLR
+  // Ingenium cars get their own availability. null until checked.
+  const [vehicleCheck, setVehicleCheck] = useState(null); // null | { isIngenium: bool, make?: string }
+  const [checkingReg, setCheckingReg] = useState(false);
+  const [regError, setRegError] = useState("");
+  const [ingAvail, setIngAvail] = useState({});
+  const [ingCaps, setIngCaps] = useState({});
+  const [calLoading, setCalLoading] = useState(false); // dims the calendar while a month's availability is fetched
+  const [dateOff, setDateOff] = useState(false); // "my date isn't available" — Ingenium only
+  const [requestedDate, setRequestedDate] = useState("");
   const [termsViewed, setTermsViewed] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -214,17 +234,47 @@ export default function PublicBooking() {
     fetchJobTypes().then((jts) => setJobTypes(jts.filter((jt) => jt.publicBookable))).catch(() => setJobTypes([]));
   }, []);
 
+  const isIng = path === "standard" && !!vehicleCheck?.isIngenium;
+
   useEffect(() => {
     if (path === "emergency") return; // no calendar in this path
     const start = `${year}-${String(month + 1).padStart(2, "0")}-01`;
     const end = `${year}-${String(month + 1).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+    setCalLoading(true);
+    if (isIng) {
+      fetch(`/api/public/availability?start=${start}&end=${end}&ingenium=1`)
+        .then((r) => r.json())
+        .then((d) => { setIngAvail(d.counts || {}); setIngCaps(d.caps || {}); })
+        .catch(() => { setIngAvail({}); setIngCaps({}); })
+        .finally(() => setCalLoading(false));
+      return;
+    }
     fetch(`/api/public/availability?start=${start}&end=${end}`)
       .then((r) => r.json())
       .then((d) => { setAvailability(d.counts || {}); setDayCaps(d.caps || {}); })
-      .catch(() => { setAvailability({}); setDayCaps({}); });
-  }, [year, month, daysInMonth, path]);
+      .catch(() => { setAvailability({}); setDayCaps({}); })
+      .finally(() => setCalLoading(false));
+  }, [year, month, daysInMonth, path, isIng]);
 
   const capFor = (iso) => dayCaps[iso] ?? DAILY_CAP;
+  const calAvailability = isIng ? ingAvail : availability;
+  const calCapFor = isIng ? (iso) => ingCaps[iso] ?? ingeniumSlotsFor(iso) : capFor;
+
+  const checkReg = async () => {
+    const reg = form.reg.trim();
+    if (reg.length < 2) { setRegError("Please enter your registration."); return; }
+    setCheckingReg(true); setRegError("");
+    try {
+      const res = await fetch("/api/public/vehicle-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reg }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setRegError(data.error || "Couldn't check that registration."); setCheckingReg(false); return; }
+      setVehicleCheck({ isIngenium: !!data.isIngenium, make: data.make || null });
+    } catch {
+      // Couldn't look it up — carry on with the normal calendar rather than block them.
+      setVehicleCheck({ isIngenium: false });
+    }
+    setCheckingReg(false);
+  };
 
   const toggleRequirement = (name) => {
     setForm((f) => ({
@@ -240,12 +290,14 @@ export default function PublicBooking() {
   const showTransportChoice = path === "standard" && form.business === "Timing Chain Specialists" && isChainJob;
 
   const openDay = (iso, count) => {
-    // Days inside the notice window are still selectable (previously blocked
-    // outright) — picking one just shows a nudge toward Emergency/calling
-    // instead of silently refusing the click. Full/closed days stay blocked
-    // since there's genuinely no room.
-    if (count >= capFor(iso) || iso < todayISO()) return;
+    // Every future day can be requested — inside the notice window just shows a
+    // nudge, and a busy day never reads as full (office approves everything).
+    // The one exception is an Ingenium day with no slot left, where the "my date
+    // isn't available" tick box below the calendar is the way to ask for another.
+    if (iso < todayISO()) return;
+    if (isIng && count >= calCapFor(iso)) return;
     setSelectedDay(iso);
+    setDateOff(false); setRequestedDate("");
     setResult(null);
   };
 
@@ -255,6 +307,7 @@ export default function PublicBooking() {
     setSelectedDay(null);
     setForm({ name: "", address: "", phone: "", email: "", reg: "", business: BUSINESSES[0], requirements: [], otherDetails: "", isNonRunner: false, symptoms: "" });
     setEmergencyDate1(""); setEmergencyDate2("");
+    setVehicleCheck(null); setRegError(""); setDateOff(false); setRequestedDate("");
     setTransportType("none");
     setTermsViewed(false); setTermsAccepted(false);
   };
@@ -280,7 +333,7 @@ export default function PublicBooking() {
     const payload =
       path === "emergency" ? { ...base, isEmergency: true, date: emergencyDate1, secondDate: emergencyDate2 } :
       path === "other" ? { ...base, date: selectedDay, requirements: ["Other"], otherDetails: form.otherDetails.trim() } :
-      { ...base, date: selectedDay, requirements: form.requirements, transportType: showTransportChoice ? transportType : "none" };
+      { ...base, date: selectedDay, requirements: form.requirements, transportType: showTransportChoice ? transportType : "none", ingeniumFlow: isIng, dateNotAvailable: isIng && dateOff };
     try {
       const res = await fetch("/api/public/book", {
         method: "POST",
@@ -290,10 +343,9 @@ export default function PublicBooking() {
       const data = await res.json();
       if (!res.ok) {
         setResult({ error: data.error || "Something went wrong.", offerContact: !!data.offerContact });
-        if (selectedDay) setAvailability((a) => ({ ...a, [selectedDay]: capFor(selectedDay) })); // reflect it's now full
       } else {
         setResult({ ok: true });
-        if (selectedDay) setAvailability((a) => ({ ...a, [selectedDay]: (a[selectedDay] || 0) + 1 }));
+        if (selectedDay && !isIng) setAvailability((a) => ({ ...a, [selectedDay]: (a[selectedDay] || 0) + 1 }));
       }
     } catch {
       setResult({ error: "Network error — please try again." });
@@ -363,14 +415,64 @@ export default function PublicBooking() {
           <button className="pb-back" onClick={resetAll}><ChevronLeft size={14} /> Back to options</button>
         )}
 
-        {path === "standard" && (
+        {path === "standard" && !vehicleCheck && (
+          <div className="pb-panel">
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Enter your registration to check availability</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>We'll show you the dates that suit your vehicle.</div>
+            <input
+              className="pb-input" placeholder="e.g. AB12 CDE" value={form.reg} autoFocus
+              onChange={(e) => setForm((f) => ({ ...f, reg: e.target.value.toUpperCase() }))}
+              onKeyDown={(e) => { if (e.key === "Enter") checkReg(); }}
+            />
+            {regError && <div style={{ color: "var(--red)", fontSize: 13, marginTop: 8 }}>{regError}</div>}
+            <button className="pb-btn" style={{ marginTop: 12 }} disabled={checkingReg || form.reg.trim().length < 2} onClick={checkReg}>
+              {checkingReg ? "Checking…" : "Check availability"}
+            </button>
+          </div>
+        )}
+
+        {path === "standard" && vehicleCheck && (
           <>
-            <Calendar year={year} month={month} monthCursor={monthCursor} setMonthCursor={setMonthCursor} cells={cells}
-              availability={availability} capFor={capFor} minBookableISO={minBookableISO} selectedDay={selectedDay} openDay={openDay} />
-            {selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
+            {isIng ? (
+              <div className="pb-panel" style={{ borderColor: "var(--green)", background: "#1c2f22", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ color: "var(--green)", fontWeight: 700, fontSize: 14 }}>
+                  <Check size={16} style={{ display: "inline", marginRight: 6, verticalAlign: "-3px" }} />
+                  Good news — we have availability for your {vehicleCheck.make ? vehicleCheck.make.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : "vehicle"}. Pick a day below.
+                </div>
+                <button className="pb-back" onClick={() => { setVehicleCheck(null); setSelectedDay(null); setDateOff(false); setRequestedDate(""); }}>Change registration</button>
+              </div>
+            ) : (
+              <button className="pb-back" onClick={() => { setVehicleCheck(null); setSelectedDay(null); }}>Registration {form.reg} — change</button>
+            )}
+            <div style={calLoading ? { opacity: 0.5, pointerEvents: "none", transition: "opacity 0.1s" } : undefined}>
+              <Calendar year={year} month={month} monthCursor={monthCursor} setMonthCursor={setMonthCursor} cells={cells}
+                availability={calAvailability} capFor={calCapFor} minBookableISO={isIng ? todayISO() : minBookableISO} selectedDay={selectedDay} openDay={openDay} mode={isIng ? "ingenium" : "standard"} />
+            </div>
+            {isIng && (
+              <div className="pb-panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div
+                  className={`pb-check ${dateOff ? "on" : ""}`}
+                  onClick={() => {
+                    if (dateOff) { setDateOff(false); setSelectedDay(null); setRequestedDate(""); }
+                    else { setDateOff(true); setSelectedDay(requestedDate || null); }
+                  }}
+                >
+                  <div style={{ width: 18, height: 18, borderRadius: 4, border: "2px solid currentColor", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{dateOff && <Check size={12} />}</div>
+                  My date isn't available
+                </div>
+                {dateOff && (
+                  <div>
+                    <label className="pb-label"><CalendarClock size={11} style={{ display: "inline", marginRight: 3 }} />What date would you like to book in?</label>
+                    <input type="date" className="pb-input" min={todayISO()} value={requestedDate} onChange={(e) => { setRequestedDate(e.target.value); setSelectedDay(e.target.value || null); setResult(null); }} />
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>We'll check it and confirm with you — it isn't booked until our office approves it.</div>
+                  </div>
+                )}
+              </div>
+            )}
+            {!isIng && selectedDay && selectedDay < minBookableISO && <EmergencyNudge />}
             {selectedDay && (
               <div className="pb-panel">
-                <div style={{ fontWeight: 700, marginBottom: 14 }}>Booking for {fmtDate(selectedDay)}</div>
+                <div style={{ fontWeight: 700, marginBottom: 14 }}>{dateOff ? "Request for" : "Booking for"} {fmtDate(selectedDay)}</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <ContactFields form={form} setForm={setForm} />
                   <div>

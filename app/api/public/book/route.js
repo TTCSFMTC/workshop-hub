@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { BUSINESSES } from "@/lib/constants";
 import { sendBookingRequestNotification, sendTransportRequestEmail } from "@/lib/resend";
-import { techsOffOn, capForTechsOff, realBookingCountForDate } from "@/lib/bookingCapacity";
+import { techsOffOn, capForTechsOff, realBookingCountForDate, PUBLIC_DAILY_CAP as DAILY_CAP } from "@/lib/bookingCapacity";
+import { checkIngenium, ingeniumCountsByDate, ingeniumSlotsFor } from "@/lib/ingenium";
 
-const DAILY_CAP = 3;
 const MIN_NOTICE_DAYS = 7;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // A chain job at the workshop always takes 3 days regardless of which
@@ -75,7 +75,7 @@ export async function POST(request) {
   // always accepted (never silently refused) with two preferred dates, and
   // office triages actual capacity manually via the Emergency flag in the
   // Booking Requests tab. This is the one path that doesn't go through the
-  // shared countForDate/capacity checks below.
+  // flag-and-log checks below.
   if (isEmergency) {
     const date = body.date || "";
     const secondDate = body.secondDate || "";
@@ -104,9 +104,10 @@ export async function POST(request) {
     }
   }
 
-  // Standard and Other both use a single date under the normal notice-window
-  // and capacity rules — Other just swaps the job-type checklist for a
-  // free-text description of what's needed.
+  // Standard and Other both take a single date. Nobody is ever turned away for
+  // a full day, short notice or a technician on holiday — the request is always
+  // logged, flagged for office with the reason, and the customer is told it's
+  // not confirmed until office approves it. Only an invalid or past date is refused.
   const date = body.date || "";
   if (!DATE_RE.test(date) || Number.isNaN(new Date(date).getTime())) {
     return NextResponse.json({ error: "Invalid date." }, { status: 400 });
@@ -114,77 +115,65 @@ export async function POST(request) {
   if (date < todayISO()) {
     return NextResponse.json({ error: "Can't book a date in the past." }, { status: 400 });
   }
-  // A week's notice gives office time to check parts and staffing before the
-  // vehicle arrives — under that, we'd rather the customer speaks to someone
-  // directly than book in blind.
-  if (date < addDaysISO(todayISO(), MIN_NOTICE_DAYS)) {
-    return NextResponse.json(
-      { error: "We need at least a week's notice for a booking — please pick a later date.", offerContact: true },
-      { status: 400 }
-    );
-  }
-
-  // Real bookings already on the diary (taken via the office New Booking
-  // form) count toward the same capacity as public requests — otherwise
-  // this check could let a day already full of real jobs accept another
-  // request anyway.
-  const countForDate = async () => {
-    const { count, error } = await supabaseAdmin
-      .from("booking_requests")
-      .select("id", { count: "exact", head: true })
-      .eq("date", date)
-      .neq("status", "declined");
-    if (error) throw error;
-    const realCount = await realBookingCountForDate(date);
-    return (count || 0) + realCount;
-  };
 
   try {
-    // A holiday shrinks (or zeroes out) what a day can actually take —
-    // computed fresh each submission rather than office having to remember
-    // to block dates manually whenever someone books time off.
-    const techsOff = await techsOffOn(date);
-    const effectiveCap = capForTechsOff(techsOff.length, DAILY_CAP);
-    if (effectiveCap === 0) {
-      return NextResponse.json(
-        { error: "We're short-staffed that day — please pick another, or get in touch if it's urgent.", offerContact: true },
-        { status: 409 }
-      );
+    const flags = [];
+
+    // JLR Ingenium gets its own rules (no minimum notice; one car a day Mon–Thu,
+    // three Friday, one Saturday). Only applied when the form went down the
+    // Ingenium route AND our own registration lookup doesn't say it isn't one —
+    // the client's word alone is never trusted over a definite "no".
+    let isIngenium = false;
+    if (body.ingeniumFlow === true && !isOther) {
+      const check = await checkIngenium(reg);
+      isIngenium = check.status !== "no";
     }
 
-    const before = await countForDate();
-    if (before >= effectiveCap) {
-      return NextResponse.json({ error: "That day is fully booked — please pick another.", offerContact: true }, { status: 409 });
+    if (isIngenium) {
+      const slots = ingeniumSlotsFor(date);
+      const counts = await ingeniumCountsByDate(date, date);
+      if (slots === 0) flags.push("Not one of our Ingenium days");
+      else if ((counts[date] || 0) >= slots) flags.push("Ingenium day already taken");
+      if (body.dateNotAvailable === true) flags.push("Customer's offered dates weren't suitable — asked for this date instead");
+    } else {
+      if (date < addDaysISO(todayISO(), MIN_NOTICE_DAYS)) flags.push("Less than a week's notice");
+      const [{ count }, realCount] = await Promise.all([
+        supabaseAdmin.from("booking_requests").select("id", { count: "exact", head: true }).eq("date", date).neq("status", "declined"),
+        realBookingCountForDate(date),
+      ]);
+      const techsOff = await techsOffOn(date);
+      const effectiveCap = capForTechsOff(techsOff.length, DAILY_CAP);
+      if (effectiveCap === 0) flags.push(`Short-staffed that day (${techsOff.join(" & ")} on holiday)`);
+      else if ((count || 0) + realCount >= effectiveCap) flags.push("Day already at capacity");
     }
+    const officeFlags = flags.join(" · ");
 
-    const { data, error: insertError } = await supabaseAdmin
+    const row = {
+      name, address, phone, email, reg, business, date, requirements, other_details: isOther ? otherDetails : null,
+      is_non_runner: isNonRunner, symptoms, terms_accepted_at: new Date().toISOString(),
+      transport_type: transportType, estimated_days: estimatedDays,
+      transport_status: transportType === "none" ? "not_required" : "pending",
+    };
+    // is_ingenium / office_flags need migration 065 — if it hasn't been run yet
+    // the request is still taken (office still gets the emailed flags).
+    let { data, error: insertError } = await supabaseAdmin
       .from("booking_requests")
-      .insert({
-        name, address, phone, email, reg, business, date, requirements, other_details: isOther ? otherDetails : null,
-        is_non_runner: isNonRunner, symptoms, terms_accepted_at: new Date().toISOString(),
-        transport_type: transportType, estimated_days: estimatedDays,
-        transport_status: transportType === "none" ? "not_required" : "pending",
-      })
+      .insert({ ...row, is_ingenium: isIngenium, office_flags: officeFlags || null })
       .select("id, transport_token")
       .single();
-    if (insertError) throw insertError;
-
-    // Re-check after inserting to catch a simultaneous submission that also
-    // slipped past the first check — whichever request loses gets rolled back.
-    const after = await countForDate();
-    if (after > effectiveCap) {
-      await supabaseAdmin.from("booking_requests").delete().eq("id", data.id);
-      return NextResponse.json({ error: "That day just filled up — please pick another.", offerContact: true }, { status: 409 });
+    if (insertError && /is_ingenium|office_flags/.test(`${insertError.message} ${insertError.details || ""}`)) {
+      ({ data, error: insertError } = await supabaseAdmin.from("booking_requests").insert(row).select("id, transport_token").single());
     }
+    if (insertError) throw insertError;
 
     // A failed notification shouldn't turn a successful request into an
     // error for the customer — office can still see it was submitted via
     // the Booking Requests tab even if the email never arrives.
     try {
-      const needsReview = isOther || isChainJob;
+      const needsReview = isOther || isChainJob || flags.length > 0;
       await sendBookingRequestNotification({
         name, business, phone, email, reg, date, requirements, needsReview, otherDetails: isOther ? otherDetails : undefined,
-        isNonRunner, symptoms, transportType, estimatedDays,
+        isNonRunner, symptoms, transportType, estimatedDays, isIngenium, officeFlags,
       });
     } catch (emailError) {
       console.error("booking request email failed", emailError);

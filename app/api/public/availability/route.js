@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { capForTechsOff, realBookingCountsByDate } from "@/lib/bookingCapacity";
-
-const DAILY_CAP = 3;
+import { capForTechsOff, realBookingCountsByDate, PUBLIC_DAILY_CAP as DAILY_CAP } from "@/lib/bookingCapacity";
+import { ingeniumCountsByDate, ingeniumSlotsFor } from "@/lib/ingenium";
 
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
@@ -10,6 +9,35 @@ export async function GET(request) {
   const end = searchParams.get("end");
   if (!start || !end) {
     return NextResponse.json({ error: "start and end are required (YYYY-MM-DD)" }, { status: 400 });
+  }
+
+  // JLR Ingenium customers get their own availability: one Ingenium car a day
+  // Mon–Thu, three on Friday, one on Saturday (see lib/ingenium.js), counted
+  // against Ingenium jobs only — a day already full of other work still shows open.
+  if (searchParams.get("ingenium") === "1") {
+    try {
+      const [counts, { data: holidayRows, error: holidayError }] = await Promise.all([
+        ingeniumCountsByDate(start, end),
+        supabaseAdmin.from("holidays").select("name, date_from, date_to").lte("date_from", end).gte("date_to", start),
+      ]);
+      if (holidayError) throw holidayError;
+      const caps = {};
+      for (let t = new Date(`${start}T00:00:00Z`).getTime(), endT = new Date(`${end}T00:00:00Z`).getTime(); t <= endT; t += 86400000) {
+        const iso = new Date(t).toISOString().slice(0, 10);
+        const off = new Set();
+        (holidayRows || []).forEach((h) => {
+          if (iso >= h.date_from && iso <= h.date_to) {
+            ["Ernesto", "Ervin"].forEach((tech) => { if ((h.name || "").toLowerCase().includes(tech.toLowerCase())) off.add(tech); });
+          }
+        });
+        // Nobody in = no Ingenium slot that day; one technician in is enough.
+        caps[iso] = off.size >= 2 ? 0 : ingeniumSlotsFor(iso);
+      }
+      return NextResponse.json({ counts, caps, ingenium: true });
+    } catch (e) {
+      console.error("ingenium availability lookup failed", e);
+      return NextResponse.json({ error: "Failed to load availability" }, { status: 500 });
+    }
   }
 
   let requestCounts, holidayRows, realCounts;
