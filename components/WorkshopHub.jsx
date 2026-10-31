@@ -4931,7 +4931,9 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
   // in, so switching months doesn't visibly reorder anything until office
   // actually clicks a header.
   const [sortBy, setSortBy] = useState({ key: "date", dir: "desc" });
-  const toggleSort = (key) => setSortBy((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  // Money/number columns open biggest-first, text columns A–Z.
+  const NUMERIC_SORT_KEYS = ["days", "invoiced", "quoted", "vat", "parts", "labour", "transport", "extra", "profit", "checked"];
+  const toggleSort = (key) => setSortBy((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: NUMERIC_SORT_KEYS.includes(key) ? "desc" : "asc" }));
   const partsIndexForProfitability = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p])), [parts]);
   const updateBomQtyForBooking = (booking, partId, qty) => {
     const next = fullBookingBom(booking, jobTypes).map((l) => (l.partId === partId ? { partId, qty } : l));
@@ -4952,6 +4954,17 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
         case "date": return r.booking.date || "";
         case "customer": return (r.booking.customerName || "").toLowerCase();
         case "reg": return (r.booking.reg || "").toLowerCase();
+        case "days": return r.booking.days || 1;
+        case "jobtype": return (r.jt?.name || "").toLowerCase();
+        case "invoiced": return r.booking.zohoInvoiceId ? 1 : 0;
+        case "quoted": return r.jobValue;
+        case "vat": return r.vat;
+        case "parts": return r.partsCost;
+        case "labour": return r.labourCost;
+        case "transport": return r.transportCost;
+        case "extra": return r.extraCostsTotal;
+        case "profit": return r.profit;
+        case "checked": return r.booking.costsReviewed ? 1 : 0;
         default: return "";
       }
     };
@@ -5075,10 +5088,19 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
             <table className="wb-table">
               <thead><tr>
                 <SortableTh label="Date" sortKey="date" sortBy={sortBy} onClick={toggleSort} />
-                <th>Days</th>
+                <SortableTh label="Days" sortKey="days" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Customer" sortKey="customer" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Reg" sortKey="reg" sortBy={sortBy} onClick={toggleSort} />
-                <th>Job type</th><th>Invoiced</th><th>Quoted</th><th>VAT</th><th>Parts cost</th><th>Labour</th><th>Transport</th><th>Extra costs</th><th>Profit</th><th style={{ textAlign: "right" }}>Checked</th>
+                <SortableTh label="Job type" sortKey="jobtype" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Invoiced" sortKey="invoiced" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Quoted" sortKey="quoted" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="VAT" sortKey="vat" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Parts cost" sortKey="parts" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Labour" sortKey="labour" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Transport" sortKey="transport" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Extra costs" sortKey="extra" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Profit" sortKey="profit" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Checked" sortKey="checked" sortBy={sortBy} onClick={toggleSort} align="right" />
               </tr></thead>
               <tbody>
                 {sortedRows.map((r) => {
@@ -5106,7 +5128,15 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                       >
                         {r.booking.customerName || "Unnamed"}
                       </td>
-                      <td className="wh-mono">{r.booking.reg}</td>
+                      <td className="wh-mono" style={{ whiteSpace: "nowrap" }}>
+                        {r.booking.reg}
+                        <input
+                          type="checkbox" checked={!!r.booking.costsReviewed}
+                          onChange={() => updateBooking(r.booking.id, { costsReviewed: !r.booking.costsReviewed })}
+                          title={r.booking.costsReviewed ? "Checked — click to unmark" : "Mark costs as checked"}
+                          style={{ width: 18, height: 18, marginLeft: 8, verticalAlign: "-4px", cursor: "pointer", accentColor: "var(--green)" }}
+                        />
+                      </td>
                       <td>{r.jt?.name || "—"}</td>
                       <td style={{ color: r.booking.zohoInvoiceId ? "var(--green)" : "var(--muted)", fontWeight: r.booking.zohoInvoiceId ? 700 : 400 }}>
                         {r.booking.zohoInvoiceId ? "Yes" : "No"}
@@ -5409,10 +5439,10 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
 // A clickable table header that sorts the Profitability job table by that
 // column — date order for Date, alphabetical for Customer/Reg. Clicking the
 // already-active column flips direction instead of resetting it.
-function SortableTh({ label, sortKey, sortBy, onClick }) {
+function SortableTh({ label, sortKey, sortBy, onClick, align }) {
   const active = sortBy.key === sortKey;
   return (
-    <th style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }} onClick={() => onClick(sortKey)}>
+    <th style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap", ...(align ? { textAlign: align } : {}) }} onClick={() => onClick(sortKey)}>
       {label}
       <ChevronDown
         size={11}
