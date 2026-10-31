@@ -5091,6 +5091,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                 <SortableTh label="Days" sortKey="days" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Customer" sortKey="customer" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Reg" sortKey="reg" sortBy={sortBy} onClick={toggleSort} />
+                <SortableTh label="Checked" sortKey="checked" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Job type" sortKey="jobtype" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Invoiced" sortKey="invoiced" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Quoted" sortKey="quoted" sortBy={sortBy} onClick={toggleSort} />
@@ -5100,7 +5101,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                 <SortableTh label="Transport" sortKey="transport" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Extra costs" sortKey="extra" sortBy={sortBy} onClick={toggleSort} />
                 <SortableTh label="Profit" sortKey="profit" sortBy={sortBy} onClick={toggleSort} />
-                <SortableTh label="Checked" sortKey="checked" sortBy={sortBy} onClick={toggleSort} align="right" />
+                <th style={{ textAlign: "right" }}></th>
               </tr></thead>
               <tbody>
                 {sortedRows.map((r) => {
@@ -5128,13 +5129,13 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                       >
                         {r.booking.customerName || "Unnamed"}
                       </td>
-                      <td className="wh-mono" style={{ whiteSpace: "nowrap" }}>
-                        {r.booking.reg}
+                      <td className="wh-mono">{r.booking.reg}</td>
+                      <td style={{ textAlign: "center" }}>
                         <input
                           type="checkbox" checked={!!r.booking.costsReviewed}
                           onChange={() => updateBooking(r.booking.id, { costsReviewed: !r.booking.costsReviewed })}
                           title={r.booking.costsReviewed ? "Checked — click to unmark" : "Mark costs as checked"}
-                          style={{ width: 18, height: 18, marginLeft: 8, verticalAlign: "-4px", cursor: "pointer", accentColor: "var(--green)" }}
+                          style={{ width: 20, height: 20, cursor: "pointer", accentColor: "var(--green)" }}
                         />
                       </td>
                       <td>{r.jt?.name || "—"}</td>
@@ -5244,7 +5245,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
                     </tr>
                     {breakdownOpen && (
                       <tr>
-                        <td colSpan={14} style={{ background: "var(--panel2)", padding: "12px 16px", position: "relative" }}>
+                        <td colSpan={15} style={{ background: "var(--panel2)", padding: "12px 16px", position: "relative" }}>
                           <button
                             onClick={() => setBreakdownRowId(null)}
                             title="Collapse"
@@ -5374,7 +5375,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
               </tbody>
               <tfoot>
                 <tr style={{ fontWeight: 700 }}>
-                  <td colSpan={6}>Total</td>
+                  <td colSpan={7}>Total</td>
                   <td className="wh-mono">£{activeMonth.totals.jobValue.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.vat.toFixed(2)}</td>
                   <td className="wh-mono">£{activeMonth.totals.partsCost.toFixed(2)}</td>
