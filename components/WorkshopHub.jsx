@@ -15,7 +15,7 @@ import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
   insertHoliday, deleteHoliday, updateHolidayPaid, fetchWeeklyPartsOrdered, setWeeklyPartOrdered, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
-  insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, upsertStaffWage, deleteStaffWage,
+  insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, insertBonusAdjustment, deleteBonusAdjustment, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
   saveSettings, insertBooking, updateBookingRow, deleteBookingRow, addBookingJobType, removeBookingJobType,
@@ -714,6 +714,7 @@ export default function WorkshopHub() {
       subscribeTable("sickness", async () => setSickness(await fetchSickness().catch(() => []))),
       subscribeTable("staff_start_dates", async () => setStaffStartDates(await fetchStaffStartDates().catch(() => ({})))),
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
+      subscribeTable("bonus_adjustments", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("staff_wages", async () => setStaffWages(await fetchStaffWages())),
       subscribeTable("fixed_costs", async () => setFixedCosts(await fetchFixedCosts())),
       subscribeTable("pl_snapshots", async () => setPlSnapshots(await fetchPLSnapshots())),
@@ -1414,6 +1415,20 @@ export default function WorkshopHub() {
     await deleteBonusRate(id);
   });
 
+  // A job added by hand to a month's bonus pot (e.g. an engine rebuild that
+  // isn't picked up automatically) — rides along on its bonus type's
+  // `adjustments`, so every place that counts the pot picks it up.
+  const addBonusAdjustmentFn = (bonusRateId, month, count, description) => withSaveState(async () => {
+    const adj = { id: uid("ba"), bonusRateId, month, count, description };
+    setBonusRates((prev) => prev.map((b) => (b.id === bonusRateId ? { ...b, adjustments: [...(b.adjustments || []), { id: adj.id, month, count, description }] } : b)));
+    await insertBonusAdjustment(adj);
+  });
+
+  const removeBonusAdjustmentFn = (bonusRateId, id) => withSaveState(async () => {
+    setBonusRates((prev) => prev.map((b) => (b.id === bonusRateId ? { ...b, adjustments: (b.adjustments || []).filter((a) => a.id !== id) } : b)));
+    await deleteBonusAdjustment(id);
+  });
+
   // Callers always pass the row's existing id when editing (so this is a
   // true update, not a duplicate) and a freshly generated one only when
   // adding a new person for a month — see StaffWagesSection.
@@ -1690,6 +1705,7 @@ export default function WorkshopHub() {
           sickness={sickness} addSickness={addSicknessFn} removeSickness={removeSicknessFn}
           staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDateFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
+          addBonusAdjustment={addBonusAdjustmentFn} removeBonusAdjustment={removeBonusAdjustmentFn}
           staffWages={staffWages} upsertStaffWage={upsertStaffWageFn} removeStaffWage={removeStaffWageFn}
           fixedCosts={fixedCosts} addFixedCost={addFixedCostFn} updateFixedCost={updateFixedCostFn} removeFixedCost={removeFixedCostFn}
           plSnapshots={plSnapshots} freezePLSnapshot={freezePLSnapshotFn} unfreezePLSnapshot={unfreezePLSnapshotFn}
@@ -1734,7 +1750,7 @@ function OfficeMode({
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
   holidays, addHoliday, removeHoliday, setHolidayPaid, sickness, addSickness, removeSickness, staffStartDates, setStaffStartDate,
-  bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate,
+  bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, addBonusAdjustment, removeBonusAdjustment,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
   plSnapshots, freezePLSnapshot, unfreezePLSnapshot,
@@ -2083,6 +2099,7 @@ function OfficeMode({
               bookings={bookings} jobTypes={jobTypes} parts={parts} settings={settings} updateBooking={updateBooking}
               addBookingExtraCost={addBookingExtraCost} removeBookingExtraCost={removeBookingExtraCost}
               bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
+              addBonusAdjustment={addBonusAdjustment} removeBonusAdjustment={removeBonusAdjustment}
               staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
               onPrintWagesStatement={setPrintWagesMonth}
               fixedCosts={fixedCosts} addFixedCost={addFixedCost} updateFixedCost={updateFixedCost} removeFixedCost={removeFixedCost}
@@ -4098,6 +4115,8 @@ function computeBonusCounts(bookings, bonusRates, month) {
       if ((br.jobTypeIds || []).some((jtId) => ids.has(jtId))) counts[br.id] += 1;
     });
   });
+  // Jobs added by hand from the Profitability tab (e.g. an engine rebuild).
+  bonusRates.forEach((br) => (br.adjustments || []).forEach((a) => { if (a.month === month) counts[br.id] += a.count || 1; }));
   return counts;
 }
 
@@ -4120,6 +4139,10 @@ function computeBonusJobs(bookings, bonusRates, jobTypes, month) {
       jobs[br.id].push({ customerName: b.customerName || "Unnamed", reg: b.reg || "", jobTypeName: jt?.name || "" });
     });
   });
+  bonusRates.forEach((br) => (br.adjustments || []).forEach((a) => {
+    if (a.month !== month) return;
+    for (let i = 0; i < (a.count || 1); i++) jobs[br.id].push({ customerName: a.description || "Added manually", reg: "", jobTypeName: "Added manually" });
+  }));
   return jobs;
 }
 
@@ -4540,8 +4563,12 @@ function BookingActivityCalendar({ bookings }) {
 // as a share of margin. One month at a time rather than a table per
 // historical month, since this is edited like a spreadsheet as the month
 // goes rather than browsed after the fact.
-function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, bookings, jobTypes }) {
+function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, addBonusAdjustment, removeBonusAdjustment, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, bookings, jobTypes }) {
   const [month, setMonth] = useState(() => todayISO().slice(0, 7));
+  // "Add a job manually" form — see bonusRates[].adjustments.
+  const [adjRateId, setAdjRateId] = useState("");
+  const [adjDesc, setAdjDesc] = useState("");
+  const [adjCount, setAdjCount] = useState("1");
   const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
 
   // Ernesto and Ervin are both full-time on the same basic wage every
@@ -4657,7 +4684,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
           <PoundSterling size={18} color="var(--green)" /> Team bonus pot — {new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
         </div>
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 16 }}>
-          Fed automatically from jobs completed and invoiced this month — nothing to type in.
+          Fed automatically from jobs completed and invoiced this month — add anything it missed below.
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
           {bonusRates.map((br) => {
@@ -4672,6 +4699,40 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
           })}
           {bonusRates.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)" }}>No bonus types set up yet.</div>}
         </div>
+        {(() => {
+          const monthAdjustments = bonusRates.flatMap((br) => (br.adjustments || []).filter((a) => a.month === month).map((a) => ({ ...a, rateId: br.id, rateName: br.name, rate: br.rate })));
+          const chosenRateId = adjRateId || bonusRates[0]?.id || "";
+          const countNum = Math.max(1, parseInt(adjCount, 10) || 1);
+          return (
+            <div style={{ border: "1px dashed var(--line)", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>Add a job manually</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>For a job that isn't picked up automatically, e.g. an engine rebuild. It counts in {new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}'s pot, the wages and the printed statement like any other.</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <select className="wb-select" style={{ width: 170 }} value={chosenRateId} onChange={(e) => setAdjRateId(e.target.value)}>
+                  {bonusRates.map((br) => <option key={br.id} value={br.id}>{br.name} (£{br.rate})</option>)}
+                </select>
+                <input className="wb-input" style={{ flex: 1, minWidth: 200 }} placeholder="What was it? e.g. Engine rebuild — Disco Sport AB12 CDE" value={adjDesc} onChange={(e) => setAdjDesc(e.target.value)} />
+                <input type="number" min="1" className="wb-input" style={{ width: 64 }} title="How many" value={adjCount} onChange={(e) => setAdjCount(e.target.value)} />
+                <button
+                  className="wb-btn" style={{ padding: "8px 14px", minHeight: "auto" }} disabled={!chosenRateId || !adjDesc.trim()}
+                  onClick={() => { addBonusAdjustment(chosenRateId, month, countNum, adjDesc.trim()); setAdjDesc(""); setAdjCount("1"); }}
+                >
+                  <Plus size={13} /> Add
+                </button>
+              </div>
+              {monthAdjustments.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+                  {monthAdjustments.map((a) => (
+                    <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 13, padding: "7px 10px", background: "var(--panel2)", borderRadius: 6 }}>
+                      <div><strong>{a.rateName}</strong> — {a.description}{a.count > 1 ? ` × ${a.count}` : ""} <span style={{ color: "var(--muted)" }}>(added manually, £{(a.count * a.rate).toFixed(2)})</span></div>
+                      <button title="Remove" onClick={() => { if (confirm(`Remove "${a.description}" from this month's bonus pot?`)) removeBonusAdjustment(a.rateId, a.id); }} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
           <div style={{ background: "#10281a", border: "1px solid var(--green)", borderRadius: 10, padding: "18px 20px" }}>
             <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--green)", marginBottom: 6, fontWeight: 700 }}>Total bonus pot</div>
@@ -4842,7 +4903,7 @@ function MonthlyTotalsTab({ bookings, jobTypes, parts, settings, staffWages, bon
   );
 }
 
-function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
+function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, addBookingExtraCost, removeBookingExtraCost, bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, addBonusAdjustment, removeBonusAdjustment, staffWages, upsertStaffWage, removeStaffWage, onPrintWagesStatement, fixedCosts, addFixedCost, updateFixedCost, removeFixedCost, plSnapshots, freezePLSnapshot, unfreezePLSnapshot }) {
   const months = useMemo(() => computeProfitMonths(bookings, jobTypes, parts, settings), [bookings, jobTypes, parts, settings]);
 
   // Which month's full breakdown is showing — one at a time behind a row of
@@ -4958,6 +5019,7 @@ function ProfitabilityTab({ bookings, jobTypes, parts, settings, updateBooking, 
 
       <StaffWagesSection
         months={months} bonusRates={bonusRates} addBonusRate={addBonusRate} updateBonusRate={updateBonusRate} updateBonusRateJobTypes={updateBonusRateJobTypes} removeBonusRate={removeBonusRate}
+        addBonusAdjustment={addBonusAdjustment} removeBonusAdjustment={removeBonusAdjustment}
         staffWages={staffWages} upsertStaffWage={upsertStaffWage} removeStaffWage={removeStaffWage}
         onPrintWagesStatement={onPrintWagesStatement}
         bookings={bookings} jobTypes={jobTypes}
