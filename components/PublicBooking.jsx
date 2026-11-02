@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import Link from "next/link";
 import { ChevronLeft, ChevronRight, Check, Wrench, AlertTriangle, HelpCircle, CalendarClock } from "lucide-react";
 import { fetchJobTypes } from "@/lib/data";
 import { BUSINESSES } from "@/lib/constants";
@@ -263,7 +264,12 @@ export default function PublicBooking() {
     <div style={{ "--bg": "#16181a", "--panel": "#1e2124", "--panel2": "#25292c", "--line": "#33383c", "--text": "#e7e3da", "--muted": "#9aa0a6", "--amber": "#f5a623", "--amber2": "#ffcf6b", "--red": "#e2574c", "--green": "#5fb87a" }} className="pb-root">
       <style>{`
         .pb-root { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, sans-serif; min-height: 100vh; }
-        .pb-header { padding: 20px; border-bottom: 1px solid var(--line); font-weight: 800; font-size: 18px; display:flex; align-items:center; gap:8px; }
+        .pb-header { padding: 20px; border-bottom: 1px solid var(--line); display:flex; align-items:center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        .pb-header-title { font-weight: 800; font-size: 18px; display:flex; align-items:center; gap:8px; }
+        .pb-tabs { display: flex; gap: 18px; }
+        .pb-tab { font-size: 14px; font-weight: 700; color: var(--muted); padding: 4px 0; }
+        .pb-tab.active { color: var(--text); border-bottom: 2px solid var(--amber); }
+        .pb-tab.red { color: var(--red); }
         .pb-body { padding: 20px; max-width: 640px; margin: 0 auto; display:flex; flex-direction:column; gap: 20px; }
         .pb-panel { background: var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
         .pb-day { min-height:56px; border:1px solid var(--line); border-radius:6px; padding:6px; cursor:pointer; display:flex; flex-direction:column; gap:4px; }
@@ -288,7 +294,13 @@ export default function PublicBooking() {
         .pb-back { background:none; border:none; color: var(--muted); cursor:pointer; font-size:13px; padding:0; display:flex; align-items:center; gap:4px; }
       `}</style>
 
-      <div className="pb-header"><Wrench size={20} color="var(--amber)" /> Book your vehicle in</div>
+      <div className="pb-header">
+        <div className="pb-header-title"><Wrench size={20} color="var(--amber)" /> Book your vehicle in</div>
+        <div className="pb-tabs">
+          <span className="pb-tab active">Book now</span>
+          <Link href="/black-friday" className="pb-tab red">Black Friday</Link>
+        </div>
+      </div>
 
       <div className="pb-body">
         {path === null && (
