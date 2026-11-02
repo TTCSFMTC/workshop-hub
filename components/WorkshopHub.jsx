@@ -1594,7 +1594,7 @@ function OfficeMode({
       </div>
       {(showNewBooking || editingBooking || acceptingRequest) && (
         <NewBookingModal
-          jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} defaultDate={selectedDay} booking={editingBooking}
+          jobTypes={jobTypes} parts={parts} settings={settings} brands={brands} bookings={bookings} defaultDate={selectedDay} booking={editingBooking}
           initialValues={acceptingRequest ? {
             customerName: acceptingRequest.name, phone: acceptingRequest.phone, email: acceptingRequest.email, reg: acceptingRequest.reg,
             business: acceptingRequest.business, date: acceptingRequest.date, pickupAddress: acceptingRequest.address,
@@ -4955,10 +4955,46 @@ function SettingsTab({ settings, updateSettingsField }) {
 // booking request) without treating it as an edit of an existing one — kept
 // separate from `booking` so onSave/the "Save changes" vs "Save booking"
 // label still key off whether this is a genuine edit.
-function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booking, initialValues, onClose, onSave }) {
+function NewBookingModal({ jobTypes, parts, settings, brands, bookings, defaultDate, booking, initialValues, onClose, onSave }) {
   const partsIndex = useMemo(() => Object.fromEntries(parts.map((p) => [p.id, p.name])), [parts]);
   const [pasteText, setPasteText] = useState("");
   const [customerName, setCustomerName] = useState(booking?.customerName || initialValues?.customerName || "");
+  // "Repeat customer" lookup — ticking the box reveals a search box over past
+  // bookings (name, reg or phone) so office can find someone who's been in
+  // before and pull their details across, rather than retyping what's
+  // already on file and ending up with a slightly-different duplicate.
+  const [repeatCustomer, setRepeatCustomer] = useState(false);
+  const [repeatSearch, setRepeatSearch] = useState("");
+  const repeatMatches = useMemo(() => {
+    const q = repeatSearch.trim().toLowerCase();
+    if (!booking && q.length >= 2) {
+      const seen = new Set();
+      return (bookings || [])
+        .filter((b) => b.customerName?.toLowerCase().includes(q) || b.reg?.toLowerCase().includes(q) || b.phone?.includes(q))
+        .sort((a, b) => (a.date < b.date ? 1 : -1))
+        .filter((b) => {
+          const key = `${b.customerName}|${b.reg}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 8);
+    }
+    return [];
+  }, [repeatSearch, bookings, booking]);
+  const applyRepeatCustomer = (b) => {
+    setCustomerName(b.customerName || "");
+    setPhone(b.phone || "");
+    setEmail(b.email || "");
+    setReg(b.reg || "");
+    setBusiness(b.business || BUSINESSES[0]);
+    const guessed = guessMakeModel(b.vehicleModel);
+    const brand = brands.find((br) => br.name.replace(/\s+/g, "").toLowerCase() === guessed.make.replace(/\s+/g, "").toLowerCase());
+    setVehicleMake(brand ? brand.name : guessed.make ? "Other" : "");
+    setVehicleMakeOther(brand ? "" : guessed.make);
+    setVehicleModelText(guessed.model);
+    setRepeatSearch("");
+  };
   const [phone, setPhone] = useState(booking?.phone || initialValues?.phone || "");
   const [email, setEmail] = useState(booking?.email || initialValues?.email || "");
   const [reg, setReg] = useState(booking?.reg || initialValues?.reg || "");
@@ -5083,6 +5119,38 @@ function NewBookingModal({ jobTypes, parts, settings, brands, defaultDate, booki
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={16} /></button>
         </div>
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+          {!booking && (
+            <div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={repeatCustomer} onChange={(e) => { setRepeatCustomer(e.target.checked); setRepeatSearch(""); }} />
+                <User size={13} /> Repeat customer — been in before?
+              </label>
+              {repeatCustomer && (
+                <div style={{ marginTop: 8, position: "relative" }}>
+                  <input
+                    className="wb-input" value={repeatSearch} onChange={(e) => setRepeatSearch(e.target.value)}
+                    placeholder="Start typing a name, reg or phone number…" autoFocus
+                  />
+                  {repeatSearch.trim().length >= 2 && (
+                    <div className="wb-panel" style={{ position: "absolute", zIndex: 5, top: "100%", left: 0, right: 0, marginTop: 4, padding: 4, maxHeight: 220, overflowY: "auto" }}>
+                      {repeatMatches.length === 0 ? (
+                        <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 10px" }}>No past customer matches "{repeatSearch}"</div>
+                      ) : repeatMatches.map((b) => (
+                        <div
+                          key={b.id} onClick={() => applyRepeatCustomer(b)}
+                          style={{ padding: "8px 10px", borderRadius: 6, cursor: "pointer" }}
+                          onMouseDown={(e) => e.preventDefault()}
+                        >
+                          <div style={{ fontWeight: 600, fontSize: 13 }}>{b.customerName || "Unnamed"} {b.reg && <span className="wh-mono" style={{ fontWeight: 400, color: "var(--muted)" }}>— {b.reg}</span>}</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>{b.vehicleModel || "No vehicle recorded"} · last in {fmtDate(b.date)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <div>
             <label className="wb-label"><ClipboardPaste size={11} style={{ display: "inline", marginRight: 4 }} />Paste WhatsApp message</label>
             <textarea className="wb-textarea" rows={4} value={pasteText} onChange={(e) => setPasteText(e.target.value)} placeholder="Paste the customer's WhatsApp message here…" />
