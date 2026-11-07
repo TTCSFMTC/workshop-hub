@@ -4,15 +4,16 @@ import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { lecJobForBooking, LEC_TO, LEC_CC } from "@/lib/lecWeekly";
 import { sendLecNewJobEmail } from "@/lib/resend";
 
-// Called by the hub when a booking is saved: if it falls inside the next two
-// weeks (and isn't an Ingenium job or a provisional hold) Roxanne at Lymm
-// Engine Components gets an instant "another job booked" email, copied to Chris.
+// Called by the hub when a booking is saved, confirmed or moved. If the weekly
+// list covering its date has already gone to Roxanne at Lymm Engine Components
+// (and it isn't an Ingenium job or a provisional hold) she gets an extra email
+// for that one job with the parts it needs, copied to Chris — so a job taken
+// after the list went never gets missed.
 export async function POST(request) {
   const store = await cookies();
   if (!isValidSession(store.get(SESSION_COOKIE)?.value)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  // Instant emails are switched off (too many); Roxanne gets the Saturday and
-  // 1st-of-month lists only. Set LEC_INSTANT_EMAILS=on to bring them back.
-  if (process.env.LEC_INSTANT_EMAILS !== "on") return NextResponse.json({ ok: true, sent: false, disabled: true });
+  // Kill switch: set LEC_INSTANT_EMAILS=off to stop the extra-job emails.
+  if (process.env.LEC_INSTANT_EMAILS === "off") return NextResponse.json({ ok: true, sent: false, disabled: true });
   const body = await request.json().catch(() => null);
   if (!body?.bookingId) return NextResponse.json({ error: "bookingId required" }, { status: 400 });
   try {

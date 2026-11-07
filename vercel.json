@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/lec-weekly?mode=first",
       "schedule": "0 8 1 * *"
+    },
+    {
+      "path": "/api/cron/oil-filters-weekly",
+      "schedule": "0 8 * * 6"
     }
   ]
 }
