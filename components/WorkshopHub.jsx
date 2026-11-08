@@ -944,9 +944,9 @@ export default function WorkshopHub() {
   // out of the FIFO batches once the job is actually marked workshop
   // completed (see updateBooking below), so stock reflects what's actually
   // been used rather than what's merely been booked in.
-  // Tells Lymm Engine Components (by email, server-side) about a job taken
-  // inside the next two weeks so their weekly list never goes stale. The server
-  // decides whether it qualifies; a failure here never affects the booking.
+  // Tells Lymm Engine Components (by email, server-side) about a job taken for
+  // the present week or the Monday after — later jobs go on the Saturday email.
+  // The server decides whether it qualifies; a failure here never affects the booking.
   const notifyLec = (bookingId, kind) => {
     fetch("/api/office/lec-notify", {
       method: "POST", headers: { "Content-Type": "application/json" },

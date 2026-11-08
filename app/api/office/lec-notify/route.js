@@ -4,11 +4,11 @@ import { SESSION_COOKIE, isValidSession } from "@/lib/auth";
 import { lecJobForBooking, LEC_TO, LEC_CC } from "@/lib/lecWeekly";
 import { sendLecNewJobEmail } from "@/lib/resend";
 
-// Called by the hub when a booking is saved, confirmed or moved. If the weekly
-// list covering its date has already gone to Roxanne at Lymm Engine Components
-// (and it isn't an Ingenium job or a provisional hold) she gets an extra email
-// for that one job with the parts it needs, copied to Chris — so a job taken
-// after the list went never gets missed.
+// Called by the hub when a booking is saved, confirmed or moved. Only if the job
+// lands in the present week or the Monday straight after (and it isn't Ingenium,
+// an engine rebuild or a provisional hold) does Roxanne at Lymm Engine Components
+// get an extra email for that one job with the parts it needs, copied to Chris.
+// Later jobs wait for the Saturday email, which will include them.
 export async function POST(request) {
   const store = await cookies();
   if (!isValidSession(store.get(SESSION_COOKIE)?.value)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
