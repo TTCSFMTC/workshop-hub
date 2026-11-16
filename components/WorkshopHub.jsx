@@ -7,14 +7,14 @@ import {
   Calendar, Plus, ClipboardPaste, Package, Wrench, AlertTriangle, X, ChevronLeft, ChevronRight, ChevronDown,
   MapPin, Phone, Car, FileText, Truck, Settings as SettingsIcon, ListChecks, Check, TrendingDown, TrendingUp, BarChart3, Thermometer,
   Mail, PoundSterling, Search, ArrowLeft, Mic, MicOff, PenLine, RotateCcw, Lock, Languages, Ban, Bookmark,
-  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX,
+  User, Building2, LayoutGrid, LogOut, Inbox, ThumbsDown, MessageCircle, History, Minus, List, Trash2, Printer, Sun, Star, Download, Receipt, CalendarX, Clock,
 } from "lucide-react";
 import { QuotesTab } from "./QuotesTab";
 import { ChainBeltTab } from "./ChainBeltTab";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
-  insertHoliday, deleteHoliday, updateHolidayPaid, fetchWeeklyPartsOrdered, setWeeklyPartOrdered, fetchSickness, insertSickness, deleteSickness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
+  insertHoliday, deleteHoliday, updateHolidayPaid, fetchWeeklyPartsOrdered, setWeeklyPartOrdered, fetchSickness, insertSickness, deleteSickness, fetchLateness, insertLateness, deleteLateness, fetchStaffStartDates, upsertStaffStartDate, deleteStaffStartDate,
   insertBonusRate, updateBonusRate, updateBonusRateJobTypes, deleteBonusRate, insertBonusAdjustment, deleteBonusAdjustment, upsertStaffWage, deleteStaffWage,
   insertFixedCost, updateFixedCost, deleteFixedCost,
   fetchPLSnapshots, upsertPLSnapshot, deletePLSnapshot,
@@ -628,6 +628,7 @@ export default function WorkshopHub() {
   const [brands, setBrands] = useState([]);
   const [holidays, setHolidays] = useState([]);
   const [sickness, setSickness] = useState([]);
+  const [lateness, setLateness] = useState([]);
   const [staffStartDates, setStaffStartDates] = useState({});
   const [bonusRates, setBonusRates] = useState([]);
   const [staffWages, setStaffWages] = useState([]);
@@ -712,6 +713,7 @@ export default function WorkshopHub() {
       subscribeTable("brands", async () => setBrands(await fetchBrands())),
       subscribeTable("holidays", async () => setHolidays(await fetchHolidays())),
       subscribeTable("sickness", async () => setSickness(await fetchSickness().catch(() => []))),
+      subscribeTable("lateness", async () => setLateness(await fetchLateness().catch(() => []))),
       subscribeTable("staff_start_dates", async () => setStaffStartDates(await fetchStaffStartDates().catch(() => ({})))),
       subscribeTable("bonus_rates", async () => setBonusRates(await fetchBonusRates())),
       subscribeTable("bonus_adjustments", async () => setBonusRates(await fetchBonusRates())),
@@ -732,6 +734,7 @@ export default function WorkshopHub() {
   useEffect(() => {
     if (!ready) return;
     fetchSickness().then(setSickness).catch(() => {});
+    fetchLateness().then(setLateness).catch(() => {});
     fetchStaffStartDates().then(setStaffStartDates).catch(() => {});
   }, [ready]);
 
@@ -1389,6 +1392,25 @@ export default function WorkshopHub() {
     await deleteSickness(id);
   });
 
+  // One record per time someone is late — marking the same person twice in a
+  // day is allowed (each time counts).
+  const addLatenessFn = (name, date, minutes, notes) => withSaveState(async () => {
+    const entry = { id: uid("late"), name, date, minutes: minutes || null, notes: notes || "" };
+    setLateness((prev) => [entry, ...prev]);
+    try {
+      await insertLateness(entry);
+    } catch (e) {
+      // Never leave a record on screen that didn't actually save.
+      setLateness((prev) => prev.filter((x) => x.id !== entry.id));
+      alert("That late mark did NOT save — the Lateness table hasn't been created in the database yet (run migration 067 in Supabase), or the connection dropped.");
+      throw e;
+    }
+  });
+  const removeLatenessFn = (id) => withSaveState(async () => {
+    setLateness((prev) => prev.filter((x) => x.id !== id));
+    await deleteLateness(id);
+  });
+
   const removeHolidayFn = (holidayId) => withSaveState(async () => {
     setHolidays((prev) => prev.filter((h) => h.id !== holidayId));
     await deleteHoliday(holidayId);
@@ -1703,6 +1725,7 @@ export default function WorkshopHub() {
           updateJobTypeInvoiceDescription={updateJobTypeInvoiceDescriptionFn}
           holidays={holidays} addHoliday={addHolidayFn} removeHoliday={removeHolidayFn} setHolidayPaid={setHolidayPaidFn}
           sickness={sickness} addSickness={addSicknessFn} removeSickness={removeSicknessFn}
+          lateness={lateness} addLateness={addLatenessFn} removeLateness={removeLatenessFn}
           staffStartDates={staffStartDates} setStaffStartDate={setStaffStartDateFn}
           bonusRates={bonusRates} addBonusRate={addBonusRateFn} updateBonusRate={updateBonusRateFn} updateBonusRateJobTypes={updateBonusRateJobTypesFn} removeBonusRate={removeBonusRateFn}
           addBonusAdjustment={addBonusAdjustmentFn} removeBonusAdjustment={removeBonusAdjustmentFn}
@@ -1749,7 +1772,7 @@ function OfficeMode({
   partsForecastShortfalls, showForecastAlert, dismissForecastAlert,
   jobCards, jobApprovals, updateJobApproval, removeJobApproval,
   brands, addBrand, removeBrand, renameBrand, updateJobTypeBrand, removeJobType, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription,
-  holidays, addHoliday, removeHoliday, setHolidayPaid, sickness, addSickness, removeSickness, staffStartDates, setStaffStartDate,
+  holidays, addHoliday, removeHoliday, setHolidayPaid, sickness, addSickness, removeSickness, lateness, addLateness, removeLateness, staffStartDates, setStaffStartDate,
   bonusRates, addBonusRate, updateBonusRate, updateBonusRateJobTypes, removeBonusRate, addBonusAdjustment, removeBonusAdjustment,
   staffWages, upsertStaffWage, removeStaffWage,
   fixedCosts, addFixedCost, updateFixedCost, removeFixedCost,
@@ -2080,7 +2103,7 @@ function OfficeMode({
         )}
         {tab === "sickness" && (
           <ProfitabilityGate>
-            <SicknessTab sickness={sickness} addSickness={addSickness} removeSickness={removeSickness} />
+            <SicknessTab sickness={sickness} addSickness={addSickness} removeSickness={removeSickness} lateness={lateness} addLateness={addLateness} removeLateness={removeLateness} />
           </ProfitabilityGate>
         )}
         {tab === "forecast" && (
@@ -7172,7 +7195,11 @@ function WagesReportPrintout({ label, rows, totals }) {
   );
 }
 
-function SicknessTab({ sickness, addSickness, removeSickness }) {
+function SicknessTab({ sickness, addSickness, removeSickness, lateness = [], addLateness, removeLateness }) {
+  const [lWho, setLWho] = useState("");
+  const [lDate, setLDate] = useState(todayISO());
+  const [lMins, setLMins] = useState("");
+  const [lNotes, setLNotes] = useState("");
   const [name, setName] = useState("");
   const [from, setFrom] = useState(todayISO());
   const [to, setTo] = useState(todayISO());
@@ -7201,6 +7228,30 @@ function SicknessTab({ sickness, addSickness, removeSickness }) {
 
   const sorted = [...sickness].sort((a, b) => (a.dateFrom < b.dateFrom ? 1 : a.dateFrom > b.dateFrom ? -1 : 0));
   const canAdd = name && from && to;
+
+  // Lateness: every time someone is late is its own record.
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const latePeople = useMemo(() => {
+    const map = {};
+    STAFF_HOLIDAY_NAMES.forEach((n) => { map[n] = { name: n, year: 0, month: 0, today: 0 }; });
+    lateness.forEach((l) => {
+      const p = (map[l.name] = map[l.name] || { name: l.name, year: 0, month: 0, today: 0 });
+      if (l.date >= yearAgo && l.date <= today) p.year += 1;
+      if (l.date >= monthStart && l.date <= today) p.month += 1;
+      if (l.date === today) p.today += 1;
+    });
+    return Object.values(map).sort((x, y) => y.year - x.year || x.name.localeCompare(y.name));
+  }, [lateness, today, yearAgo, monthStart]);
+  const lateSorted = [...lateness].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const markLate = (who, date, minutes, notes) => {
+    if (!who || !date) return;
+    addLateness(who, date, minutes, notes);
+  };
+  const addLateFromForm = () => {
+    const mins = parseInt(lMins, 10);
+    markLate(lWho, lDate, Number.isFinite(mins) && mins > 0 ? mins : null, lNotes.trim());
+    setLWho(""); setLMins(""); setLNotes(""); setLDate(todayISO());
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -7242,6 +7293,60 @@ function SicknessTab({ sickness, addSickness, removeSickness }) {
                 </tr>
               ))}
               {sorted.length === 0 && <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No sickness recorded yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="wb-panel">
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+          <Clock size={16} color="var(--amber)" /> Late
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+          Tap a name to mark them late today — every time counts. Use the form below for another day, to add how many minutes, or a note.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8, marginBottom: 16 }}>
+          {latePeople.map((p) => (
+            <button key={p.name} className="wb-btn" onClick={() => markLate(p.name, todayISO(), null, "")} title={`Mark ${p.name} late today`}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, textAlign: "left", padding: "8px 10px" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 600 }}>
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(p.name), display: "inline-block", flexShrink: 0 }} />
+                {p.name}{p.today > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--red)" }}>LATE TODAY{p.today > 1 ? ` ×${p.today}` : ""}</span>}
+              </span>
+              <span className="wh-mono" style={{ fontSize: 11, opacity: 0.85 }}>{p.month} this month · {p.year} in 12 mo</span>
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end", marginBottom: 16 }}>
+          <div>
+            <label className="wb-label">Who</label>
+            <select className="wb-select" style={{ width: 160 }} value={lWho} onChange={(e) => setLWho(e.target.value)}>
+              <option value="">Select…</option>
+              {STAFF_HOLIDAY_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div><label className="wb-label">Date</label><input type="date" className="wb-input" value={lDate} onChange={(e) => setLDate(e.target.value)} /></div>
+          <div><label className="wb-label">Minutes late (optional)</label><input type="number" min="1" className="wb-input" style={{ width: 130 }} placeholder="e.g. 20" value={lMins} onChange={(e) => setLMins(e.target.value)} /></div>
+          <div style={{ flex: 1, minWidth: 180 }}><label className="wb-label">Notes (optional)</label><input className="wb-input" placeholder="e.g. rang ahead, car trouble" value={lNotes} onChange={(e) => setLNotes(e.target.value)} /></div>
+          <button className="wb-btn" disabled={!lWho || !lDate} style={!lWho || !lDate ? { opacity: 0.5, cursor: "not-allowed" } : {}} onClick={addLateFromForm}><Plus size={13} /> Mark late</button>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="wb-table">
+            <thead><tr><th>Name</th><th>Date</th><th>Minutes late</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              {lateSorted.map((l) => (
+                <tr key={l.id}>
+                  <td style={{ fontWeight: 600 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: holidayColor(l.name), display: "inline-block", marginRight: 7 }} />
+                    {l.name}
+                  </td>
+                  <td className="wh-mono">{fmtDate(l.date)}</td>
+                  <td className="wh-mono">{l.minutes ? `${l.minutes} min` : "—"}</td>
+                  <td style={{ fontSize: 12, color: "var(--muted)" }}>{l.notes}</td>
+                  <td><button onClick={() => { if (confirm(`Delete ${l.name}'s late mark (${fmtDate(l.date)})?`)) removeLateness(l.id); }} title="Delete" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }}><X size={14} /></button></td>
+                </tr>
+              ))}
+              {lateSorted.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>Nobody marked late yet.</td></tr>}
             </tbody>
           </table>
         </div>
