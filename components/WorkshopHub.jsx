@@ -4616,6 +4616,26 @@ function BookingActivityCalendar({ bookings }) {
   );
 }
 
+// Pay rules for people whose monthly basic isn't just last month's figure —
+// used when a new month is carried forward (see StaffWagesSection).
+// Charlie: £18,500 a year, paid 1/12th a month. Sam: £75 a day, Wed/Thu/Fri
+// only, so his month is however many Wednesdays, Thursdays and Fridays it
+// contains. Everyone else just keeps the previous month's basic.
+const STAFF_PAY_RULES = {
+  charlie: { annual: 18500 },
+  sam: { perDay: 75, weekdays: [3, 4, 5] },
+};
+function basicFromRule(name, month) {
+  const rule = STAFF_PAY_RULES[String(name || "").trim().toLowerCase()];
+  if (!rule) return null;
+  if (rule.annual) return Math.round((rule.annual / 12) * 100) / 100;
+  const [y, m] = month.split("-").map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  let n = 0;
+  for (let d = 1; d <= daysInMonth; d++) if (rule.weekdays.includes(new Date(y, m - 1, d).getDay())) n++;
+  return n * rule.perDay;
+}
+
 // Staff wages & efficiency — basic + weekend days, per person per month,
 // plus one shared bonus pot for the whole team (Ernesto and Ervin are both
 // full-time on the same basic wage and split the bonus pot equally for
@@ -4632,20 +4652,26 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   const [adjCount, setAdjCount] = useState("1");
   const monthRows = useMemo(() => staffWages.filter((w) => w.month === month), [staffWages, month]);
 
-  // Ernesto and Ervin are both full-time on the same basic wage every
-  // month — rather than Chris having to remember to click "Add person"
-  // twice at the start of each new month, a month that has nobody on it
-  // yet gets seeded with both automatically. Only fires once per month per
+  // Rather than Chris re-adding everyone at the start of each month, a month
+  // that has nobody on it yet is carried forward from the most recent earlier
+  // month: same people, same basic (Charlie and Sam are worked out from their
+  // pay rules instead — see STAFF_PAY_RULES), with weekend days and bonus
+  // counts reset to zero. With no earlier month at all it falls back to
+  // Ernesto and Ervin on the default basic. Only fires once per month per
   // session (tracked below) so deliberately removing everyone from a month
   // doesn't just bring them straight back.
   const seededMonths = useRef(new Set());
   useEffect(() => {
     if (monthRows.length > 0 || seededMonths.current.has(month)) return;
     seededMonths.current.add(month);
-    ["Ernesto", "Ervin"].forEach((name) => {
-      upsertStaffWage({ id: uid("sw"), name, month, basic: DEFAULT_BASIC_WAGE, weekendFullDays: 0, weekendHalfDays: 0, bonusCounts: {} });
+    const earlier = staffWages.map((w) => w.month).filter((m) => m < month).sort().pop();
+    const carried = earlier ? staffWages.filter((w) => w.month === earlier) : [];
+    const people = carried.length > 0 ? carried : [{ name: "Ernesto", basic: DEFAULT_BASIC_WAGE }, { name: "Ervin", basic: DEFAULT_BASIC_WAGE }];
+    people.forEach((p) => {
+      const basic = basicFromRule(p.name, month) ?? (p.basic ?? DEFAULT_BASIC_WAGE);
+      upsertStaffWage({ id: uid("sw"), name: p.name, month, basic, weekendFullDays: 0, weekendHalfDays: 0, bonusCounts: {} });
     });
-  }, [month, monthRows.length, upsertStaffWage]);
+  }, [month, monthRows.length, staffWages, upsertStaffWage]);
 
   // Auto-derived from actually completed + invoiced bookings — see
   // computeBonusCounts — nobody has to remember to type a count in by hand,
