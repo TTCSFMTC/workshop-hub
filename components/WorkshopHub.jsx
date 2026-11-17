@@ -2440,7 +2440,7 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
   const monthRows = staffWages.filter((w) => w.month === month);
   const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
   const bonusJobs = computeBonusJobs(bookings, bonusRates, jobTypes, month);
-  const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
+  const totalBonusPot = bonusPotFor(bonusRates, bonusCounts);
   const bonusSharers = monthRows.filter(getsBonus);
   const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
   const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusShareFor(w, bonusPerPerson);
@@ -2508,6 +2508,18 @@ function WagesStatementPrintout({ month, bookings, bonusRates, staffWages, jobTy
                 </tr>
               );
             })}
+            {(() => {
+              const c = bonusComboAdjustment(bonusRates, bonusCounts);
+              if (!c.count) return null;
+              return (
+                <tr>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>Piston jet + thermostat on the same job (pays £{BONUS_COMBO_PAIR_RATE} together)</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>{c.count}</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>−£{Math.abs(c.each).toFixed(2)}</td>
+                  <td style={{ padding: "5px 8px", borderBottom: "1px solid #ccc" }}>−£{Math.abs(c.total).toFixed(2)}</td>
+                </tr>
+              );
+            })()}
           </tbody>
           <tfoot>
             <tr style={{ fontWeight: 700 }}>
@@ -4126,9 +4138,33 @@ function bookingProfit(booking, jobTypes, parts, settings) {
 // was originally booked for, since that's when the work — and the bonus —
 // is actually earned. A bonus rate with no job types linked never counts
 // anything, rather than guessing from its name.
+// A piston cooling jet job and a thermostat housing job done on the SAME
+// booking pay £75 together, not £50 + £50. Either one on its own stays £50
+// (its normal rate). counts[BONUS_COMBO_KEY] holds how many bookings had both,
+// and bonusComboAdjustment turns that into the (negative) £ to take off the pot.
+const BONUS_COMBO_KEY = "__pistonThermoCombo";
+const BONUS_COMBO_PAIR_RATE = 75;
+function bonusComboRates(bonusRates) {
+  return {
+    pcj: bonusRates.find((br) => /piston cooling jet/i.test(br.name)),
+    thermo: bonusRates.find((br) => /thermostat housing/i.test(br.name)),
+  };
+}
+function bonusComboAdjustment(bonusRates, counts) {
+  const { pcj, thermo } = bonusComboRates(bonusRates);
+  if (!pcj || !thermo) return { count: 0, each: 0, total: 0 };
+  const count = counts[BONUS_COMBO_KEY] || 0;
+  const each = BONUS_COMBO_PAIR_RATE - ((pcj.rate || 0) + (thermo.rate || 0));
+  return { count, each, total: count * each };
+}
+const bonusPotFor = (bonusRates, counts) =>
+  bonusRates.reduce((sum, br) => sum + (counts[br.id] || 0) * br.rate, 0) + bonusComboAdjustment(bonusRates, counts).total;
+
 function computeBonusCounts(bookings, bonusRates, month) {
   const counts = {};
   bonusRates.forEach((br) => { counts[br.id] = 0; });
+  counts[BONUS_COMBO_KEY] = 0;
+  const { pcj, thermo } = bonusComboRates(bonusRates);
   bookings.forEach((b) => {
     if (!b.completed || !(b.jobValue > 0) || !b.zohoInvoiceId) return;
     const completedMonth = b.completedAt ? new Date(b.completedAt).toISOString().slice(0, 7) : (b.date || "").slice(0, 7);
@@ -4137,6 +4173,8 @@ function computeBonusCounts(bookings, bonusRates, month) {
     bonusRates.forEach((br) => {
       if ((br.jobTypeIds || []).some((jtId) => ids.has(jtId))) counts[br.id] += 1;
     });
+    const has = (br) => !!br && (br.jobTypeIds || []).some((jtId) => ids.has(jtId));
+    if (has(pcj) && has(thermo)) counts[BONUS_COMBO_KEY] += 1;
   });
   // Jobs added by hand from the Profitability tab (e.g. an engine rebuild).
   bonusRates.forEach((br) => (br.adjustments || []).forEach((a) => { if (a.month === month) counts[br.id] += a.count || 1; }));
@@ -4175,7 +4213,7 @@ function computeBonusJobs(bookings, bonusRates, jobTypes, month) {
 function computeStaffWagesForMonth(month, staffWages, bonusRates, bookings) {
   const monthRows = staffWages.filter((w) => w.month === month);
   const bonusCounts = computeBonusCounts(bookings, bonusRates, month);
-  const totalBonusPot = bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0);
+  const totalBonusPot = bonusPotFor(bonusRates, bonusCounts);
   const bonusSharers = monthRows.filter(getsBonus);
   const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
   const rowTotal = (w) => (w.basic || 0) + (w.weekendFullDays || 0) * WEEKEND_FULL_DAY_RATE + (w.weekendHalfDays || 0) * WEEKEND_HALF_DAY_RATE + bonusShareFor(w, bonusPerPerson);
@@ -4615,7 +4653,7 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
   // invoiced. One shared pot for the month, split equally between Ernesto
   // and Ervin only — nobody else on the wages list gets a share.
   const bonusCounts = useMemo(() => computeBonusCounts(bookings, bonusRates, month), [bookings, bonusRates, month]);
-  const totalBonusPot = useMemo(() => bonusRates.reduce((sum, br) => sum + (bonusCounts[br.id] || 0) * br.rate, 0), [bonusRates, bonusCounts]);
+  const totalBonusPot = useMemo(() => bonusPotFor(bonusRates, bonusCounts), [bonusRates, bonusCounts]);
   const bonusSharers = monthRows.filter(getsBonus);
   const bonusPerPerson = bonusSharers.length > 0 ? totalBonusPot / bonusSharers.length : 0;
 
@@ -4720,6 +4758,16 @@ function StaffWagesSection({ months, bonusRates, addBonusRate, updateBonusRate, 
               </div>
             );
           })}
+          {(() => {
+            const c = bonusComboAdjustment(bonusRates, bonusCounts);
+            if (!c.count) return null;
+            return (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 16, padding: "10px 14px", background: "var(--panel2)", borderRadius: 8 }}>
+                <div>Piston jet + thermostat on the same job <span style={{ color: "var(--muted)", fontSize: 13 }}>({c.count} × −£{Math.abs(c.each)} — the pair pays £{BONUS_COMBO_PAIR_RATE}, not £{BONUS_COMBO_PAIR_RATE - c.each})</span></div>
+                <div className="wh-mono" style={{ fontWeight: 700 }}>−£{Math.abs(c.total).toFixed(2)}</div>
+              </div>
+            );
+          })()}
           {bonusRates.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)" }}>No bonus types set up yet.</div>}
         </div>
         {(() => {
