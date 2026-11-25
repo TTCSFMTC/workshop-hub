@@ -49,7 +49,7 @@ export async function POST(request) {
 
     const generatedAt = new Date().toISOString();
     const pdfBytes = await generateTechnicalWriteupPdf({
-      customerName: card.customer_name, reg: card.reg, vehicleModel, jobTypeName, writeup, generatedAt,
+      customerName: card.customer_name, reg: card.reg, vehicleModel, jobTypeName, writeup,
     });
     const { id: fileId, url: pdfUrl } = await uploadFileAndShare({
       name: `${card.reg || card.customer_name || "vehicle"} - technical write-up.pdf`,
