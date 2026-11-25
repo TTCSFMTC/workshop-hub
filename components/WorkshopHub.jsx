@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { QuotesTab } from "./QuotesTab";
 import { ChainBeltTab } from "./ChainBeltTab";
+import WorkPackPrintout from "./WorkPackPrintout";
 import {
   fetchAll, fetchParts, fetchJobTypes, fetchBookings, fetchJobCards, fetchJobApprovals, fetchSettings, fetchPriceHistory, fetchStockBatches, fetchBrands, fetchHolidays, fetchBonusRates, fetchStaffWages, fetchFixedCosts, fetchAuditLog, insertAuditLog,
   insertPart, updatePart, deletePart, insertJobType, renameJobType, updateJobTypeColor, updateJobTypeBrand, updateJobTypeStandardPrice, updateJobTypePublicBookable, updateJobTypeInvoiceDescription, deleteJobType, insertBrand, deleteBrand, renameBrand, addBomLine, updateBomLine, removeBomLine,
@@ -1670,6 +1671,7 @@ export default function WorkshopHub() {
         .print-outstanding-parts { display: none; }
         .print-wages-statement { display: none; }
         .print-stocktake { display: none; }
+        .print-work-pack { display: none; }
         @media print {
           body * { visibility: hidden; }
           .print-job-card, .print-job-card *,
@@ -1678,12 +1680,14 @@ export default function WorkshopHub() {
           .print-outstanding-parts, .print-outstanding-parts *,
           .print-wages-statement, .print-wages-statement *,
           .print-stocktake, .print-stocktake * { visibility: visible; }
+          .print-work-pack, .print-work-pack * { visibility: visible; }
           .print-job-card { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-job-cards { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-still-to-finish { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-outstanding-parts { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-wages-statement { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-stocktake { display: block; position: absolute; top: 0; left: 0; width: 100%; }
+          .print-work-pack { display: block; position: absolute; top: 0; left: 0; width: 100%; }
           .print-stocktake thead { display: table-header-group; }
           .print-stocktake tr { break-inside: avoid; page-break-inside: avoid; }
           /* Hidden isn't gone: visibility:hidden keeps the whole app's height, which
@@ -1698,6 +1702,9 @@ export default function WorkshopHub() {
           .print-job-card-page { page-break-inside: avoid; break-inside: avoid; }
           .print-job-card-page { page-break-after: always; break-after: page; }
           .print-job-card-page:last-child { page-break-after: auto; break-after: auto; }
+          /* Workshop pack: one A4 page each — work job card, job breakdown, tick sheet. */
+          .print-work-pack-page { max-height: 94vh; overflow: hidden; page-break-inside: avoid; break-inside: avoid; page-break-after: always; break-after: page; }
+          .print-work-pack-page:last-child { page-break-after: auto; break-after: auto; }
         }
       `}</style>
 
@@ -8664,6 +8671,41 @@ function DictateField({ label, value, onChange, rows = 4, disabled }) {
   );
 }
 
+// Everything the workshop pack (job card > "Print workshop pack") needs, read
+// from the job card (registration, make, model) and its linked booking (booked
+// jobs and parts). Ingenium timing chain jobs get the Ingenium tick sheet; any
+// other job gets a generic one built from what's booked. Labour Hours is a time
+// charge, not a part to pull, so it's left off the parts list.
+function workPackProps(card, booking, jobTypes, parts) {
+  const reg = card.reg || booking?.reg || "";
+  const vehicle = [card.make, card.model].filter(Boolean).join(" ") || booking?.vehicleModel || "";
+  const jts = booking ? bookingJobTypeIds(booking).map((id) => jobTypes.find((j) => j.id === id)).filter(Boolean) : [];
+  const partsIndex = Object.fromEntries(parts.map((p) => [p.id, p]));
+  const partsLines = booking
+    ? fullBookingBom(booking, jobTypes)
+        .map((l) => { const p = partsIndex[l.partId]; return { partId: l.partId, qty: l.qty, unit: p?.unit || "", name: p?.name || l.partId, partNumber: p?.partNumber || "", stock: p?.stock ?? "" }; })
+        .filter((l) => !/^labour hours$/i.test(l.name.trim()))
+    : [];
+  const ingeniumJt = jts.find((j) => /ingenium/i.test(j.name) && /chain/i.test(j.name));
+  const sheetBooking = booking
+    ? { ...booking, reg, vehicleModel: vehicle || booking.vehicleModel }
+    : { business: card.business, customerName: card.customerName, phone: card.contact, reg, vehicleModel: vehicle, symptoms: card.symptoms, date: "", days: 1, extraJobTypeIds: [] };
+  return {
+    sheetBooking,
+    printProps: {
+      reg, vehicle,
+      customerName: card.customerName || booking?.customerName || "",
+      technician: card.technician || "",
+      bookedIn: jts.map((j) => j.name),
+      symptoms: card.symptoms || booking?.symptoms || "",
+      partsLines,
+      customParts: (booking?.customParts || []).map((c) => c.description).filter(Boolean),
+      isIngenium: !!ingeniumJt,
+      ingeniumTitle: ingeniumJt?.name,
+    },
+  };
+}
+
 // ---- Job breakdown (read-only, pulled live from the linked booking) ----
 function JobBreakdown({ booking, jobTypes, parts }) {
   if (!booking) return null;
@@ -8709,6 +8751,17 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
   const [writeupGenerating, setWriteupGenerating] = useState(false);
   const [writeupError, setWriteupError] = useState(null);
   const writeupTimerRef = useRef(null);
+  // Workshop pack (work job card + job breakdown + tick sheet): same print
+  // pattern as the other printouts — render it, open the print dialog, clear it
+  // once printing is done.
+  const [printPack, setPrintPack] = useState(false);
+  useEffect(() => {
+    if (!printPack) return;
+    const t = setTimeout(() => window.print(), 50);
+    const clear = () => setPrintPack(false);
+    window.addEventListener("afterprint", clear);
+    return () => { clearTimeout(t); window.removeEventListener("afterprint", clear); };
+  }, [printPack]);
   // Seeded with whatever's already in the field when the card is opened, so
   // reopening an unchanged card never re-triggers a generation — only edits
   // made from this point on will move the content away from this snapshot
@@ -8760,6 +8813,18 @@ function JobCardDetail({ card, booking, jobTypes, parts, onUpdate, onBack, onDel
         </button>
       </div>
       <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto" }}>
+        <div className="jc-card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div className="jc-section-title" style={{ marginBottom: 2 }}><Printer size={16} /> Workshop pack</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>Work job card, job breakdown with parts, and a tick sheet — for {card.reg || "this vehicle"}{[card.make, card.model].filter(Boolean).length ? ` (${[card.make, card.model].filter(Boolean).join(" ")})` : ""}.</div>
+          </div>
+          <button className="jc-btn-sm" onClick={() => setPrintPack(true)}><Printer size={14} /> Print workshop pack</button>
+        </div>
+        {printPack && (() => {
+          const wp = workPackProps(card, booking, jobTypes, parts);
+          return <WorkPackPrintout {...wp.printProps} jobCardNode={<JobCardBody booking={wp.sheetBooking} jobTypes={jobTypes} />} />;
+        })()}
+
         <JobBreakdown booking={booking} jobTypes={jobTypes} parts={parts} />
 
         {booking && (
