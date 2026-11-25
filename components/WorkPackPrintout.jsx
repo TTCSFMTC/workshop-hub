@@ -25,7 +25,7 @@ const INGENIUM_SECTIONS = [
     "Kit checked: chain(s), guides, tensioner, gaskets, seals, bolts",
   ]],
   ["2. Strip", [
-    "Ancillaries, covers and cam cover removed",
+    "Ancillaries and covers removed",
     "Engine set to TDC and timing tools fitted",
     "Old chain, guides and tensioner removed",
     "Inspected for debris / damage / scoring",
